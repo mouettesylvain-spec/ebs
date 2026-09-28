@@ -1,0 +1,114 @@
+# Pipeline from docs/design/testing.md § CI pipeline.
+# lint -> unit (3.11, 3.12, 3.13) -> integration (Postgres) -> e2e -> nightly (scheduled only).
+# Nightly jobs stay `when: manual` until P1-12 provides a real SLURM partition and licensed nodes.
+
+stages: [lint, unit, integration, e2e, nightly]
+
+default:
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm
+  interruptible: true
+
+variables:
+  UV_CACHE_DIR: .uv-cache
+  UV_FROZEN: "1"
+  UV_LINK_MODE: copy
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+.uv:
+  cache:
+    key:
+      files: [uv.lock]
+    paths: [.uv-cache]
+  before_script:
+    - uv sync --all-extras
+
+.mr_and_main:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+.nightly:
+  extends: .uv
+  stage: nightly
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: manual
+      allow_failure: true
+    - when: never
+
+lint:
+  extends: [.uv, .mr_and_main]
+  stage: lint
+  script:
+    - make lint
+
+unit:
+  extends: [.uv, .mr_and_main]
+  stage: unit
+  image: ghcr.io/astral-sh/uv:python$PYTHON_VERSION-bookworm
+  parallel:
+    matrix:
+      - PYTHON_VERSION: ["3.11", "3.12", "3.13"]
+  script:
+    - make test-unit
+  coverage: '/TOTAL.*\s(\d+(?:\.\d+)?)%/'
+  artifacts:
+    when: always
+    paths: [coverage.json]
+
+integration:
+  extends: [.uv, .mr_and_main]
+  stage: integration
+  services:
+    - name: postgres:17
+      alias: postgres
+  variables:
+    POSTGRES_DB: ebs_test
+    POSTGRES_USER: ebs
+    POSTGRES_PASSWORD: ebs
+    EBS_TEST_PG_URL: postgresql+psycopg://ebs:ebs@postgres:5432/ebs_test
+  script:
+    # Exit code 5 = no tests collected; tolerated until P0-10 adds the first Postgres tests.
+    - uv run pytest -m integration -q --ignore=tests/e2e --junitxml=junit-integration.xml || [ $? -eq 5 ]
+  artifacts:
+    when: always
+    reports:
+      junit: junit-integration.xml
+
+e2e:
+  extends: [.uv, .mr_and_main]
+  stage: e2e
+  script:
+    - uv run pytest tests/e2e -q --junitxml=junit-e2e.xml
+  artifacts:
+    when: always
+    reports:
+      junit: junit-e2e.xml
+
+nightly:grid:
+  extends: .nightly
+  tags: [slurm]
+  script:
+    - uv run pytest -m grid -q
+
+nightly:vendor:
+  extends: .nightly
+  tags: [eda-licensed]
+  script:
+    - uv run pytest -m vendor -q
+
+nightly:hypothesis:
+  extends: .nightly
+  variables:
+    HYPOTHESIS_PROFILE: nightly
+  script:
+    - uv run pytest -m unit -q
+
+nightly:mutmut:
+  extends: .nightly
+  script:
+    # Invariant files from docs/design/invariants.md § Mutation check (created by later tasks).
+    # TODO(P1-12): mutmut 3.x reads paths_to_mutate from [tool.mutmut]; move it there when enabling.
+    - uvx mutmut run --paths-to-mutate src/ebs/core/canon.py,src/ebs/core/tree.py,src/ebs/plan/keys.py,src/ebs/sources/statcache.py

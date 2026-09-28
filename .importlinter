@@ -1,0 +1,167 @@
+# Layering rules from docs/design/overview.md, enforced by `lint-imports` (make check) and
+# tests/unit/test_layering.py. Lower layers never import higher ones.
+#
+#   L0 core · L1 config, flow, cas, toolchain.fingerprint · L2 sources, plan, rules, meta (store)
+#   L3 exec, runner, sandbox, gc, release, toolchain (registry) · L4 driver, meta.service · L5 cli
+#
+# `meta` and `toolchain` span several layers, so they are not in the layers contract (import-linter
+# rejects overlapping layers); the forbidden contracts below pin their parts instead. Modules named
+# here that do not exist yet are ignored by import-linter until a later task creates them.
+
+[importlinter]
+root_package = ebs
+include_external_packages = False
+
+[importlinter:contract:layers]
+name = Package layering (L0 core ... L5 cli)
+type = layers
+layers =
+    ebs.cli
+    ebs.driver
+    ebs.exec : ebs.runner : ebs.sandbox : ebs.gc : ebs.release
+    ebs.sources : ebs.plan : ebs.rules
+    ebs.config : ebs.flow : ebs.cas
+    ebs.core
+
+[importlinter:contract:core-is-l0]
+name = core (L0) imports no other ebs package
+type = forbidden
+source_modules =
+    ebs.core
+forbidden_modules =
+    ebs.meta
+    ebs.toolchain
+
+[importlinter:contract:meta-store-is-l2]
+name = meta store (L2) does not import L3+ or meta.service
+type = forbidden
+source_modules =
+    ebs.meta
+ignore_imports =
+    ebs.meta.service -> ebs.**
+    ebs.meta.service.** -> ebs.**
+unmatched_ignore_imports_alerting = none
+forbidden_modules =
+    ebs.exec
+    ebs.runner
+    ebs.sandbox
+    ebs.gc
+    ebs.release
+    ebs.driver
+    ebs.meta.service
+    ebs.cli
+
+[importlinter:contract:meta-below-l2]
+name = L0-L1 do not import meta (L2)
+type = forbidden
+source_modules =
+    ebs.config
+    ebs.flow
+    ebs.cas
+    ebs.toolchain.fingerprint
+forbidden_modules =
+    ebs.meta
+
+[importlinter:contract:meta-service-is-l4]
+name = L0-L3 do not import meta.service
+type = forbidden
+source_modules =
+    ebs.config
+    ebs.flow
+    ebs.cas
+    ebs.toolchain
+    ebs.sources
+    ebs.plan
+    ebs.rules
+    ebs.exec
+    ebs.runner
+    ebs.sandbox
+    ebs.gc
+    ebs.release
+forbidden_modules =
+    ebs.meta.service
+
+[importlinter:contract:toolchain-fingerprint-is-l1]
+name = toolchain.fingerprint (L1) does not import L2+
+type = forbidden
+source_modules =
+    ebs.toolchain.fingerprint
+forbidden_modules =
+    ebs.toolchain.registry
+    ebs.toolchain.modules
+    ebs.toolchain.env
+    ebs.sources
+    ebs.plan
+    ebs.rules
+    ebs.meta
+    ebs.exec
+    ebs.runner
+    ebs.sandbox
+    ebs.gc
+    ebs.release
+    ebs.driver
+    ebs.cli
+
+[importlinter:contract:toolchain-is-l3]
+name = toolchain (at most L3) does not import L4+
+type = forbidden
+source_modules =
+    ebs.toolchain
+forbidden_modules =
+    ebs.driver
+    ebs.meta.service
+    ebs.cli
+
+[importlinter:contract:toolchain-registry-above-l1]
+name = L0-L2 only use toolchain.fingerprint, not the registry side
+type = forbidden
+source_modules =
+    ebs.config
+    ebs.flow
+    ebs.cas
+    ebs.sources
+    ebs.plan
+    ebs.rules
+forbidden_modules =
+    ebs.toolchain.registry
+    ebs.toolchain.modules
+    ebs.toolchain.env
+
+[importlinter:contract:runner-minimal]
+name = runner does not import driver, plan.planner or meta.service
+type = forbidden
+source_modules =
+    ebs.runner
+forbidden_modules =
+    ebs.driver
+    ebs.plan.planner
+    ebs.meta.service
+
+[importlinter:contract:rules-plugins]
+name = rules import only core, flow and rules.api
+type = forbidden
+source_modules =
+    ebs.rules
+forbidden_modules =
+    ebs.config
+    ebs.cas
+    ebs.toolchain
+    ebs.sources
+    ebs.plan
+    ebs.meta
+    ebs.exec
+    ebs.runner
+    ebs.sandbox
+    ebs.gc
+    ebs.release
+    ebs.driver
+    ebs.cli
+
+[importlinter:contract:nothing-imports-cli]
+name = Nothing imports cli
+type = forbidden
+source_modules =
+    ebs.meta
+    ebs.toolchain
+forbidden_modules =
+    ebs.cli
