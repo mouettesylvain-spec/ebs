@@ -63,6 +63,10 @@ class CanonError(EbsError):
     """Value that cannot be canonicalized (e.g. floats, non-string keys)."""
 
 
+class TreeError(EbsError):
+    """Directory that cannot be represented as a tree manifest, or an invalid manifest."""
+
+
 class PlanError(EbsError):
     """The flow could not be expanded into a valid action graph."""
 
