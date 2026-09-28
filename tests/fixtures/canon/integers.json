@@ -1,0 +1,12 @@
+{
+  "description": "Integers up to the edges of the IEEE-754 safe range",
+  "input": [
+    0,
+    -1,
+    1,
+    9007199254740991,
+    -9007199254740991,
+    10
+  ],
+  "expected": "[0,-1,1,9007199254740991,-9007199254740991,10]"
+}

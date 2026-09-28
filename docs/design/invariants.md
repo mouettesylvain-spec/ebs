@@ -7,7 +7,7 @@ that test green, and a PR that weakens one needs explicit human approval.
 | ID | Invariant | Enforcing test(s) | Introduced by |
 | --- | --- | --- | --- |
 | I1 | Canonical JSON is deterministic: equal values ⇒ equal bytes, regardless of dict insertion order | `tests/unit/core/test_canon.py::test_order_independence` (Hypothesis) | P0-02 |
-| I2 | Canonical JSON is injective on its domain: different values ⇒ different bytes | `test_canon.py::test_injective` (Hypothesis) | P0-02 |
+| I2 | Canonical JSON is injective on its domain: different values ⇒ different bytes | `tests/unit/core/test_canon.py::test_injective` (Hypothesis: decoding is a left inverse) | P0-02 |
 | I3 | Every field in the key document changes the key; no excluded field (resources, licenses, debug, user, time, absolute paths, domain) does | `tests/unit/plan/test_key_sensitivity.py` (Hypothesis, field-by-field mutation) | P0-08 |
 | I4 | Golden keys are stable across releases unless `KEY_SCHEMA_VERSION` is bumped | `tests/unit/plan/test_golden_keys.py` (fixtures in `tests/fixtures/golden_keys/`) | P0-08 |
 | I5 | Tree digest depends on names, content, executable bit and symlink targets only; not on mtime, owner, directory enumeration order | `tests/unit/core/test_tree.py::test_metadata_independence` | P0-03 |

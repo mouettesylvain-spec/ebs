@@ -1,6 +1,6 @@
 # P0-02 — Digests and canonical JSON
 
-Status: todo · Phase: 0 · Depends on: P0-01 · Parallel-safe with: P0-04, P0-11 · Size: S
+Status: review · Phase: 0 · Depends on: P0-01 · Parallel-safe with: P0-04, P0-11 · Size: S
 
 ## Goal
 The hashing foundation every cache decision rests on: a `Digest` type, streaming file hashing and a
@@ -51,9 +51,25 @@ Exactly interfaces.md §1.
 | `test_digest.py::test_shard` | R8 | unit |
 
 ## Done when
-- [ ] `make check` passes; coverage of `ebs.core` ≥ 95 %
-- [ ] invariants I1/I2 point at the real test names
+- [x] `make check` passes; coverage of `ebs.core` ≥ 95 % (100 % line and branch)
+- [x] invariants I1/I2 point at the real test names
 
 ## Notes
 Do not use `json.dumps(sort_keys=True)` as the implementation: its key order is by code point, which
 differs from UTF-16 order for non-BMP characters, and its escaping differs from JCS.
+
+Implementation notes (P0-02):
+- RFC 8785 §3.2.3's sorting example contains U+FB33, which is not NFC (it decomposes to
+  U+05D3 U+05BC), so R5 rejects it. `tests/fixtures/canon/rfc8785_sort_utf16.json` substitutes
+  U+FF21, which still separates UTF-16 order from code-point order, and
+  `test_rfc_sort_example_is_rejected_as_non_nfc` pins the rejection of the verbatim input.
+- Integers are limited to ±(2**53 − 1) (the JCS exact range), so output is byte-identical to any
+  RFC 8785 implementation. Relaxing this later changes no existing key; tightening it would.
+  Documented in interfaces.md §1. Open question for the human: confirm, or allow larger ints.
+- Int subclasses (IntEnum) are accepted and encoded as plain digits; str subclasses as plain strings.
+- Nesting beyond the Python recursion limit raises `CanonError`, not `RecursionError`.
+- `JsonValue` uses invariant `dict`/`list`, so callers holding e.g. `dict[str, str]` must annotate
+  it as `dict[str, JsonValue]` (P0-08 will meet this). Chosen over Mapping/Sequence because those
+  would type-check values the encoder rejects at runtime.
+- Follow-up: nightly mutmut on canon.py — the redundant `not sep` check in `Digest.parse` was
+  removed so it can't produce an equivalent mutant.

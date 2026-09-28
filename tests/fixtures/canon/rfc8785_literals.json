@@ -1,0 +1,11 @@
+{
+  "description": "RFC 8785 3.2.2 literals subset",
+  "input": {
+    "literals": [
+      null,
+      true,
+      false
+    ]
+  },
+  "expected": "{\"literals\":[null,true,false]}"
+}
