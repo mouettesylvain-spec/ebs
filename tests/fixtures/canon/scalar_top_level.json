@@ -1,0 +1,5 @@
+{
+  "description": "Top-level scalar string",
+  "input": "a",
+  "expected": "\"a\""
+}

@@ -1,0 +1,7 @@
+{
+  "description": "RFC 8785 3.2.2.2 string example",
+  "input": {
+    "string": "\u20ac$\u000f\nA'B\"\\\\\"/"
+  },
+  "expected": "{\"string\":\"\u20ac$\\u000f\\nA'B\\\"\\\\\\\\\\\"/\"}"
+}

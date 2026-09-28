@@ -1,0 +1,9 @@
+{
+  "description": "UTF-16 order puts U+10000 (lead surrogate D800) before U+FB01; code-point order would not",
+  "input": {
+    "\ufb01": 1,
+    "\ud800\udc00": 2,
+    "z": 3
+  },
+  "expected": "{\"z\":3,\"\ud800\udc00\":2,\"\ufb01\":1}"
+}

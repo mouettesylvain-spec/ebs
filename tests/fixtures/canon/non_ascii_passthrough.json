@@ -1,0 +1,7 @@
+{
+  "description": "DEL, U+2028, precomposed e-acute, non-BMP and solidus stay literal UTF-8",
+  "input": [
+    "\u007f\u2028\u00e9\ud83d\ude00/"
+  ],
+  "expected": "[\"\u007f\u2028\u00e9\ud83d\ude00/\"]"
+}
