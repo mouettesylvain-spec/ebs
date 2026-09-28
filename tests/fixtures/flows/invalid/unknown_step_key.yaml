@@ -1,0 +1,9 @@
+# expect: steps.sim.resorces: unknown key 'resorces'; did you mean 'resources'? @ 9:5
+# schema: reject
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    resorces: { cpus: 1 }

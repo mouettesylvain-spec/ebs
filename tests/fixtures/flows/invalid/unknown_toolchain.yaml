@@ -1,0 +1,11 @@
+# expect: steps.sim.toolchain: unknown toolchain 'questaa'; did you mean 'questa'? @ 11:16
+# schema: accept
+version: 1
+project: demo
+domain: public
+toolchains:
+  questa: { module: questa/2025.2 }
+steps:
+  sim:
+    kind: shell
+    toolchain: questaa

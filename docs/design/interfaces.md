@@ -91,6 +91,17 @@ architecture.md "Flow description format". Additional P0 fields: `env: dict[str,
 `script: str | None` (shell), `command: list[str] | None`, `workdir`, `target` (make), `debug`,
 `config_files: dict[str, str]` (tool config files written into scratch, e.g. `modelsim.ini`).
 
+Model details (P0-04):
+- YAML lists become tuples (`command`, `debug.collect`, `matrix.cross`/`zip_`/`id`).
+- Python names differ where YAML keys are keywords or builtins: `ImportDef.from_` (`from`) and `MatrixDef.zip_` (`zip`). `MatrixDef.tables` returns the table paths in order.
+- Steps also have `licenses: dict[str, int]`, and `ToolchainRef` has `licenses` and `resources`.
+- `debug` is a `DebugDef(collect, max_size, on_success)`.
+- `OutputDef(file | dir, deterministic=True, optional=False)` accepts the short form `name: path`.
+- `Resources.cpus`, `mem` and `time` are an `int` (count, bytes, seconds) or, when the value holds a `${…}` reference, the verbatim string.
+- The planner parses a resolved resource string with `ebs.flow.model.parse_memory` / `parse_duration`.
+- `model_dump()` emits the YAML spelling again (`8G`, `30m`, `from`, `zip`), so the result re-validates.
+- `ebs.flow.model.check_ref_syntax(s) -> str | None` validates the grammar below without resolving anything.
+
 ### Interpolation grammar (`ebs.flow.interp`)
 
 `${…}` references, resolved at plan time, never by a shell:
@@ -105,7 +116,9 @@ path     := "row." IDENT
 rowsel   := IDENT "=" VALUE ("," IDENT "=" VALUE)*
 ```
 
-`$${` escapes a literal `${`. Unknown refs are errors with a "did you mean" suggestion. Output
+In `steps.` refs, step and output names use the name rule `[a-z][a-z0-9_]{0,62}`. A `VALUE` has no
+`,`, `[`, `]`, `{`, `}`, `$`, `=` or whitespace. A `globtail` is non-empty. Strings are scanned left
+to right: `$${` escapes a literal `${`, and every other `${` must be closed by the next `}`. Unknown refs are errors with a "did you mean" suggestion. Output
 refs create DAG edges. `[*]` means "all matrix instances of that step" (fan-in).
 
 ## 4. Plan — `ebs.plan`

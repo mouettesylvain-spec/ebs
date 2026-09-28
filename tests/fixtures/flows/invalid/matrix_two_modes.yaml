@@ -1,0 +1,9 @@
+# expect: steps.sim.matrix: exactly one of 'table', 'cross' or 'zip' is required @ 9:13
+# schema: reject
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    matrix: { table: a.csv, zip: [b.csv, c.csv] }

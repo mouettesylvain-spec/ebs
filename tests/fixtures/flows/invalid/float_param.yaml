@@ -1,0 +1,9 @@
+# expect: steps.sim.params.ratio: floats are not allowed @ 9:22
+# schema: reject
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    params: { ratio: 1.5 }

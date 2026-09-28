@@ -1,0 +1,8 @@
+# expect: steps.Sim: step name 'Sim' must match @ 7:3
+# schema: reject
+version: 1
+project: demo
+domain: public
+steps:
+  Sim:
+    kind: shell

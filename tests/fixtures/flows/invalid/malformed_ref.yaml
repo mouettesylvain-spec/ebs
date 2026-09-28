@@ -1,0 +1,9 @@
+# expect: steps.sim.command.1: malformed reference '${row.}' @ 9:20
+# schema: accept
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    command: [run, "${row.}"]

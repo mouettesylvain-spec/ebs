@@ -1,0 +1,9 @@
+# expect: steps.sim.resources.cpus: cpus must be a positive integer @ 9:24
+# schema: reject
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    resources: { cpus: -2 }

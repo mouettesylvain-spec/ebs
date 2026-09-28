@@ -1,0 +1,9 @@
+# expect: steps.sim.outputs.r: exactly one of 'file' or 'dir' is required @ 9:19
+# schema: reject
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    outputs: { r: { optional: true } }

@@ -1,6 +1,6 @@
 # P0-04 — Flow model, YAML loader, JSON Schema
 
-Status: todo · Phase: 0 · Depends on: P0-01 · Parallel-safe with: P0-02, P0-11 · Size: M
+Status: review · Phase: 0 · Depends on: P0-01 · Parallel-safe with: P0-02, P0-11 · Size: M
 
 ## Goal
 `flow.yaml` files load into validated, immutable Pydantic models with precise `file:line:col` errors,
@@ -59,4 +59,24 @@ Models per interfaces.md §3; `extra="forbid"`, `frozen=True`.
 | `test_schema.py::test_committed_schema_up_to_date`, `::test_fixtures_vs_schema` | R9 | unit |
 
 ## Done when
-- [ ] `make check` passes; ≥ 12 invalid fixtures covering distinct error kinds
+- [x] `make check` passes; ≥ 12 invalid fixtures covering distinct error kinds
+
+## Notes
+- Dependencies: `pydantic>=2.11` (`serialize_by_alias`, `json_schema_input_type`) and `ruamel.yaml`
+  (runtime, both on the allowed list); `jsonschema` (dev, mandated by R9, added to overview.md).
+  jsonschema ships no type stubs, so pyproject has a mypy `ignore_missing_imports` override for it.
+- The loader only *composes* YAML and builds plain data from the node graph itself: tag allowlist
+  (core schema + merge), own duplicate-key check (R4), merge semantics, alias-expansion cap
+  (`MAX_NODES`), `%YAML` directives other than 1.2 rejected (1.1 would turn `yes` into a boolean).
+- Choices made here (no open decision involved): `domain` is required; bare numbers for `mem`/`time`
+  are rejected as ambiguous (SLURM reads them as MiB/minutes); floats and unquoted timestamps are
+  rejected with a "quote it" hint; a step's `toolchain` must be declared; `script`/`command` are
+  mutually exclusive; `cross`/`zip` need ≥ 2 tables; `imports` need exactly one of
+  `channel`/`version`; output and config-file paths must be relative without `..`.
+- `model_dump()` re-emits the YAML dialect (`8G`, `30m`, aliases `from`/`zip`) and re-validates.
+- Follow-ups for P0-05: re-check `RelPath` values (outputs, config files) after interpolation
+  (`${row.x}/..` passes today); decide whether never-interpolated strings (`toolchains.*.module`,
+  `steps.*.toolchain`, import `channel`/`version`, matrix `filter` keys/`id`) should reject `${`.
+  `check_ref_syntax` scans left to right, with `$${` as the escape; `interp.parse_template` must
+  follow the same rule.
+- Follow-up for P2-03: `load_flow(..., lock=)` is accepted but not read yet.

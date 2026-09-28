@@ -1,0 +1,9 @@
+# expect: YAML tag '!include' is not allowed @ 9:13
+# schema: n/a
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    script: !include other.sh

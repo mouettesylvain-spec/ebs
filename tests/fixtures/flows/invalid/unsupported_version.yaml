@@ -1,0 +1,6 @@
+# expect: unsupported flow version 2; supported versions: 1 @ 3:10
+# schema: reject
+version: 2
+project: demo
+domain: public
+steps: {}

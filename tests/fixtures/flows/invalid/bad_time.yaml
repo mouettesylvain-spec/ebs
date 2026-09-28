@@ -1,0 +1,10 @@
+# expect: steps.sim.resources.time: invalid time '90x' @ 10:13
+# schema: reject
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    resources:
+      time: 90x
