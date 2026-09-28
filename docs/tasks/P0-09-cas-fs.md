@@ -56,3 +56,9 @@ interfaces.md §5.
 
 ## Done when
 - [ ] `make check` and `make check-all` pass; `ebs.cas` ≥ 95 % line coverage
+
+## Notes
+- From P0-03: tree manifests read back from the CAS are not re-checked against a filesystem, and a
+  link can stay inside lexically while a chain of links escapes. Materialization must create
+  symlinks last and never write through or follow a symlink (open with `O_NOFOLLOW`, or check
+  each parent with `lstat`).

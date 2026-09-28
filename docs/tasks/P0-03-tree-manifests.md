@@ -1,6 +1,6 @@
 # P0-03 — Tree manifests
 
-Status: todo · Phase: 0 · Depends on: P0-02 · Parallel-safe with: P0-05, P0-07, P0-10 · Size: S
+Status: review · Phase: 0 · Depends on: P0-02 · Parallel-safe with: P0-05, P0-07, P0-10 · Size: S
 
 ## Goal
 Directories get a content identity (Merkle tree of canonical JSON manifests) so directory inputs and
@@ -48,4 +48,17 @@ interfaces.md §2.
 | `::test_hasher_injected_is_used` | R8 | unit |
 
 ## Done when
-- [ ] `make check` passes; `ebs.core` ≥ 95 % coverage
+- [x] `make check` passes; `ebs.core` ≥ 95 % coverage (tree.py 100 % line and branch)
+
+## Notes
+- Entry JSON holds only the fields of its type, so an inconsistent entry (e.g. a symlink with a
+  digest) cannot even be written; `from_json` requires the exact key set.
+- Manifests are always hashed with sha256 (the contract's `build_tree` has no `algo`), even when
+  the injected hasher returns blake3 file digests. Revisit if blake3 becomes a default.
+- Symlink escapes are checked twice: lexically (also rejects `../<root-name>/x`, which only
+  resolves inside because of the root's own name) and with `realpath` (catches chains such as
+  `sub/up -> ..` plus `x -> sub/up/..`). Manifests from the CAS can't be checked this way; P0-09
+  got a note that materialization must not follow symlinks.
+- Owner/group independence (I5) is not varied by the test: that needs root. The code never reads
+  st_uid/st_gid.
+- `TreeError` added to `ebs.core.errors` and interfaces.md §11.

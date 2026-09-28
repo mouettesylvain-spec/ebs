@@ -16,6 +16,7 @@ SUBCLASSES = [
     "ExecutorError",
     "RuleError",
     "SandboxError",
+    "TreeError",
 ]
 
 
