@@ -1,0 +1,16 @@
+# Install with `uvx pre-commit install`. `make check` stays the authoritative gate.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy --strict (staged files)
+        entry: uv run --frozen --extra dev mypy --strict
+        language: system
+        types: [python]
+        exclude: ^docs/

@@ -1,6 +1,6 @@
 # P0-01 — Repository scaffold and quality gates
 
-Status: todo · Phase: 0 · Depends on: — · Parallel-safe with: — · Size: M
+Status: review · Phase: 0 · Depends on: — · Parallel-safe with: — · Size: M
 
 ## Goal
 A clean, installable `ebs` package with every quality gate wired, so all later tasks only add code
@@ -61,10 +61,44 @@ Any functional code. The CLI has only `--version`.
 | R2 is verified by running `make check` with an intentionally failing ruff sample in a scratch copy (document the command in the MR) | R2 | manual evidence |
 
 ## Done when
-- [ ] `make check` passes on a fresh clone
-- [ ] CI pipeline file validates (`gitlab-ci-lint` not required; YAML parses and stages match testing.md)
-- [ ] Status updated
+- [x] `make check` passes on a fresh clone
+- [x] CI pipeline file validates (`gitlab-ci-lint` not required; YAML parses and stages match testing.md)
+- [x] Status updated
 
 ## Notes
 - D3: GitLab CI by default.
 - mypy strict settings: `disallow_any_explicit = false` (Pydantic), everything else strict.
+- R2 evidence (for the MR): in a scratch copy (`git ls-files -co --exclude-standard` copied out, no
+  `.venv`), `make check` exits 0. Then, one at a time, add a sample and rerun `make check`; each
+  exits 2 at its own stage:
+  - `import os` in `src/ebs/core/bad.py` fails ruff check (F401).
+  - `x = [1,2]` fails ruff format.
+  - an untyped `def f(x)` fails mypy.
+  - `from ebs.cli import main` inside core fails lint-imports (layering BROKEN).
+  - `assert 1 + 1 == 3` in `tests/unit` fails pytest.
+  - an untested function in core fails `coverage_gate` (core 94.5 % < 95 %).
+- Layering: import-linter rejects overlapping layers and missing *source* modules. So `meta` (store
+  L2 / service L4) and `toolchain` (fingerprint L1 / registry L3) are pinned with forbidden
+  contracts instead of the layers contract. `src/ebs/toolchain/fingerprint.py` is a docstring
+  placeholder for P0-07. Forbidden *targets* that don't exist yet (`plan.planner`, `meta.service`,
+  `toolchain.registry`) start being enforced as soon as a later task creates them.
+- CI-strict convention: a missing dependency is signalled with `pytest.skip("missing dependency: …")`
+  or `pytest.importorskip`. With `CI=true` that becomes a failure for tests under
+  `tests/integration`, `tests/e2e`, or marked `integration`. Any collected test with no layer
+  marker is a usage error, so it can't silently drop out of every `-m` selection.
+- Coverage `source` is the `src/ebs` directory, so modules that are never imported count as
+  uncovered. `coverage_gate.py` fails if a gated package exists on disk but is missing from the report.
+- `make` uses `uv run --frozen --extra dev`, so a fresh clone needs no prior `uv sync`.
+- I17 scanner flags any `shell=` keyword that isn't a literal falsy value, whatever the callee
+  (injected runners, aliases, `partial`). It also flags `*subprocess_shell`, `os.system/popen`,
+  `subprocess.getoutput`, and `[sh, -c, …]` argv.
+
+### Follow-ups
+- P0-10: remove `|| [ $? -eq 5 ]` (tolerates zero integration tests) from the `integration` job in
+  `.gitlab-ci.yml`.
+- P0-13: add a contract for overview.md's "runner entry point imports only stdlib + pydantic +
+  httpx + core/cas/runner" once the runner's metadata-client dependency is settled.
+- P1-12: mutmut 3.x reads `paths_to_mutate` from `[tool.mutmut]`; move it there when enabling nightly.
+- Agent kit: `scripts/claude-*.sh` show a mode change 644 → 755 in the working tree (needed for the
+  hooks to run). Not included in this commit; the human should decide whether to commit it.
+
