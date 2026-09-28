@@ -33,6 +33,16 @@ Canonical JSON rules (RFC 8785 subset): UTF-8, no insignificant whitespace, obje
 UTF-16 code units, strings NFC-normalized **by the caller** (canon rejects non-NFC input with
 `CanonError` rather than silently normalizing), integers only (floats rejected: parameters are
 strings or ints), `true/false/null`, no NaN. Duplicate keys impossible (dict input).
+Integers must lie within ±(2**53 − 1), the range JCS numbers represent exactly, so the output is
+byte-identical to any RFC 8785 implementation; larger values are passed as strings. Tuples encode
+exactly like lists. Rejections raise `CanonError` naming the JSON path (`$.params.seed`).
+
+```python
+# ebs.core.types
+JsonValue: TypeAlias = (
+    "dict[str, JsonValue] | list[JsonValue] | tuple[JsonValue, ...] | str | int | bool | None"
+)
+```
 
 ## 2. Tree manifests — `ebs.core.tree`
 

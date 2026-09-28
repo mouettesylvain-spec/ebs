@@ -1,0 +1,13 @@
+{
+  "description": "RFC 8785 3.2.3 key-sorting example; U+FB33 replaced by U+FF21 because U+FB33 is not NFC",
+  "input": {
+    "\u20ac": "Euro Sign",
+    "\r": "Carriage Return",
+    "\uff21": "Fullwidth Latin Capital Letter A",
+    "1": "One",
+    "\ud83d\ude00": "Emoji: Grinning Face",
+    "\u0080": "Control",
+    "\u00f6": "Latin Small Letter O With Diaeresis"
+  },
+  "expected": "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\u0080\":\"Control\",\"\u00f6\":\"Latin Small Letter O With Diaeresis\",\"\u20ac\":\"Euro Sign\",\"\ud83d\ude00\":\"Emoji: Grinning Face\",\"\uff21\":\"Fullwidth Latin Capital Letter A\"}"
+}

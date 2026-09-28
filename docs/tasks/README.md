@@ -11,8 +11,8 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 
 | ID | Task | Depends on | Wave | Status |
 | --- | --- | --- | --- | --- |
-| P0-01 | Repository scaffold and quality gates | — | 1 | review |
-| P0-02 | Digests and canonical JSON | P0-01 | 2 | todo |
+| P0-01 | Repository scaffold and quality gates | — | 1 | done |
+| P0-02 | Digests and canonical JSON | P0-01 | 2 | review |
 | P0-04 | Flow model, YAML loader, JSON Schema | P0-01 | 2 | todo |
 | P0-11 | PostgreSQL deployment (compose, backups, pooling) | P0-01 | 2 | todo |
 | P0-03 | Tree manifests | P0-02 | 3 | todo |

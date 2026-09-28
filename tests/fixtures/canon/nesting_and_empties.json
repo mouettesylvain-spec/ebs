@@ -1,0 +1,17 @@
+{
+  "description": "Empty containers, nesting, key ordering at every level",
+  "input": {
+    "b": [],
+    "a": {
+      "y": {},
+      "x": [
+        [],
+        {
+          "k": ""
+        }
+      ]
+    },
+    "c": ""
+  },
+  "expected": "{\"a\":{\"x\":[[],{\"k\":\"\"}],\"y\":{}},\"b\":[],\"c\":\"\"}"
+}
