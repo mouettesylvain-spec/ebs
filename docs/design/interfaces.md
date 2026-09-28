@@ -67,9 +67,16 @@ class TreeManifest:
 def build_tree(root: Path, hasher: Callable[[Path], tuple[Digest, int]]) -> tuple[Digest, dict[Digest, TreeManifest]]: ...
 ```
 
-Nested directories are separate manifests (Merkle). Field set maps 1:1 onto REAPI `Directory`
+Nested directories are separate manifests (Merkle). The field set maps onto REAPI `Directory`
 (files/directories/symlinks, `is_executable`) so a REAPI backend can be added later; the on-disk
-encoding is our canonical JSON, not protobuf.
+encoding is our canonical JSON, not protobuf. A REAPI backend must re-derive dir sizes (ours is the
+total of file bytes below; REAPI's is the serialized child size) and manifest digests. Entry JSON
+holds only the fields of its type: file `name,type,digest,size,executable`; dir
+`name,type,digest,size`; symlink `name,type,target`. Manifests are hashed with sha256.
+`build_tree` raises `TreeError` for special files, non-UTF-8/non-NFC names, symlinks whose target
+is absolute or leaves the root (lexically or through other links), and unreadable paths.
+`from_json` output is not checked against the filesystem, so consumers that materialize a tree
+(P0-09) must not follow symlinks while writing.
 
 ## 3. Flow model — `ebs.flow`
 
@@ -286,6 +293,6 @@ Lifecycle and guarantees: architecture.md "Runner lifecycle on a node".
 ## 11. Errors and CLI exit codes — `ebs.core.errors`
 
 `EbsError` → `ConfigError`, `FlowError` (has `file`, `line`, `col`), `DigestError`, `CanonError`,
-`PlanError`, `CasError`, `MetadataError`, `ExecutorError`, `RuleError`, `SandboxError`.
+`TreeError`, `PlanError`, `CasError`, `MetadataError`, `ExecutorError`, `RuleError`, `SandboxError`.
 CLI exit codes: `0` ok, `1` build finished with failed actions, `2` usage/flow error,
 `3` infrastructure error (retries exhausted), `4` internal bug (with "please report" hint).
