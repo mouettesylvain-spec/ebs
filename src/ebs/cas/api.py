@@ -39,6 +39,14 @@ class CAS(Protocol):
         """Store a directory: all blobs first, then manifests bottom-up, the root last."""
         ...
 
+    def put_manifest(self, manifest: TreeManifest) -> Digest:
+        """Store one tree manifest whose blobs and child manifests are already stored.
+
+        For trees assembled from already-stored blobs (source snapshots). A missing child
+        raises CasError, so a visible manifest is always complete (I9).
+        """
+        ...
+
     def get_tree(self, d: Digest) -> TreeManifest:
         """Read and validate a tree manifest; CasError if missing, corrupt or invalid."""
         ...

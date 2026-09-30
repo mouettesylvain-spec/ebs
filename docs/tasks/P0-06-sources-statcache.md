@@ -1,6 +1,6 @@
 # P0-06 — Source snapshot and stat cache
 
-Status: todo · Phase: 0 · Depends on: P0-03, P0-09 · Parallel-safe with: P0-13 · Size: L
+Status: review · Phase: 0 · Depends on: P0-03, P0-09 · Parallel-safe with: P0-13 · Size: L
 
 ## Goal
 Resolve declared source globs to files, give each a content id quickly (git blob ids, stat cache)
@@ -70,4 +70,35 @@ symlinks; the matched set is snapshotted as one tree preserving relative paths.
 | `test_statcache.py::test_concurrent_writers` (multiprocessing) | R9 | integration |
 
 ## Done when
-- [ ] `make check` passes; I6/I7 tests exist with the names in invariants.md
+- [x] `make check` passes; I6/I7 tests exist with the names in invariants.md
+
+## Notes
+- CONTRACT CHANGE: `CAS.put_manifest(manifest) -> Digest` (interfaces.md §5). The protocol had no
+  way to store a tree built from already-stored blobs; `put_tree` would re-read every file,
+  breaking R7 (hash while copying) and R8 (zero reads). The backend refuses a manifest whose
+  children are missing (I9). P3-07 (S3) must implement it.
+- CONTRACT CHANGE: `SourceError` → `SourceEscapeError` in `ebs.core.errors`; new interfaces.md §12
+  documents `ebs.sources`. Additive keyword args beyond the task contract: `snapshot(...,
+  optional=)`, `SourceSnapshotter(git=, rng=)`, `StatCache(racy_window_s=, busy_timeout_s=, clock=)`.
+- Stricter than R4: racy if `max(mtime_ns, ctime_ns) > recorded_at - window` (future timestamps
+  are racy too). `recorded_at` is taken before the read.
+- A read counts only if the file's stat (dev, ino, size, mtime, ctime, mode) is identical before
+  and after; otherwise it is repeated (3 attempts, then `SourceError`).
+- Git guard hardening: the `git_blob -> sha256` map is written only after the CAS bytes re-hash to
+  that git blob id, and a map hit needs the file size to match (LFS/eol filters). Entries tagged
+  assume-unchanged / skip-worktree (`ls-files -v`) are never trusted; git runs with
+  `core.fsmonitor=false` and without repo-redirecting `GIT_*` env vars. Audits cover git hits too.
+- `test_concurrent_writers` lives in `tests/integration/test_statcache_concurrency.py` (the table
+  marks it integration; tests/unit is auto-marked unit). Extra helper files:
+  `tests/helpers/sources.py`, `tests/helpers/statcache_workers.py`, `git_repo` fixture in
+  tests/conftest.py (named by testing.md). Sources unit tests no-op the CAS fsync
+  (tests/unit/sources/conftest.py): it dominated cold snapshots (~50 s for R8's 5,000 files).
+- Follow-up (deployment/P0-16): WAL SQLite is unsafe on NFS; if `~/.cache` is on NFS, the CLI
+  should default the stat cache to local disk (e.g. `$TMPDIR` or a `[stat_cache] path` key).
+- Follow-up (P0-08/P0-16): wire `[stat_cache]` config keys and report `audit_mismatches` as the
+  `stat_audit_mismatch` event.
+- Follow-up (P0-09 tests): `FsCAS._put_manifests` dedupe branch (fs.py `if d in written: return`)
+  is covered only when Hypothesis generates identical subtrees, so cas line coverage flips
+  between 99.8 % and 100 %; add a deterministic test with two identical sub-directories.
+- Size-preserving clean/smudge filters on a checkout could still make a verified map entry wrong
+  for that checkout; the sampled audit and `--rehash` (default in CI) are the remaining guards.
