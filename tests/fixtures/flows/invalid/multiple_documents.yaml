@@ -1,0 +1,8 @@
+# expect: single YAML document @ 8:1
+# schema: n/a
+version: 1
+project: demo
+domain: public
+steps: {}
+---
+version: 1

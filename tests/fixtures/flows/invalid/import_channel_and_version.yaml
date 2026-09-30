@@ -1,0 +1,8 @@
+# expect: imports.rtl: exactly one of 'channel' or 'version' is required @ 7:8
+# schema: reject
+version: 1
+project: demo
+domain: public
+imports:
+  rtl: { from: rtl-team/cpu, channel: stable, version: '1.0' }
+steps: {}

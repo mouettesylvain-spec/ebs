@@ -1,0 +1,9 @@
+# expect: unterminated reference @ 9:13
+# schema: accept
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    script: "echo ${row.x"

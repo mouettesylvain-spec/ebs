@@ -1,0 +1,54 @@
+# Every P0 step field (interfaces.md §3) in one flow.
+version: 1
+project: demo-cpu
+domain: public
+
+toolchains:
+  verilator: { module: verilator/5.030, resources: { cpus: 2, mem: 2G, time: 10m } }
+
+steps:
+  gen_filelist:
+    kind: shell
+    script: |
+      ls rtl/*.sv > filelist.f
+      echo "literal $${HOME} is passed to bash"
+    inputs: { rtl: "rtl/**/*.sv" }
+    outputs: { filelist: filelist.f }
+    resources: { time: 1-00:00:00 }
+
+  lint:
+    kind: shell
+    toolchain: verilator
+    command: [verilator, --lint-only, "-f", "${steps.gen_filelist.outputs.filelist}"]
+    env: { VERILATOR_OPTS: "-Wall", SEED: "${params.seed}" }
+    params: { seed: 17, strict: true, top: core }
+    config_files: { lint.vlt: "`verilator_config\nlint_off -rule UNUSED\n" }
+    outputs:
+      report: { file: lint.rpt, deterministic: true, optional: false }
+      work: { dir: "obj_${params.top}", deterministic: false }
+    debug: { collect: ["*.log"], max_size: 512M, on_success: true }
+    licenses: { none_needed: 1 }
+    resources: { cpus: 4, mem: 1T, time: 2h }
+
+  wrapped:
+    kind: make
+    workdir: flows/lint
+    target: lint
+    inputs:
+      flow: ["flows/lint/**", "flows/common.mk"]
+      lintrpt: "${steps.lint.outputs.report}"
+    outputs: { reports: { dir: reports/lint } }
+
+  sweep:
+    kind: shell
+    matrix: { cross: [tests.csv, seeds.csv], filter: { test: [smoke, alu] }, id: [test, seed] }
+    command: [run, "${row.test}", "${row.seed}"]
+    inputs: { one: "${steps.lint.outputs.report[test=smoke,seed=1]}" }
+    outputs: { result: result.json }
+    resources: { time: "${row.timeout}", mem: "${row.mem}", cpus: "${row.cpus}" }
+
+  zipped:
+    kind: shell
+    matrix: { zip: [a.csv, b.csv], filter: { mode: fast } }
+    command: [echo, "${row.mode}", "${env.USER_SET}"]
+    env: { USER_SET: x }

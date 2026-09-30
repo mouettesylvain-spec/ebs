@@ -1,0 +1,9 @@
+# expect: steps.sim.params.day: unquoted date/time @ 9:20
+# schema: n/a
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    params: { day: 2026-09-01 }
