@@ -20,6 +20,8 @@ classifiers = [
 dependencies = [
     "typer>=0.12",
     "structlog>=24.1",
+    "pydantic>=2.11",
+    "ruamel-yaml>=0.18",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +36,7 @@ dev = [
     "import-linter>=2.1",
     "mypy>=1.11",
     "ruff>=0.6",
+    "jsonschema>=4.22",
 ]
 
 [project.scripts]
@@ -66,6 +69,10 @@ warn_unreachable = true
 mypy_path = "src:."
 explicit_package_bases = true
 files = ["src", "tests", "scripts"]
+
+[[tool.mypy.overrides]]
+module = ["jsonschema", "jsonschema.*"]  # test-only dependency without type stubs (P0-04)
+ignore_missing_imports = true
 
 # --- pytest -----------------------------------------------------------------------------------
 [tool.pytest.ini_options]

@@ -1,0 +1,611 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ebs:schema:flow:v1",
+  "$defs": {
+    "DebugDef": {
+      "additionalProperties": false,
+      "description": "Files copied to the debug area: always on failure, on success only if `on_success`.",
+      "properties": {
+        "collect": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Collect",
+          "type": "array"
+        },
+        "max_size": {
+          "anyOf": [
+            {
+              "pattern": "^[1-9][0-9]*[KMGT](iB)?$",
+              "type": "string"
+            },
+            {
+              "pattern": "\\$\\{",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Size"
+        },
+        "on_success": {
+          "default": false,
+          "title": "On Success",
+          "type": "boolean"
+        }
+      },
+      "title": "DebugDef",
+      "type": "object"
+    },
+    "ImportDef": {
+      "additionalProperties": false,
+      "description": "Another team's release, consumed by channel or exact version (pinned in `flow.lock`).",
+      "oneOf": [
+        {
+          "required": [
+            "channel"
+          ]
+        },
+        {
+          "required": [
+            "version"
+          ]
+        }
+      ],
+      "properties": {
+        "from": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)+$",
+          "title": "From",
+          "type": "string"
+        },
+        "channel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channel"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        }
+      },
+      "required": [
+        "from"
+      ],
+      "title": "ImportDef",
+      "type": "object"
+    },
+    "MatrixDef": {
+      "additionalProperties": false,
+      "description": "Expands a step over table rows: one table, a cartesian product (`cross`) or `zip`.",
+      "oneOf": [
+        {
+          "required": [
+            "table"
+          ]
+        },
+        {
+          "required": [
+            "cross"
+          ]
+        },
+        {
+          "required": [
+            "zip"
+          ]
+        }
+      ],
+      "properties": {
+        "table": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Table"
+        },
+        "cross": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 2,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cross"
+        },
+        "zip": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 2,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Zip"
+        },
+        "filter": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ]
+          },
+          "default": {},
+          "title": "Filter",
+          "type": "object"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        }
+      },
+      "title": "MatrixDef",
+      "type": "object"
+    },
+    "OutputDef": {
+      "additionalProperties": false,
+      "description": "A declared output: a file or a directory relative to the action's working directory.\n\n`deterministic: false` makes consumers key on the producer's action key instead of the\noutput bytes (architecture.md § Nondeterministic outputs).",
+      "oneOf": [
+        {
+          "required": [
+            "file"
+          ]
+        },
+        {
+          "required": [
+            "dir"
+          ]
+        }
+      ],
+      "properties": {
+        "file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File"
+        },
+        "dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dir"
+        },
+        "deterministic": {
+          "default": true,
+          "title": "Deterministic",
+          "type": "boolean"
+        },
+        "optional": {
+          "default": false,
+          "title": "Optional",
+          "type": "boolean"
+        }
+      },
+      "title": "OutputDef",
+      "type": "object"
+    },
+    "Resources": {
+      "additionalProperties": false,
+      "description": "Scheduler resources. Excluded from action keys (architecture.md § Hashing).",
+      "properties": {
+        "cpus": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "pattern": "\\$\\{",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cpus"
+        },
+        "mem": {
+          "anyOf": [
+            {
+              "pattern": "^[1-9][0-9]*[KMGT](iB)?$",
+              "type": "string"
+            },
+            {
+              "pattern": "\\$\\{",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mem"
+        },
+        "time": {
+          "anyOf": [
+            {
+              "pattern": "^([0-9]+[smhd]|[0-9]+-[0-9]{1,2}(:[0-9]{2}){0,2}|[0-9]+(:[0-9]{2}){1,2})$",
+              "type": "string"
+            },
+            {
+              "pattern": "\\$\\{",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Time"
+        }
+      },
+      "title": "Resources",
+      "type": "object"
+    },
+    "StepDef": {
+      "additionalProperties": false,
+      "description": "One step of the flow; `kind` selects the rule (checked per kind in P0-12).",
+      "properties": {
+        "kind": {
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "toolchain": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Toolchain"
+        },
+        "matrix": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MatrixDef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "inputs": {
+          "default": {},
+          "patternProperties": {
+            "^[A-Za-z_][A-Za-z0-9_]*$": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              ]
+            }
+          },
+          "title": "Inputs",
+          "type": "object",
+          "additionalProperties": false
+        },
+        "params": {
+          "default": {},
+          "patternProperties": {
+            "^[A-Za-z_][A-Za-z0-9_]*$": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            }
+          },
+          "title": "Params",
+          "type": "object",
+          "additionalProperties": false
+        },
+        "outputs": {
+          "default": {},
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,62}$": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/OutputDef"
+                }
+              ]
+            }
+          },
+          "title": "Outputs",
+          "type": "object",
+          "additionalProperties": false
+        },
+        "resources": {
+          "$ref": "#/$defs/Resources",
+          "default": {
+            "cpus": null,
+            "mem": null,
+            "time": null
+          }
+        },
+        "licenses": {
+          "default": {},
+          "patternProperties": {
+            "^[A-Za-z0-9_][A-Za-z0-9_.@-]*$": {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            }
+          },
+          "title": "Licenses",
+          "type": "object",
+          "additionalProperties": false
+        },
+        "env": {
+          "default": {},
+          "patternProperties": {
+            "^[A-Za-z_][A-Za-z0-9_]*$": {
+              "type": "string"
+            }
+          },
+          "title": "Env",
+          "type": "object",
+          "additionalProperties": false
+        },
+        "script": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Script"
+        },
+        "command": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command"
+        },
+        "workdir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workdir"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target"
+        },
+        "debug": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DebugDef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "config_files": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "title": "Config Files",
+          "type": "object"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "StepDef",
+      "type": "object"
+    },
+    "ToolchainRef": {
+      "additionalProperties": false,
+      "description": "A toolchain the flow uses: module name + version, license features, default resources.",
+      "properties": {
+        "module": {
+          "minLength": 1,
+          "title": "Module",
+          "type": "string"
+        },
+        "licenses": {
+          "default": {},
+          "patternProperties": {
+            "^[A-Za-z0-9_][A-Za-z0-9_.@-]*$": {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            }
+          },
+          "title": "Licenses",
+          "type": "object",
+          "additionalProperties": false
+        },
+        "resources": {
+          "$ref": "#/$defs/Resources",
+          "default": {
+            "cpus": null,
+            "mem": null,
+            "time": null
+          }
+        }
+      },
+      "required": [
+        "module"
+      ],
+      "title": "ToolchainRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "EBS flow description (flow.yaml), version 1.",
+  "properties": {
+    "version": {
+      "enum": [
+        1
+      ],
+      "title": "Version",
+      "type": "integer"
+    },
+    "project": {
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+      "title": "Project",
+      "type": "string"
+    },
+    "domain": {
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+      "title": "Domain",
+      "type": "string"
+    },
+    "imports": {
+      "default": {},
+      "patternProperties": {
+        "^[A-Za-z_][A-Za-z0-9_]*$": {
+          "$ref": "#/$defs/ImportDef"
+        }
+      },
+      "title": "Imports",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "toolchains": {
+      "default": {},
+      "patternProperties": {
+        "^[A-Za-z_][A-Za-z0-9_]*$": {
+          "$ref": "#/$defs/ToolchainRef"
+        }
+      },
+      "title": "Toolchains",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "steps": {
+      "default": {},
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,62}$": {
+          "$ref": "#/$defs/StepDef"
+        }
+      },
+      "title": "Steps",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "version",
+    "project",
+    "domain"
+  ],
+  "title": "EBS flow",
+  "type": "object"
+}

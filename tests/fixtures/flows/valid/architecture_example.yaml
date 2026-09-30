@@ -1,0 +1,47 @@
+version: 1
+project: rv32x-cpu
+domain: cpu-nda            # confidentiality domain
+
+imports:
+  rtl: { from: rtl-team/cpu, channel: stable }   # pinned in flow.lock
+
+toolchains:
+  questa:   { module: questa/2025.2, licenses: { msimhdlsim: 1 } }
+  spyglass: { module: vc_spyglass/2025.06, licenses: { vcspyglass: 1 } }
+
+steps:
+  compile:
+    kind: questa.compile
+    toolchain: questa
+    matrix: { table: libs.csv }                 # one action per library: lib, filelist
+    inputs:
+      srcs: "${imports.rtl}/**/*.sv"
+      filelist: "${imports.rtl}/${row.filelist}"
+    params: { lib: "${row.lib}", vlog_opts: "-sv -timescale 1ns/1ps" }
+    outputs: { worklib: { dir: "work/${row.lib}", deterministic: false } }
+    resources: { cpus: 2, mem: 8G, time: 30m }
+
+  elab:
+    kind: questa.opt
+    toolchain: questa
+    inputs: { libs: "${steps.compile.outputs.worklib[*]}" }
+    params: { top: tb_top }
+    outputs: { model: { dir: opt, deterministic: false } }
+
+  sim:
+    kind: questa.sim
+    toolchain: questa
+    matrix: { table: tests/regression.csv }     # test, seed, plusargs, timeout
+    inputs: { model: "${steps.elab.outputs.model}" }
+    params: { test: "${row.test}", seed: "${row.seed}", plusargs: "${row.plusargs}" }
+    outputs: { result: result.json, cov: { file: cov.ucdb, optional: true } }
+    debug: { collect: ["transcript", "*.log"], max_size: 2G }
+    resources: { cpus: 1, mem: 4G, time: "${row.timeout}" }
+
+  lint_legacy:                                  # wraps an existing Makefile as-is
+    kind: make
+    workdir: flows/lint
+    target: lint
+    inputs: { rtl: "${imports.rtl}/**", flow: "flows/lint/**" }
+    outputs: { reports: { dir: reports/lint } }
+    toolchain: spyglass

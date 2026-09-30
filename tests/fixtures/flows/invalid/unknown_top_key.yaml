@@ -1,0 +1,6 @@
+# expect: unknown key 'step'; did you mean 'steps'? @ 6:1
+# schema: reject
+version: 1
+project: demo
+domain: public
+step: {}

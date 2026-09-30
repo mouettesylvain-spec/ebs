@@ -1,0 +1,10 @@
+# expect: duplicate key 'sim' @ 9:3
+# schema: n/a
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+  sim:
+    kind: make

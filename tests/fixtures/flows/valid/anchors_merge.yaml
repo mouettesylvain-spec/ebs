@@ -1,0 +1,14 @@
+version: 1
+project: demo
+domain: public
+
+steps:
+  a: &defaults
+    kind: shell
+    resources: &res { cpus: 1, mem: 512M, time: 5m }
+    command: ["true"]
+  b:
+    <<: *defaults
+    resources: { <<: *res, cpus: 8 }
+    command: ["false"]
+  c: *defaults

@@ -1,0 +1,9 @@
+# expect: steps.sim.zzzz: unknown key 'zzzz'; allowed keys: @ 9:5
+# schema: reject
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    zzzz: 1

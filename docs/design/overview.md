@@ -61,10 +61,10 @@ L5  cli
 
 ## Dependencies (allowed list)
 
-Runtime: `pydantic>=2`, `ruamel.yaml`, `typer`, `rich`, `sqlalchemy>=2`, `alembic`,
+Runtime: `pydantic>=2.11`, `ruamel.yaml`, `typer`, `rich`, `sqlalchemy>=2`, `alembic`,
 `psycopg[binary]>=3`, `fastapi`, `uvicorn`, `httpx`, `structlog`, `tomli-w`.
 Optional extras: `blake3` (`[blake3]`), `boto3` (`[s3]`, P3).
-Dev: `pytest`, `pytest-cov`, `hypothesis`, `pytest-timeout`, `pytest-xdist`, `testcontainers[postgres]`,
+Dev: `pytest`, `pytest-cov`, `hypothesis`, `jsonschema` (schema tests, P0-04), `pytest-timeout`, `pytest-xdist`, `testcontainers[postgres]`,
 `syrupy` (golden files), `import-linter`, `mypy`, `ruff`, `respx` (httpx mocks).
 The runner entry point must import only stdlib + `pydantic` + `httpx` + `core`/`cas`/`runner`.
 

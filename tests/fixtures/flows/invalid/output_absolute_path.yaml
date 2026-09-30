@@ -1,0 +1,9 @@
+# expect: steps.sim.outputs.r: output path '/tmp/r.json' must be relative @ 9:19
+# schema: accept
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    outputs: { r: /tmp/r.json }

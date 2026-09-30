@@ -1,0 +1,8 @@
+# expect: steps.sim.kind: missing required field @ 8:5
+# schema: reject
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    command: [run]

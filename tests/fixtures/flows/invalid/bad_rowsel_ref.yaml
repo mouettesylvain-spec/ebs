@@ -1,0 +1,9 @@
+# expect: malformed reference '${steps.a.outputs.r[seed]}' @ 9:18
+# schema: accept
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    inputs: { x: "${steps.a.outputs.r[seed]}" }

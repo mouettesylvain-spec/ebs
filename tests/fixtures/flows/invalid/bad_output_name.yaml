@@ -1,0 +1,9 @@
+# expect: steps.sim.outputs.Result-1: output name 'Result-1' must match @ 9:16
+# schema: reject
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    outputs: { Result-1: r.json }

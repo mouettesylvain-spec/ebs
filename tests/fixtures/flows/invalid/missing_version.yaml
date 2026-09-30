@@ -1,0 +1,5 @@
+# expect: version: missing required field @ 3:1
+# schema: reject
+project: demo
+domain: public
+steps: {}

@@ -1,0 +1,10 @@
+# expect: steps.sim.resources.mem: invalid memory '8Q' @ 10:12
+# schema: reject
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    resources:
+      mem: 8Q

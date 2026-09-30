@@ -1,0 +1,9 @@
+# expect: steps.sim.command: expected a list, got integer 42 @ 9:14
+# schema: reject
+version: 1
+project: demo
+domain: public
+steps:
+  sim:
+    kind: shell
+    command: 42

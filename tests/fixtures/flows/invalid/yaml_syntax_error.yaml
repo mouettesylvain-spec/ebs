@@ -1,0 +1,7 @@
+# expect: YAML syntax error: while parsing a flow sequence (started at 7:8) @ 8:1
+# schema: n/a
+version: 1
+project: demo
+domain: public
+steps:
+  sim: [unclosed
