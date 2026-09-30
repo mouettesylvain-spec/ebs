@@ -188,7 +188,7 @@ class CAS(Protocol):
     def local_path(self, d: Digest) -> Path | None: ...    # fs backend only; for read-only bind/symlink
     def materialize(self, d: Digest, kind: Literal["file", "tree"], dest: Path,
                     mode: Literal["copy", "hardlink", "symlink", "auto"] = "auto",
-                    copy_threshold: int = 256 << 20) -> None: ...
+                    copy_threshold: int = 256 << 20, *, writable: bool = False) -> None: ...
     def verify(self, d: Digest) -> bool: ...
     def delete(self, d: Digest) -> None: ...               # GC only
     def iter_digests(self) -> Iterator[tuple[Digest, int]]: ...   # GC only
@@ -196,6 +196,15 @@ class CAS(Protocol):
 
 fs layout: `<root>/<domain>/blobs/<algo>/<ab>/<cd>/<hex>`, `…/trees/<algo>/<ab>/<cd>/<hex>.json`,
 `…/tmp/`. Blobs mode 0444, dirs 2750 group `<domain>` (group set by the deployment, not by code).
+
+`has` is true for a blob or a tree manifest; `open`/`local_path` address blobs, `get_tree`
+manifests; `verify`, `delete` and `iter_digests` cover both. `materialize` requires that `dest`
+does not exist. `auto`: a file ≤ `copy_threshold` is copied, larger ones symlinked read-only from
+the CAS; tree files are hard links when on the same filesystem, else chosen by the same threshold.
+Files are read-only, directories writable; `writable=True` copies every file (0644/0755).
+Executable files are always copied (0555), because a link would share the blob's inode and mode.
+Tree symlinks are created last and must resolve inside `dest`, else `CasError`. The fs backend
+also has `blob_path`, `tree_path` and `cleanup_tmp(max_age=24h) -> int` (GC).
 
 ## 6. Metadata — `ebs.meta.api`
 

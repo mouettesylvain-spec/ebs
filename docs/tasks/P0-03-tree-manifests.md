@@ -1,6 +1,6 @@
 # P0-03 — Tree manifests
 
-Status: review · Phase: 0 · Depends on: P0-02 · Parallel-safe with: P0-05, P0-07, P0-10 · Size: S
+Status: done · Phase: 0 · Depends on: P0-02 · Parallel-safe with: P0-05, P0-07, P0-10 · Size: S
 
 ## Goal
 Directories get a content identity (Merkle tree of canonical JSON manifests) so directory inputs and
