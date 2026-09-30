@@ -1,6 +1,6 @@
 # P0-09 — CAS filesystem backend
 
-Status: todo · Phase: 0 · Depends on: P0-03 · Parallel-safe with: P0-12 · Size: M
+Status: review · Phase: 0 · Depends on: P0-03 · Parallel-safe with: P0-12 · Size: M
 
 ## Goal
 A content-addressed store on NFS that is safe under concurrent writers, never exposes partial objects,
@@ -55,10 +55,36 @@ interfaces.md §5.
 | `tests/contract/test_cas.py` (all of the above that are backend-agnostic) | all | contract |
 
 ## Done when
-- [ ] `make check` and `make check-all` pass; `ebs.cas` ≥ 95 % line coverage
+- [x] `make check` and `make check-all` pass; `ebs.cas` ≥ 95 % line coverage
 
 ## Notes
 - From P0-03: tree manifests read back from the CAS are not re-checked against a filesystem, and a
   link can stay inside lexically while a chain of links escapes. Materialization must create
   symlinks last and never write through or follow a symlink (open with `O_NOFOLLOW`, or check
   each parent with `lstat`).
+- Done: every tree symlink is resolved logically (`_resolve`: follows only the tree's own links,
+  with the kernel's shared budget of 40 follows) and rejected if it escapes, before any link is
+  created; symlinks are created after every file/dir; copies use `O_EXCL|O_NOFOLLOW`. The resolver
+  is property-tested against the kernel, and the 40-link boundary is pinned. On failure `dest` is
+  removed only if this call created it.
+- Follow-up (low risk): a chain of more than 40 acyclic links counts as "inside", which is right
+  for the kernel (ELOOP), but userspace resolvers without a hop limit could follow it out. We could
+  reject acyclic over-budget chains while still allowing cycles.
+- CONTRACT CHANGE (approved): `CAS.materialize` gained `*, writable: bool = False` (R7 needs it);
+  interfaces.md §5 also documents what `has`/`open`/`verify`/`delete` address.
+- Executable files are always copied (0555, or 0755 when writable), in every mode: a hard link or
+  symlink would share the blob's 0444 inode, and chmod-ing it would change the shared object.
+- Hard links share the blob inode: a tool running as the blob's owner could `chmod u+w` and
+  modify the CAS object through it. The runner's input verification (I10) and `verify` catch it
+  afterwards; the bubblewrap sandbox (P3-01) should mount the CAS read-only. Follow-up for P1-04.
+- `auto` stops trying hard links for the rest of a call after EXDEV/ENOTSUP. EMLINK (the link
+  limit on one popular blob) and EPERM (`fs.protected_hardlinks` refusing another user's blob)
+  fall back for that file only.
+- Extra test files beyond the scope list: `tests/helpers/cas.py` (sample tree + I9 checker, shared
+  by unit/contract tests), `tests/helpers/cas_workers.py` (spawn-importable worker for R3), and the
+  `cas` fixture in `tests/conftest.py` (named by docs/design/testing.md).
+- Follow-up (deployment/P2-01): interfaces.md says CAS dirs are 2750, which gives the group no
+  write permission, so a second user could not add objects to a shard dir created by the first.
+  The code leaves dir modes to umask + the setgid bit inherited from the admin-created root; the
+  deployment should use 2770 (or a umask of 007) for shared writers.
+- `cleanup_tmp` is FsCAS-only (not in the Protocol); P1-09 calls it on the fs backend.

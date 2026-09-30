@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from ebs.cas.fs import FsCAS
 from ebs.core.clock import FakeClock
 
 MARKERS = {
@@ -139,3 +140,9 @@ def pytest_make_collect_report(
 def fake_clock() -> FakeClock:
     """A FakeClock at 2026-01-01T00:00:00Z, monotonic 0.0."""
     return FakeClock()
+
+
+@pytest.fixture
+def cas(tmp_path: Path, fake_clock: FakeClock) -> FsCAS:
+    """An empty filesystem CAS for domain "test" under tmp_path (P0-09)."""
+    return FsCAS(tmp_path / "cas", "test", clock=fake_clock)
