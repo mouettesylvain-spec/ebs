@@ -6,6 +6,7 @@ Parametrized over backends; P3-07 adds the S3 backend to `BACKENDS`.
 from __future__ import annotations
 
 import os
+import stat
 from collections.abc import Callable
 from pathlib import Path
 
@@ -102,8 +103,8 @@ def test_materialize(make: Callable[[str], CAS], tmp_path: Path, writable: bool)
     dest = tmp_path / "out"
     cas.materialize(d, "tree", dest, writable=writable)
     assert (dest / "sub" / "deeper" / "c.bin").read_bytes() == bytes(range(256)) * 8
-    assert os.access(dest / "run.sh", os.X_OK)
-    assert os.access(dest / "a.txt", os.W_OK) == (writable or os.geteuid() == 0)
+    assert os.stat(dest / "run.sh").st_mode & stat.S_IXUSR
+    assert bool(os.stat(dest / "a.txt").st_mode & stat.S_IWUSR) == writable
     f = tmp_path / "single"
     cas.materialize(cas.put_bytes(b"one"), "file", f)
     assert f.read_bytes() == b"one"

@@ -94,7 +94,7 @@ def test_auto_modes(
         else:
             assert dest.is_symlink()
             assert os.readlink(dest) == str(cas.blob_path(d))
-            assert not os.access(dest, os.W_OK)
+            assert not os.stat(dest).st_mode & 0o222  # the target blob is read-only
         return
 
     if case == "tree-cross-fs":
@@ -151,7 +151,7 @@ def test_explicit_file_modes(cas: FsCAS, tmp_path: Path, mode: str) -> None:
     blob = cas.blob_path(d)
     assert dest.is_symlink() == (mode == "symlink")
     assert (dest.stat().st_ino == blob.stat().st_ino) == (mode != "copy")
-    assert not os.access(dest, os.W_OK) or os.geteuid() == 0
+    assert not os.stat(dest).st_mode & 0o222
 
 
 # R7
