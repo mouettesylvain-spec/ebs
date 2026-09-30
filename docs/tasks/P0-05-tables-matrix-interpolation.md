@@ -1,6 +1,6 @@
 # P0-05 — Parameter tables, matrix expansion, interpolation
 
-Status: todo · Phase: 0 · Depends on: P0-04 · Parallel-safe with: P0-03, P0-07, P0-10 · Size: M
+Status: review · Phase: 0 · Depends on: P0-04 · Parallel-safe with: P0-03, P0-07, P0-10 · Size: M
 
 ## Goal
 Turn a step with a `matrix` into one concrete instance per table row, with every `${row.*}`,
@@ -64,4 +64,23 @@ keys sorted, values escaped), and resolved params/env/resources.
 | `test_tables.py::test_digest_is_file_bytes` | R9 | unit |
 
 ## Done when
-- [ ] `make check` passes; parser has a Hypothesis round-trip test (`parse_template` → str → parse)
+- [x] `make check` passes (except a pre-existing P0-09 failure, see Notes); parser has a Hypothesis round-trip test (`parse_template` → str → parse)
+
+## Notes
+- Depends-on check: P0-04 is merged into main (3d12362) but README still said `review`; started anyway.
+- Contract additions (documented in interfaces.md §3 "Tables, matrix expansion, rendering"):
+  `expand_matrix` takes keyword `name` (a `StepDef` does not know its own name; the instance id
+  needs it) and an optional outer `resolver` for `${imports.*}`/`${steps.*}`; `parse_template` and
+  `render` take an optional `where: SourceLocation`; `Table` has `lines` (source line per row);
+  `StepInstance` also carries `name`, `row_origin` and `render()` for the step's other templates.
+- Design choices: expansion that yields no rows is an error; table values keep their source text
+  (YAML `007` stays `"007"`; nulls and empty rows are rejected); whitespace-only CSV lines count as
+  blank (quote a value made only of spaces); ids percent-encode keys and values (`urllib.parse.quote`);
+  resolved `Resources` keep the step's `model_fields_set` so toolchain defaults can still apply.
+- Matrix table paths must be literal and relative, without `..` (checked in `load_matrix_tables`).
+- Follow-ups:
+  - P0-09: `tests/unit/cas/test_materialize.py::test_resolve_matches_kernel` fails on main with a
+    Hypothesis counterexample (symlinks `l0 -> l1/..`, `l1 -> d/../l0/..`); not touched here.
+  - P0-08: `instance_id` can exceed NAME_MAX for wide rows; hash or shorten it before using it as a
+    path component (`<O>/<instance_id>/…`).
+  - YAML alias rows (`- *r`) report the anchor's line in error messages.
