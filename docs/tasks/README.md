@@ -18,7 +18,7 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P0-03 | Tree manifests | P0-02 | 3 | done |
 | P0-05 | Tables, matrix expansion, interpolation | P0-04 | 3 | review |
 | P0-07 | Toolchain fingerprint and env capture | P0-02 | 3 | todo |
-| P0-10 | Metadata store (schema, PG, in-memory, contract suite) | P0-02 | 3 | todo |
+| P0-10 | Metadata store (schema, PG, in-memory, contract suite) | P0-02 | 3 | review |
 | P0-09 | CAS filesystem backend | P0-03 | 4 | review |
 | P0-12 | Rule plugin API + `shell`, `make`, `tcl` rules | P0-05 | 4 | todo |
 | P0-06 | Source snapshot and stat cache | P0-03, P0-09 | 5 | review |
