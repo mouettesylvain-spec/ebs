@@ -379,7 +379,7 @@ The `Event` model is defined in `ebs.meta.api` (§ 6) and re-exported here.
 
 `EbsError` → `ConfigError`, `FlowError` (has `file`, `line`, `col`), `DigestError`, `CanonError`,
 `TreeError`, `PlanError`, `CasError`, `MetadataError`, `ExecutorError`, `RuleError`, `SandboxError`,
-`SourceError` (→ `SourceEscapeError`).
+`SourceError` (→ `SourceEscapeError`), `ToolchainError`.
 CLI exit codes: `0` ok, `1` build finished with failed actions, `2` usage/flow error,
 `3` infrastructure error (retries exhausted), `4` internal bug (with "please report" hint).
 
@@ -440,3 +440,58 @@ def resolve_glob(base: Path, pattern: str, *, optional: bool = False) -> list[st
 - Audit: `audit_fraction` of git/stat hits are re-read; a mismatch is appended to
   `audit_mismatches`, the read digest is used and the stale stat/git entry replaced or dropped.
 - Trees are stored with `CAS.put_manifest`, children first; symlinks keep their (relative) target.
+
+## 13. Toolchains — `ebs.toolchain` (P0-07)
+
+```python
+# ebs.toolchain.fingerprint (L1)
+@dataclass(frozen=True, slots=True)
+class FingerprintEntry:         # root, path (relative, "/"), kind: file|dir|symlink|other,
+    ...                         # size, mtime_ns, executable, content: Digest | None, target
+def default_content_hash(path: Path) -> bool: ...   # x bit, ELF magic, or .so/.sh/.tcl/.py
+def scan_roots(roots: Sequence[Path], *, content_hash=default_content_hash) -> list[FingerprintEntry]: ...
+def fingerprint_roots(roots: Sequence[Path], *, content_hash=default_content_hash) -> Digest: ...
+
+# ebs.toolchain.env (not importable from L0-L2)
+def capture_env(argv: Sequence[str], *, base_env: Mapping[str, str], timeout_s: float = 60.0,
+                runner: EnvRunner = run_subprocess) -> dict[str, str]: ...
+EnvRunner = Callable[[Sequence[str], Mapping[str, str], str, float], RunResult]  # cmd, env, cwd, timeout
+
+# ebs.toolchain.model
+@dataclass(frozen=True, slots=True)
+class Toolchain:
+    name: str; module: str; version: str; install_roots: tuple[Path, ...]
+    env: Mapping[str, str]      # read-only, sorted
+    fingerprint: Digest; id: Digest
+    @classmethod
+    def from_parts(cls, *, name, module, version, install_roots, env, fingerprint) -> Toolchain: ...
+def toolchain_id(module: str, version: str, fingerprint: Digest, env: Mapping[str, str]) -> Digest: ...
+class ToolchainResolver(Protocol):
+    def resolve(self, name: str, module: str) -> Toolchain: ...
+class StaticToolchainResolver:  # reads .ebs/toolchains.yaml (P0); P1-07 adds the registry
+    def __init__(self, path: Path) -> None: ...
+```
+
+- **Fingerprint**: SHA-256 over a header line `["ebs-toolchain-fingerprint", 1]` and one
+  `json.dumps(ensure_ascii=True)` line per entry, sorted by (normalized absolute root, path):
+  `[root, path, kind, size, mtime_ns, executable, content|null, target|null]`. Not canonical JSON,
+  so non-UTF-8 and non-NFC file names stay byte-exact. Roots must be absolute; duplicates count
+  once; symlinks are recorded by target and never followed. atime, uid/gid and the other mode
+  bits are not recorded. Changing the line format requires bumping `FINGERPRINT_VERSION`.
+- **Env capture**: starts from `PATH=/usr/bin:/bin`, `LANG=C.UTF-8`, a fresh empty `HOME`, plus
+  `base_env` (may override PATH/LANG; rejects HOME, names outside `[A-Za-z_][A-Za-z0-9_]*`,
+  `BASH_*` and variables bash acts on at startup: `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`,
+  `PS4`, `CDPATH`, `GLOBIGNORE`, `IFS`). Runs `bash --noprofile --norc -c <fixed script>
+  ebs-capture-env <argv…>`; the script runs `"$@"` (stdout → stderr) then
+  `builtin command -p env -0` in the same shell. Drops `VOLATILE_VARS` (`PWD`, `OLDPWD`, `SHLVL`,
+  `_`, `RANDOM`, `SECONDS`, …) and replaces the temporary HOME path with the literal `$HOME` in
+  every value.
+- **Toolchain id**: `digest_json({"module", "version", "fingerprint": str, "env"})`, with every
+  string NFC-normalized; env names that collide after normalization raise `ToolchainError`. The
+  flow-level name is not part of the id.
+- `.ebs/toolchains.yaml` is keyed by module: `{version: 1, toolchains: {<module>: {version?,
+  install_roots?, env?, fingerprint?}}}`. Relative roots resolve against the file's directory;
+  `version` defaults to the text after the last `/`; a `fingerprint` pins the digest instead of
+  walking the roots. Fingerprints are computed once per resolver. A tree checked out from version
+  control gets fresh mtimes in every clone, so demos and fixtures that need a stable id across
+  checkouts pin `fingerprint`.
