@@ -121,6 +121,40 @@ In `steps.` refs, step and output names use the name rule `[a-z][a-z0-9_]{0,62}`
 to right: `$${` escapes a literal `${`, and every other `${` must be closed by the next `}`. Unknown refs are errors with a "did you mean" suggestion. Output
 refs create DAG edges. `[*]` means "all matrix instances of that step" (fan-in).
 
+### Tables, matrix expansion, rendering (P0-05)
+
+```python
+# ebs.flow.tables
+@dataclass(frozen=True) class Table: columns: tuple[str, ...]; rows: tuple[Mapping[str, str], ...]; source: Path; digest: Digest; lines: tuple[int, ...] = ()
+def load_table(path: Path) -> Table        # .csv (RFC 4180, UTF-8, header row) or .yaml/.yml (list of flat maps)
+
+# ebs.flow.interp
+@dataclass(frozen=True) class SourceLocation: step: str | None = None; field: str | None = None; file: str | None = None
+@dataclass(frozen=True) class Ref: kind: Literal["row","params","env","imports","steps"]; name: str; glob: str | None; output: str | None; selector: "*" | tuple[tuple[str, str], ...] | None
+@dataclass(frozen=True) class Template: parts: tuple[Literal | Ref, ...]      # str(t) re-serializes; parse(str(t)) == t
+class Resolver(Protocol):
+    def resolve(self, ref: Ref, *, where: SourceLocation) -> str | list[str]: ...
+def parse_template(s: str, *, where: SourceLocation = ...) -> Template
+def render(t: Template, resolver: Resolver, *, where: SourceLocation = ...) -> str | list[str]
+class Scope(Resolver)      # one instance: row/params/env locally, imports/steps via an outer Resolver
+
+# ebs.flow.matrix
+@dataclass(frozen=True) class StepInstance: name: str; step: StepDef; row: Mapping[str, str]; instance_id: str
+    params: Mapping[str, str | int | bool | tuple[str, ...]]; env: Mapping[str, str]; resources: Resources; row_origin: str | None
+    def render(self, text: str, *, field: str, resolver: Resolver | None = None) -> str | list[str]
+def expand_matrix(step: StepDef, tables: Mapping[str, Table], *, name: str, resolver: Resolver | None = None) -> list[StepInstance]
+def load_matrix_tables(matrix: MatrixDef, base: Path) -> dict[str, Table]   # keyed by the path as written
+def make_instance_id(name: str, row: Mapping[str, str], keys: Sequence[str]) -> str
+```
+
+- Table values are the source text (no type guessing); `Table.digest` is the digest of the file bytes.
+- `instance_id` is `name[k=v,…]` over the key columns (`matrix.id`, default all) sorted, with keys and
+  values percent-encoded (`urllib.parse.quote(safe="")`), so it contains no `/` and is injective. A step
+  without a matrix has one instance whose id is the step name. Expansion that yields no rows is an error.
+- `StepInstance.resources` holds parsed values (cpus count, bytes, seconds) once `${…}` is resolved.
+- A resolved param is its YAML literal (str/int/bool) or, for a sole list-valued ref, a tuple; inside text,
+  ints render as decimal and bools as `true`/`false`.
+
 ## 4. Plan — `ebs.plan`
 
 ```python

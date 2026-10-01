@@ -16,7 +16,7 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P0-04 | Flow model, YAML loader, JSON Schema | P0-01 | 2 | review |
 | P0-11 | PostgreSQL deployment (compose, backups, pooling) | P0-01 | 2 | todo |
 | P0-03 | Tree manifests | P0-02 | 3 | done |
-| P0-05 | Tables, matrix expansion, interpolation | P0-04 | 3 | todo |
+| P0-05 | Tables, matrix expansion, interpolation | P0-04 | 3 | review |
 | P0-07 | Toolchain fingerprint and env capture | P0-02 | 3 | todo |
 | P0-10 | Metadata store (schema, PG, in-memory, contract suite) | P0-02 | 3 | todo |
 | P0-09 | CAS filesystem backend | P0-03 | 4 | review |

@@ -1,0 +1,7 @@
+# YAML table: a list of flat maps with scalar values; values stay as written
+- mode: fast
+  opt: "-O1"
+  level: 007
+- mode: full
+  opt: -O3
+  level: 1.10

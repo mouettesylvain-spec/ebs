@@ -1,0 +1,6 @@
+test,seed,plusargs,timeout
+# smoke tests first
+smoke,1,,10m
+
+smoke,2,+verbose,10m
+alu_rand,17,"+a=1,+b=2",1h
