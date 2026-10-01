@@ -17,6 +17,7 @@ SUBCLASSES = [
     "RuleError",
     "SandboxError",
     "TreeError",
+    "SourceError",
 ]
 
 
@@ -25,6 +26,10 @@ def test_hierarchy_matches_interfaces(name: str) -> None:
     cls = getattr(errors, name)
     assert issubclass(cls, EbsError)
     assert cls.__bases__ == (EbsError,)
+
+
+def test_source_escape_error_is_a_source_error() -> None:
+    assert errors.SourceEscapeError.__bases__ == (errors.SourceError,)
 
 
 def test_ebs_error_is_an_exception_with_message() -> None:

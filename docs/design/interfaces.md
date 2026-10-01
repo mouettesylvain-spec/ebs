@@ -230,6 +230,7 @@ class CAS(Protocol):
     def put_bytes(self, data: bytes) -> Digest: ...
     def put_file(self, path: Path, *, expected: Digest | None = None) -> Digest: ...
     def put_tree(self, root: Path) -> Digest: ...          # uploads blobs first, manifests last
+    def put_manifest(self, manifest: TreeManifest) -> Digest: ...  # children must be stored (I9)
     def get_tree(self, d: Digest) -> TreeManifest: ...
     def open(self, d: Digest) -> BinaryIO: ...
     def local_path(self, d: Digest) -> Path | None: ...    # fs backend only; for read-only bind/symlink
@@ -349,6 +350,65 @@ Lifecycle and guarantees: architecture.md "Runner lifecycle on a node".
 ## 11. Errors and CLI exit codes — `ebs.core.errors`
 
 `EbsError` → `ConfigError`, `FlowError` (has `file`, `line`, `col`), `DigestError`, `CanonError`,
-`TreeError`, `PlanError`, `CasError`, `MetadataError`, `ExecutorError`, `RuleError`, `SandboxError`.
+`TreeError`, `PlanError`, `CasError`, `MetadataError`, `ExecutorError`, `RuleError`, `SandboxError`,
+`SourceError` (→ `SourceEscapeError`).
 CLI exit codes: `0` ok, `1` build finished with failed actions, `2` usage/flow error,
 `3` infrastructure error (retries exhausted), `4` internal bug (with "please report" hint).
+
+## 12. Sources — `ebs.sources`
+
+```python
+@dataclass(frozen=True, slots=True)
+class SnapshotResult:
+    digest: Digest              # tree manifest of the matched paths, relative to base
+    files: tuple[str, ...]      # matched relative paths (files and symlinks), sorted
+    size: int                   # total bytes of the regular files
+
+class SourceSnapshotter:        # one per plan: git state is read once per repo and cached
+    def __init__(self, cas: CAS, statcache: StatCache, *, clock: Clock, rehash: bool = False,
+                 audit_fraction: float = 0.01, untrusted_mounts: Sequence[Path] = (),
+                 git: GitIds | Literal["auto"] | None = "auto",     # None disables the git guard
+                 rng: random.Random | None = None) -> None: ...     # audit sampling (seed in tests)
+    def snapshot(self, base: Path, pattern: str, *, optional: bool = False) -> SnapshotResult: ...
+    def snapshot_file(self, path: Path) -> Digest: ...              # follows symlinks
+    audit_mismatches: list[Path]
+
+class StatCache:                # sqlite (WAL); default_statcache_path(env) -> ~/.cache/ebs/statcache.sqlite
+    def __init__(self, db_path: Path, *, racy_window_s: float = 3.0, busy_timeout_s: float = 30.0,
+                 clock: Clock | None = None) -> None: ...   # retries a locked first open until the timeout
+    def lookup(self, st: os.stat_result, path: Path) -> Digest | None: ...
+    def store(self, st: os.stat_result, path: Path, d: Digest, recorded_at: float) -> None: ...
+    def lookup_git_blob(self, blob: str) -> tuple[Digest, int] | None: ...   # git blob id -> (sha256, size)
+    def store_git_blob(self, blob: str, d: Digest, size: int) -> None: ...
+    def forget_git_blob(self, blob: str) -> None: ...
+    def close(self) -> None: ...            # also a context manager
+
+class GitIds:                   # injected runner: Callable[[Sequence[str], Path], bytes]
+    def __init__(self, runner: GitRunner = run_git) -> None: ...
+    def blob_id(self, path: Path) -> str | None: ...   # clean tracked regular file ("H" entry, stage 0)
+
+def resolve_glob(base: Path, pattern: str, *, optional: bool = False) -> list[str]: ...
+```
+
+- Stat cache I/O failures after opening are logged and treated as misses / skipped writes; an
+  unopenable database raises `SourceError`. Keep the database on local disk (WAL needs shared
+  memory; it is unsafe on NFS).
+- The git guard ignores assume-unchanged and skip-worktree entries (`ls-files -v` tags other
+  than `H`) and runs git with `core.fsmonitor=false`.
+- A symlink whose target is inside the base but not matched by the pattern is snapshotted as a
+  dangling link; the tool fails loudly unless another input provides the target.
+
+- Globs: `**` = zero or more directories; `*`, `?`, `[…]` within a segment; hidden names match
+  only a segment starting with `.`; a matched directory means `dir/**`; `**` never follows
+  symlinks. No match raises `SourceError` unless `optional`. Absolute patterns, escaping `..` and
+  symlinks resolving outside `base` raise `SourceEscapeError` (pattern + resolved path).
+- File id order: git (clean tracked regular file; blob id mapped through the persistent map, size
+  must match) → stat cache (key `(dev, ino, size, mtime_ns, ctime_ns, path)`; miss if
+  `max(mtime, ctime) > recorded_at - racy_window_s`) → read. `rehash` or an untrusted mount
+  (compared lexically and after `realpath`) skips git and the stat cache.
+- A read is `CAS.put_file` (hash while copying); it counts only if the file's stat is identical
+  before and after, else it is retried (3 attempts, then `SourceError`). `recorded_at` is taken
+  before the read. A git mapping is stored only after the CAS bytes re-hash to that git blob id.
+- Audit: `audit_fraction` of git/stat hits are re-read; a mismatch is appended to
+  `audit_mismatches`, the read digest is used and the stale stat/git entry replaced or dropped.
+- Trees are stored with `CAS.put_manifest`, children first; symlinks keep their (relative) target.

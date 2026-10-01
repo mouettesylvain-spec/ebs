@@ -431,3 +431,65 @@ def test_read_errors_wrapped(cas: FsCAS, tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.setattr("builtins.open", eio_open)
     with pytest.raises(CasError, match=r"Input/output error"):
         cas.verify(d)
+
+
+# P0-06: storing a manifest whose children are already stored (I9 enforced by the backend)
+def test_put_manifest(cas: FsCAS, tmp_path: Path) -> None:
+    root = sample_tree(tmp_path / "src")
+    expected = cas.put_tree(root)
+    manifests = build_tree(root, hash_file)[1]
+    other = FsCAS(tmp_path / "cas2", "test")
+    for d in (expected, *sorted(manifests)):
+        for entry in manifests[d].entries:
+            if entry.type == "file" and entry.digest is not None:
+                other.put_bytes(cas.open(entry.digest).read())
+    # children first, root last, as the contract requires; re-putting is a no-op
+    written: list[Digest] = []
+
+    def put(d: Digest) -> None:
+        for entry in manifests[d].entries:
+            if entry.type == "dir" and entry.digest is not None:
+                put(entry.digest)
+        if d not in written:
+            assert other.put_manifest(manifests[d]) == d
+            written.append(d)
+
+    put(expected)
+    assert other.put_manifest(manifests[expected]) == expected
+    assert other.get_tree(expected) == manifests[expected]
+
+
+# P0-06 (I9)
+def test_put_manifest_rejects_missing_children(cas: FsCAS, tmp_path: Path) -> None:
+    root = sample_tree(tmp_path / "src")
+    digest, manifests = build_tree(root, hash_file)
+    with pytest.raises(CasError, match="not stored"):
+        cas.put_manifest(manifests[digest])  # no blob or child manifest is stored yet
+    assert not cas.has(digest)
+    sub = next(e for e in manifests[digest].entries if e.name == "other")
+    assert sub.digest is not None
+    with pytest.raises(CasError, match="not stored"):
+        cas.put_manifest(manifests[sub.digest])  # other/d.txt blob missing
+
+
+# P0-06 (I9): every entry is checked, not only up to the first symlink or file
+def test_put_manifest_checks_every_entry(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    write(src / "a" / "x.txt", b"x")
+    write(src / "b.txt", b"b")
+    write(src / "c.txt", b"c")
+    (src / "0link").symlink_to("b.txt")
+    root, manifests = build_tree(src, hash_file)
+
+    missing_dir = FsCAS(tmp_path / "cas1", "test")
+    missing_dir.put_bytes(b"b")
+    missing_dir.put_bytes(b"c")
+    with pytest.raises(CasError, match="not stored"):
+        missing_dir.put_manifest(manifests[root])  # a/ manifest missing
+
+    missing_last = FsCAS(tmp_path / "cas2", "test")
+    missing_last.put_tree(src / "a")
+    missing_last.put_bytes(b"b")
+    with pytest.raises(CasError, match="not stored"):
+        missing_last.put_manifest(manifests[root])  # c.txt blob missing
+    assert not missing_last.has(root)

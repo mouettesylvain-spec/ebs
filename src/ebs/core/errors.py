@@ -89,3 +89,11 @@ class RuleError(EbsError):
 
 class SandboxError(EbsError):
     """The execution sandbox could not be set up."""
+
+
+class SourceError(EbsError):
+    """A declared source could not be resolved, read or snapshotted."""
+
+
+class SourceEscapeError(SourceError):
+    """A source pattern or symlink resolves outside its base directory (sandbox v1 rule)."""

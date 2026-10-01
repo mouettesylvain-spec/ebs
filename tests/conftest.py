@@ -6,6 +6,7 @@ Kept free of imports from `tests.*` so tests/unit/test_markers.py can reuse it i
 from __future__ import annotations
 
 import os
+import subprocess
 from collections.abc import Generator
 from pathlib import Path
 
@@ -146,3 +147,31 @@ def fake_clock() -> FakeClock:
 def cas(tmp_path: Path, fake_clock: FakeClock) -> FsCAS:
     """An empty filesystem CAS for domain "test" under tmp_path (P0-09)."""
     return FsCAS(tmp_path / "cas", "test", clock=fake_clock)
+
+
+# Hermetic git: no user/system config (hooks, signing, filters), fixed identity.
+GIT_TEST_ENV = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@example.invalid",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@example.invalid",
+}
+
+
+@pytest.fixture
+def git_repo(tmp_path: Path) -> Path:
+    """A fresh git work tree with one commit of `a.sv` and `sub/b.sv` (P0-06)."""
+    repo = tmp_path / "repo"
+    (repo / "sub").mkdir(parents=True)
+    (repo / "a.sv").write_text("module a; endmodule\n")
+    (repo / "sub" / "b.sv").write_text("module b; endmodule\n")
+    env = {**os.environ, **GIT_TEST_ENV}
+    for argv in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-qm", "init"],
+    ):
+        subprocess.run(argv, cwd=repo, env=env, check=True, capture_output=True)
+    return repo

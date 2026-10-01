@@ -127,6 +127,29 @@ class FsCAS:
         self._put_manifests(root_digest, manifests, written)
         return root_digest
 
+    def put_manifest(self, manifest: TreeManifest) -> Digest:
+        digest = manifest.digest()
+        if os.path.lexists(self.tree_path(digest)):
+            return digest  # immutable; its children were checked when it was first stored
+        for entry in manifest.entries:
+            if entry.digest is None:
+                continue
+            path = (
+                self.blob_path(entry.digest)
+                if entry.type == "file"
+                else self.tree_path(entry.digest)
+            )
+            if not os.path.lexists(path):
+                raise CasError(
+                    f"cannot store tree manifest {digest} in CAS domain {self.domain!r}: its "
+                    f"{entry.type} entry {entry.name!r} ({entry.digest}) is not stored; store "
+                    "blobs and child manifests before their parent"
+                )
+        self._store(
+            "trees", [canonical_json(manifest.to_json())], digest, f"tree manifest {digest}"
+        )
+        return digest
+
     def _put_manifests(
         self, d: Digest, manifests: dict[Digest, TreeManifest], written: set[Digest]
     ) -> None:
