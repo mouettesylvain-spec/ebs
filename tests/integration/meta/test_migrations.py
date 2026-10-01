@@ -62,10 +62,43 @@ def test_upgrade_downgrade(empty_db: URL) -> None:
     assert _tables(empty_db) == P0_TABLES
 
 
+# R1: a deployment may pre-create schema `ebs`, and a role named `ebs` then has it first in its
+# search_path ("$user", public); the version table must still go to `public` so that
+# `downgrade base` can drop the schema.
+def test_version_table_stays_in_public(empty_db: URL) -> None:
+    engine = sa.create_engine(empty_db, poolclass=sa.pool.NullPool)
+    try:
+        with engine.begin() as conn:
+            conn.execute(sa.text(f"CREATE SCHEMA {SCHEMA}"))
+            role: str = conn.execute(sa.text("SELECT current_user")).scalar_one()
+            conn.execute(
+                sa.text(
+                    f'ALTER ROLE "{role}" IN DATABASE "{empty_db.database}" '
+                    f"SET search_path TO {SCHEMA}, public"
+                )
+            )
+        url = url_string(empty_db)
+        migrations.upgrade(url)
+        with engine.connect() as conn:
+            assert "alembic_version" in sa.inspect(conn).get_table_names(schema="public")
+        migrations.downgrade(url)
+        with engine.connect() as conn:
+            assert SCHEMA not in sa.inspect(conn).get_schema_names()
+    finally:
+        engine.dispose()
+
+
 # R1
 def test_no_model_drift(empty_db: URL) -> None:
     migrations.upgrade(url_string(empty_db))
-    engine = sa.create_engine(empty_db, poolclass=sa.pool.NullPool)
+    # Alembic reports the default schema as None; for a role named `ebs` that is `ebs` itself
+    # ("$user" in search_path). Pin search_path at connect time (the dialect caches the default
+    # schema on first connect) so `ebs` is always compared by name.
+    engine = sa.create_engine(
+        empty_db,
+        poolclass=sa.pool.NullPool,
+        connect_args={"options": "-c search_path=public"},
+    )
     try:
         with engine.connect() as conn:
             ctx = MigrationContext.configure(

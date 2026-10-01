@@ -21,6 +21,9 @@ def run_migrations_online() -> None:
                 connection=connection,
                 target_metadata=metadata,
                 include_schemas=True,
+                # Pinned: by default it follows search_path, which puts it in `ebs` for a role
+                # named `ebs` ("$user", public), and `downgrade base` could not drop the schema.
+                version_table_schema="public",
                 transaction_per_migration=False,
             )
             with context.begin_transaction():

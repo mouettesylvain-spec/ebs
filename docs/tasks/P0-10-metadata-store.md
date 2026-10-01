@@ -90,3 +90,8 @@ record_result, finish_build, get_build, list_actions, touch, emit).
 - Follow-up: `cache_get` writes on every hit because it counts hits. If that becomes a hot spot,
   batch the hit counts in the driver.
 
+- CI fix: the default `search_path` (`"$user", public`) makes schema `ebs` the default schema for
+  a role named `ebs` (as in CI). Alembic then reported it as `None`, so `test_no_model_drift` saw
+  every table as missing. The version table could also land in `ebs`, which would make
+  `downgrade base` fail. `env.py` now pins `version_table_schema="public"`, and the drift test
+  connects with `search_path=public`. Integration tests pass as both `postgres` and `ebs`.
