@@ -47,6 +47,12 @@ dev = [
 ebs = "ebs.cli.main:app"
 ebs-runner = "ebs.runner.main:main"
 
+# Rule plugins: name = step kind, value = factory called with RuleSettings (ebs.rules.registry).
+[project.entry-points."ebs.rules"]
+shell = "ebs.rules.shell:ShellRule"
+make = "ebs.rules.make:MakeRule"
+tcl = "ebs.rules.tcl:TclRule"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/ebs"]
 

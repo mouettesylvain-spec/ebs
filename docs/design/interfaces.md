@@ -336,6 +336,52 @@ class RulePlugin(Protocol):
 `Classification` = `PASSED | FAILED | INFRA(reason)`; rules decide e.g. that a Questa license
 checkout error is INFRA, a UVM_ERROR is FAILED. Plugins register via entry point group `ebs.rules`.
 
+Supporting types (P0-12):
+
+```python
+@dataclass(frozen=True) class Classification: status: Literal["passed","failed","infra"]; reason: str | None
+PASSED, FAILED: Final[Classification]; def INFRA(reason: str) -> Classification
+@dataclass(frozen=True) class RuleSettings: license_error_patterns: tuple[str, ...]   # config [rules]
+@dataclass(frozen=True) class ExpandContext: instance: StepInstance; resolver: Resolver | None = None
+    def render(self, text: str, *, field: str) -> str | list[str]; def render_str(...) -> str
+@dataclass(frozen=True) class ActionTemplate:
+    argv: tuple[str, ...]                 # logical paths, relative to the work dir
+    env: Mapping[str, str]                # declared env for the tool (IN the key)
+    inputs: Mapping[str, str]             # implicit inputs: name -> source glob (flow-relative); names "ebs.<x>"
+    outputs: Mapping[str, OutputDef]      # implicit outputs, added to the declared ones
+    config_files: Mapping[str, str]       # logical path -> content; generated ones live under ".ebs/"
+    runtime_env: Mapping[str, str]        # set by the runner, NOT in the key; "$EBS_CPUS" etc. expanded
+def expand_runtime_env(runtime_env, values: Mapping[str, str]) -> dict[str, str]   # runner side
+def default_classify(exit_code, log_tail, patterns) -> Classification
+RuleFactory = Callable[[RuleSettings], RulePlugin]   # what an `ebs.rules` entry point loads
+def compile_license_patterns(patterns: tuple[str, ...]) -> tuple[re.Pattern[str], ...]   # ConfigError if invalid
+def render_command(command: tuple[str, ...], ctx: ExpandContext, *, start: int = 0) -> list[str]  # sole list refs spliced
+def param_text(value: ParamValue) -> str        # int decimal, bool true/false, list space-joined
+class BaseRule: ...                             # default validate/classify/summarize; __init__(settings=None)
+ENTRY_POINT_GROUP = "ebs.rules"; GENERATED_DIR = ".ebs"
+CRASH_SIGNALS = {SIGKILL, SIGSEGV, SIGBUS}; DEFAULT_LICENSE_ERROR_PATTERNS: tuple[str, ...]   # generic FlexLM shapes
+
+class RuleRegistry:                                  # ebs.rules.registry
+    def __init__(self, plugins: Iterable[RulePlugin] = ()) -> None: ...
+    @classmethod
+    def from_entry_points(cls, *, settings: RuleSettings | None = None, entry_points=None) -> RuleRegistry: ...
+    def register(self, plugin: RulePlugin, *, origin: str | None = None) -> None: ...   # RuleError: duplicate/bad kind, empty version
+    def get(self, kind: str) -> RulePlugin: ...             # RuleError with "did you mean"
+    def kinds(self) -> tuple[str, ...]: ...; def plugins(self) -> list[RulePlugin]: ...   # sorted by kind
+```
+
+- Entry point name = step kind; its value is a `RuleFactory` (usually the plugin class).
+- Default `classify`: exit 0 ⇒ PASSED; killed by SIGKILL/SIGSEGV/SIGBUS (`-N`, or `128+N` as
+  reported by a shell or make) ⇒ INFRA("tool_crash"); a `license_error_patterns` match in the log
+  tail ⇒ INFRA("license"); otherwise FAILED.
+- Built-ins: `shell` (`script:` ⇒ `bash --noprofile --norc -eo pipefail .ebs/script.sh`, or
+  `command:` argv), `make` (`make -C <workdir> [target] VAR=value…`, params sorted; implicit input
+  `ebs.workdir` = `<workdir>/**`; `MAKEFLAGS`/`MFLAGS`/`MAKELEVEL` dropped from env; runtime env
+  `MAKEFLAGS=-j$EBS_CPUS`), `tcl` (`command: [tool, script, args…]` ⇒ `tool .ebs/ebs_main.tcl args…`,
+  which sources `.ebs/ebs_params.tcl` with `set ::ebs(name) {value}` and then the script).
+- The planner merges `env`/`inputs`/`outputs`/`config_files` into the `ActionSpec` and puts
+  `runtime_env` in a non-key field (P0-08); declared and generated names must not collide.
+
 ## 8. Executors — `ebs.exec.api`
 
 ```python
