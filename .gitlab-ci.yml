@@ -70,8 +70,7 @@ integration:
     POSTGRES_PASSWORD: ebs
     EBS_TEST_PG_URL: postgresql+psycopg://ebs:ebs@postgres:5432/ebs_test
   script:
-    # Exit code 5 = no tests collected; tolerated until P0-10 adds the first Postgres tests.
-    - uv run pytest -m integration -q --ignore=tests/e2e --junitxml=junit-integration.xml || [ $? -eq 5 ]
+    - uv run pytest -m integration -q --ignore=tests/e2e --junitxml=junit-integration.xml
   artifacts:
     when: always
     reports:

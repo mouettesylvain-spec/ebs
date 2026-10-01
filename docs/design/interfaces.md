@@ -265,11 +265,11 @@ class MetadataStore(Protocol):
     def create_build(self, b: BuildCreate) -> BuildId: ...
     def add_actions(self, build: BuildId, actions: Sequence[ActionRow]) -> None: ...
     def set_action_state(self, build: BuildId, action_id: str, state: ActionState, **fields: object) -> None: ...
-    def record_result(self, build: BuildId, action_id: str, result: ResultManifest) -> None: ...  # also writes provenance edges
+    def record_result(self, build: BuildId, action_id: str, result: ResultManifest) -> None: ...  # also writes provenance edges; never changes state
     def finish_build(self, build: BuildId, status: BuildStatus) -> None: ...
     def get_build(self, build: BuildId) -> BuildView: ...
     def list_actions(self, build: BuildId, *, state: ActionState | None = None) -> list[ActionRow]: ...
-    # access, leases, GC (P1)
+    # access (P0), leases and GC (P1-09)
     def touch(self, domain: str, digests: Iterable[Digest]) -> None: ...
     def acquire_lease(self, domain: str, build: BuildId, digests: Iterable[Digest], ttl_s: int) -> LeaseId: ...
     def renew_lease(self, lease: LeaseId, ttl_s: int) -> None: ...
@@ -279,6 +279,31 @@ class MetadataStore(Protocol):
 
 Implementations: `PgMetadataStore` (SQLAlchemy), `InMemoryMetadataStore` (tests), `HttpMetadataStore`
 (client of the FastAPI service, P1). All three must pass `tests/contract/test_metadata_store.py`.
+Every method is one short transaction and raises `MetadataError`; models are frozen, strict and
+re-validated on write (values must also pass `canonical_json`).
+
+- `cache_put` is insert-if-absent and requires `result.action_key == key`. `cache_get` counts a
+  hit on every call and rewrites `last_access` at most once per hour (`TOUCH_INTERVAL_S`); `touch`
+  applies the same throttle to known `blobs` rows and ignores unknown digests.
+- Domains are registered implicitly by the first `create_build`/`cache_put` naming them
+  (`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`, as the fs CAS); P2-01 adds the admin side.
+- `ActionState` transitions (`TRANSITIONS`): `queued → pending|running|cached|cancelled|infra_failed`,
+  `pending → pending|running|infra_failed|cancelled`, `running → done|failed|infra_failed|cancelled`,
+  `infra_failed → queued` (retry); `done`, `failed`, `cached`, `cancelled` are final. The store
+  stamps `queued_at`/`started_at`/`finished_at`, counts `attempts` on entering `running`, sets
+  `cached` on `cached`, and a retry clears the previous attempt's job id, reasons and times.
+  `**fields` accepts `key` (only while unset or unchanged), `result_key`, `slurm_job_id`, `pending_reason` (state `pending` only),
+  `infra_reason` (state `infra_failed` only).
+- `record_result` sets the action's `key` (if still unset; a different key is refused) and
+  `result_key`, writes one `in` provenance edge per `inputs` entry and one `out` edge per output
+  (`object_id` = passed-down id, `content_digest` = content), and registers output blobs, all in
+  one transaction and idempotently. It does not change the state: the runner may post before the
+  driver has seen `running`; the driver sets `done`/`failed` after reading the result.
+- `BuildStatus = running | passed | failed | infra_failed | cancelled`; `finish_build` takes a
+  final one, once. `BuildView` = `BuildCreate` fields + `id, status, created_at, finished_at,
+  pinned, action_counts` (per-state counts for `ebs status`).
+- `Event` (§ 10) is defined in `ebs.meta.api`, because meta (L2) cannot import the driver (L4);
+  `ebs.driver.events` re-exports it.
 
 ```python
 class ResultManifest(BaseModel):          # frozen
@@ -286,10 +311,11 @@ class ResultManifest(BaseModel):          # frozen
     action_key: Digest
     status: Literal["passed", "failed"]   # failed = tool ran and reported failure (cacheable)
     exit_code: int
+    inputs: dict[str, Digest]             # logical path -> input id as staged (feeds `in` provenance edges)
     outputs: dict[str, OutputResult]      # name -> {digest(content), id(passed downstream), type, size}
     log: Digest | None                    # full combined log blob
     summary: dict[str, str | int]         # rule-specific (e.g. sim: uvm_errors, first_error)
-    resources: ResourceUsage              # max_rss_kb, cpu_s, wall_s
+    resources: ResourceUsage              # max_rss_kb, cpu_s, wall_s (whole numbers: canon has no floats)
     runner: RunnerInfo                    # version, host, slurm_job_id (not part of cache identity)
 ```
 
@@ -341,6 +367,8 @@ Exit codes: `0` result posted (passed or failed), `64` bad usage, `70` internal 
 Lifecycle and guarantees: architecture.md "Runner lifecycle on a node".
 
 ## 10. Driver events — `ebs.driver.events`
+
+The `Event` model is defined in `ebs.meta.api` (§ 6) and re-exported here.
 
 `Event` = `{v, ts, build, type, action_id?, data}` with types: `build_started`, `plan_ready`,
 `cache_hit`, `submitted`, `pending`, `running`, `finished`, `infra_failed`, `retrying`,

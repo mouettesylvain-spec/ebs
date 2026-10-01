@@ -22,6 +22,9 @@ dependencies = [
     "structlog>=24.1",
     "pydantic>=2.11",
     "ruamel-yaml>=0.18",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -37,6 +40,7 @@ dev = [
     "mypy>=1.11",
     "ruff>=0.6",
     "jsonschema>=4.22",
+    "testcontainers[postgres]>=4.8",
 ]
 
 [project.scripts]

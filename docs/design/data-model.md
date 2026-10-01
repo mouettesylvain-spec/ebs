@@ -2,7 +2,12 @@
 
 All tables live in schema `ebs`. Migrations are Alembic revisions under `src/ebs/meta/migrations/`;
 each task that changes the schema adds exactly one revision and a test that upgrades from the
-previous head and downgrades back (`tests/integration/meta/test_migrations.py`).
+previous head and downgrades back (`tests/integration/meta/test_migrations.py`). The
+`alembic_version` table lives in `public`, so `downgrade base` drops schema `ebs` entirely.
+`ebs.meta.models` is the SQLAlchemy mirror of the schema; `test_no_model_drift` checks that the
+migrations and the models agree (columns, types, defaults, indexes, keys, CHECK names). Constraint
+names follow the convention `pk_<table>`, `fk_<table>_<cols>`, `uq_<table>_<cols>`,
+`ix_<table>_<cols>`, `ck_<table>_<name>`.
 
 Digests are stored as `text` in `algo:hex` form with a CHECK constraint
 (`~ '^(sha256|blake3):[0-9a-f]{64}$'`). Timestamps are `timestamptz`. JSON payloads are `jsonb`
@@ -11,17 +16,19 @@ and always hold canonical models validated on write.
 ## Phase 0
 
 ```
-domains(name PK, unix_group, cas_root, ttl_days int default 30, quota_bytes bigint null,
+domains(name PK, unix_group null, cas_root null, ttl_days int default 30, quota_bytes bigint null,
         high_water numeric default .85, low_water numeric default .75)
+        -- rows are created implicitly by create_build/cache_put in P0; P2-01 fills group/root
 
 builds(id bigserial PK, uuid uuid unique, domain FK, project text, plan_digest text,
        flow_repo text, flow_commit text, flow_dirty bool, user_name text, ci_job text null,
-       cache_mode text check in ('off','read','write'), status text, created_at, finished_at,
-       pinned bool default false)
+       cache_mode text check in ('off','read','write'),
+       status text check in ('running','passed','failed','infra_failed','cancelled'),
+       created_at, finished_at (null iff running), pinned bool default false)
 
 actions(build_id FK, action_id text, step text, key text null, state text, attempts int,
         slurm_job_id text null, pending_reason text null, infra_reason text null,
-        queued_at, started_at, finished_at, cached bool, result_key text null,
+        queued_at not null, started_at, finished_at, cached bool, result_key text null,
         PRIMARY KEY(build_id, action_id))
         index (build_id, state), index (key)
 
@@ -34,12 +41,15 @@ blobs(domain FK, digest text, size bigint, kind text check in ('file','tree'), c
 provenance_edges(domain FK, action_key text, direction text check in ('in','out'),
                  logical_path text, object_id text, content_digest text null,
                  PRIMARY KEY(domain, action_key, direction, logical_path))
-                 index (domain, object_id)                 -- written from P0 so P2 queries work retroactively
+                 index (domain, object_id), index (domain, content_digest)
+                 -- written from P0 so P2 queries work retroactively; `out` rows hold the
+                 -- passed-down id in object_id and the content digest in content_digest
 
 toolchains(id text PK, name text, module text, version text, fingerprint text,
            env jsonb, install_roots jsonb, registered_at, registered_by, superseded_by text null)
 
-events(id bigserial PK, build_id FK, ts, type text, action_id text null, data jsonb)
+events(id bigserial PK, build_id FK, ts, type text check ~ '^[a-z][a-z0-9_]*$',
+       action_id text null, data jsonb object)
        index (build_id, id)                                -- dashboard / status stream; partition by month in P2
 ```
 
@@ -81,8 +91,9 @@ archives(id, release_id FK, bundle_digest text, location text, created_at)
 
 ## Query patterns that must stay indexed
 
-- `cache_get`: PK lookup on `action_cache(domain, key)` + `UPDATE last_access` batched
-  (touch at most once per key per hour to limit write amplification).
+- `cache_get`: one `UPDATE … RETURNING result` by PK on `action_cache(domain, key)` that counts
+  the hit and rewrites `last_access` only if it is over an hour old (write-amplification guard).
+- `add_actions`: `COPY` into `actions` (20,000 rows well under 5 s).
 - `ebs status`: `actions WHERE build_id = ? GROUP BY state`.
 - `ebs why <digest>`: walk `provenance_edges` by `object_id` → `action_key` recursively
   (recursive CTE; depth limit 200).
