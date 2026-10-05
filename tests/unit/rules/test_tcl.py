@@ -19,16 +19,20 @@ from hypothesis import strategies as st
 from ebs.core.errors import RuleError
 from ebs.flow.model import StepDef
 from ebs.rules.api import ActionTemplate, Classification
-from ebs.rules.tcl import TclRule, tcl_quote
+from ebs.rules.tcl import TclRule, params_file, tcl_quote
 from tests.helpers.rules import CLASSIFY_CASES, context, step
 
 PARAMS_FILE = ".ebs/ebs_params.tcl"
 MAIN_FILE = ".ebs/ebs_main.tcl"
 
 # Characters Tcl treats specially, plus control characters (\x1a is `source`'s EOF character).
-_TRICKY = '{}[]$\\"; \t\n\r#\x00\x1a\x7f é€😀'
+_TRICKY = '{}[]$\\"; \t\n\r#\x00\x1a\x7f é€\uffff'
+# Values up to U+FFFF: wider characters are rejected (`test_non_bmp_rejected`) because Tcl 8.6
+# cannot represent them.
 _values = st.text(
-    alphabet=st.one_of(st.sampled_from(_TRICKY), st.characters(exclude_categories=["Cs"])),
+    alphabet=st.one_of(
+        st.sampled_from(_TRICKY), st.characters(max_codepoint=0xFFFF, exclude_categories=["Cs"])
+    ),
     max_size=30,
 )
 
@@ -86,8 +90,9 @@ def test_params_file_format() -> None:
 )
 def test_params_file_quoting(params: dict[str, str]) -> None:
     tcl = _tcl()
-    t = _expand(params)
-    text = t.config_files[PARAMS_FILE]
+    # Resolved param values may hold any text, including `${` (from a table cell or `$${`), so
+    # this goes straight to `params_file`; `test_params_file_format` covers the path via StepDef.
+    text = params_file(params)
     assert text.isascii()  # independent of the tool's system encoding
     tcl.eval("array unset ::ebs")
     tcl.eval(text)
@@ -107,8 +112,6 @@ def test_quote_roundtrip(value: str) -> None:
 # R4
 @given(st.lists(_values, max_size=4))
 def test_list_param_is_tcl_list(items: list[str]) -> None:
-    from ebs.rules.tcl import params_file
-
     tcl = _tcl()
     tcl.eval("array unset ::ebs")
     tcl.eval(params_file({"files": tuple(items)}))
@@ -116,6 +119,19 @@ def test_list_param_is_tcl_list(items: list[str]) -> None:
     for i, item in enumerate(items):
         got = tcl.eval(f"binary encode hex [encoding convertto utf-8 [lindex $::ebs(files) {i}]]")
         assert got == item.encode().hex()
+
+
+# R4: characters above U+FFFF read back as U+FFFD on Tcl 8.6, so they are refused up front.
+@pytest.mark.parametrize("value", ["\U00010000", "ok \U0001f600 ok"])
+def test_non_bmp_rejected(value: str) -> None:
+    with pytest.raises(RuleError, match=r"U\+1[0-9A-F]{4}.*Tcl 8\.6"):
+        tcl_quote(value)
+    with pytest.raises(RuleError, match=r"step 's':.*U\+1"):
+        _expand({"p": value})
+    with pytest.raises(RuleError, match=r"U\+1"):
+        params_file({"p": ("a", value)})
+    with pytest.raises(RuleError, match=r"step 's':.*U\+1"):
+        _expand({}, ("tclsh", f"{value}.tcl"))
 
 
 # R4

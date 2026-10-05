@@ -378,7 +378,8 @@ class RuleRegistry:                                  # ebs.rules.registry
   `command:` argv), `make` (`make -C <workdir> [target] VAR=value…`, params sorted; implicit input
   `ebs.workdir` = `<workdir>/**`; `MAKEFLAGS`/`MFLAGS`/`MAKELEVEL` dropped from env; runtime env
   `MAKEFLAGS=-j$EBS_CPUS`), `tcl` (`command: [tool, script, args…]` ⇒ `tool .ebs/ebs_main.tcl args…`,
-  which sources `.ebs/ebs_params.tcl` with `set ::ebs(name) {value}` and then the script).
+  which sources `.ebs/ebs_params.tcl` with `set ::ebs(name) {value}` and then the script;
+  values with characters above U+FFFF are a RuleError, since Tcl 8.6 cannot represent them).
 - The planner merges `env`/`inputs`/`outputs`/`config_files` into the `ActionSpec` and puts
   `runtime_env` in a non-key field (P0-08); declared and generated names must not collide.
 

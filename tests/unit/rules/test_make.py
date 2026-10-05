@@ -47,7 +47,11 @@ def test_argv_and_vars_sorted() -> None:
 
 # R3
 @given(
-    st.dictionaries(st.from_regex(r"[a-z_][a-z0-9_]{0,8}", fullmatch=True), st.text(), max_size=6)
+    st.dictionaries(
+        st.from_regex(r"[a-z_][a-z0-9_]{0,8}", fullmatch=True),
+        st.text(alphabet=st.characters(exclude_characters="$")),  # literals only, no `${…}` refs
+        max_size=6,
+    )
 )
 def test_vars_sorted_property(params: dict[str, str]) -> None:
     s = step(kind="make", workdir=".", target="all", params=params)

@@ -67,8 +67,10 @@ outputs, config files, default `classify` behaviour.
 - Default classify also treats exit codes 128+N (a shell or make reporting that a child was
   killed by SIGKILL/SIGSEGV/SIGBUS) as a crash. The trade-off: a tool that genuinely exits
   135/137/139 gets retried instead of cached, which is better than caching a crash as a test failure.
-- Tcl quoting is property-tested against real Tcl 9.0 via stdlib `tkinter.Tcl()`.
-  `test_real_tclsh` skips when there is no `tclsh` on PATH.
+- Tcl quoting is property-tested against real Tcl via stdlib `tkinter.Tcl()`: Tcl 9.0 locally
+  (uv's Python) and Tcl 8.6 in CI (bookworm). `test_real_tclsh` skips when there is no `tclsh`.
+- `tcl` rejects values with characters above U+FFFF (RuleError): Tcl 8.6 reads `\U` escapes for
+  them as U+FFFD, and many EDA tools still embed 8.6 or older (found by CI on 8.6).
 - Follow-ups: the tcl argv shape `<tool> <script> [args]` cannot express `dc_shell -f x.tcl` or
   `vsim -do x.tcl` (vendor packs, P1-08, or a script placeholder); tcl does not add the user script
   as an implicit input (it must be declared; strict staging makes an omission fail loudly).

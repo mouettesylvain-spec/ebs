@@ -6,8 +6,9 @@ with `::argv0` set to it, so `$argv`, `$argv0` and `[info script]` look as if it
 
 Generated files are pure ASCII: every value is quoted for Tcl by `tcl_quote`, which uses braces
 when that is exact and backslash escapes otherwise, so the result does not depend on the tool's
-system encoding. Tcl 8.6+ is needed; characters outside the BMP (`\\U` escapes) need
-Tcl 8.6.10+ or 9.
+system encoding. Characters outside the Basic Multilingual Plane (above U+FFFF) are rejected:
+Tcl 8.6 and older (still embedded in many EDA tools) cannot represent them and would silently
+read U+FFFD instead, so the generated file would mean different values on different tools.
 """
 
 from __future__ import annotations
@@ -57,13 +58,20 @@ def _escape(ch: str) -> str:
     code = ord(ch)
     if ch in _PRINTABLE:
         return "\\" + ch  # `\X` is X for punctuation and space
-    if code <= 0xFFFF:
-        return f"\\u{code:04x}"  # exactly 4 digits, so a following hex digit is not consumed
-    return f"\\U{code:08x}"
+    return f"\\u{code:04x}"  # exactly 4 digits, so a following hex digit is not consumed
 
 
 def tcl_quote(value: str) -> str:
-    """Quote `value` as one Tcl word that evaluates to exactly `value`."""
+    """Quote `value` as one Tcl word that evaluates to exactly `value`.
+
+    Raises RuleError for characters above U+FFFF (see the module docstring).
+    """
+    wide = next((ch for ch in value if ord(ch) > 0xFFFF), None)
+    if wide is not None:
+        raise RuleError(
+            f"value {value!r} holds {wide!r} (U+{ord(wide):X}), which Tcl 8.6 and older cannot "
+            "represent; use characters up to U+FFFF in values passed to a 'tcl' step"
+        )
     if _brace_safe(value):
         return "{" + value + "}"
     return "".join(_escape(ch) for ch in value)
@@ -123,11 +131,15 @@ class TclRule(BaseRule):
         tool = ctx.render_str(step.command[0], field="command[0]")
         script = ctx.render_str(step.command[1], field="command[1]")
         args = render_command(step.command[2:], ctx, start=2)
+        try:
+            config_files = {
+                PARAMS_PATH: params_file(ctx.instance.params),
+                MAIN_PATH: main_file(script),
+            }
+        except RuleError as exc:
+            raise RuleError(f"step {ctx.instance.instance_id!r}: {exc}") from exc
         return ActionTemplate(
             argv=(tool, MAIN_PATH, *args),
             env=dict(ctx.instance.env),
-            config_files={
-                PARAMS_PATH: params_file(ctx.instance.params),
-                MAIN_PATH: main_file(script),
-            },
+            config_files=config_files,
         )
