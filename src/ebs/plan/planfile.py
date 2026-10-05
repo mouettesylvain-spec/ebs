@@ -144,7 +144,8 @@ def to_json(plan: Plan) -> JsonValue:
         "domain": plan.domain,
         "project": plan.project,
         "toolchains": {
-            name: {"module": tc.module, "id": str(tc.id)} for name, tc in plan.toolchains.items()
+            name: {"module": tc.module, "id": str(tc.id), "env": dict(tc.env)}
+            for name, tc in plan.toolchains.items()
         },
         "actions": [spec_to_json(spec) for spec in plan.actions],
         "edges": [list(edge) for edge in plan.edges],
@@ -406,6 +407,7 @@ def from_json(doc: JsonValue) -> Plan:
         name: PlanToolchain(
             _get(_obj(tc, f"$.toolchains.{name}"), "module", f"$.toolchains.{name}", _str),
             _get(_obj(tc, f"$.toolchains.{name}"), "id", f"$.toolchains.{name}", _digest),
+            _get(_obj(tc, f"$.toolchains.{name}"), "env", f"$.toolchains.{name}", _str_map),
         )
         for name, tc in _get(root, "toolchains", "$", _obj).items()
     }

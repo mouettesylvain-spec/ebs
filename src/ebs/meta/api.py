@@ -358,6 +358,12 @@ class MetadataStore(Protocol):
         """Actions of `build` ordered by action id, optionally only those in `state`."""
         ...
 
+    def resolve_output(self, domain: str, object_id: Digest) -> Digest | None:
+        """The content digest of an output whose passed-down id is `object_id` (its `out`
+        provenance edge), or None if no result recorded it. For a deterministic output the id
+        is the content; for a `deterministic: false` one, the first recorded bytes win."""
+        ...
+
     # access tracking
     def touch(self, domain: str, digests: Iterable[Digest]) -> None:
         """Mark known blobs as used now (at most once per hour each); unknown digests are

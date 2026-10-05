@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -12,6 +13,7 @@ from importlinter.cli import lint_imports
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / ".importlinter"
 SRC_PKG = ROOT / "src" / "ebs"
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _run_linter() -> int:
@@ -46,6 +48,9 @@ def test_copy_is_what_gets_analysed(ebs_copy: Path) -> None:
         ("core/_violation.py", "import ebs.cli\n", "Package layering"),  # L0 -> L5
         ("plan/_violation.py", "from ebs import driver\n", "Package layering"),  # L2 -> L4
         ("runner/_violation.py", "import ebs.plan.planner\n", "runner does not import"),
+        ("runner/_violation.py", "import ebs.sources\n", "runner imports only"),  # P0-13
+        ("runner/_violation.py", "import ebs.toolchain.env\n", "runner imports only"),
+        ("runner/_violation.py", "import ebs.plan.diff\n", "runner imports only"),
         ("rules/_violation.py", "import ebs.cas\n", "rules import only"),
         ("toolchain/fingerprint.py", "import ebs.sources\n", "toolchain.fingerprint (L1)"),
         ("meta/_violation.py", "import ebs.exec\n", "meta store (L2)"),
@@ -70,5 +75,6 @@ def test_violation_detected(
         (ebs_copy / placeholder).write_text('"""placeholder"""\n')
     (ebs_copy / module).write_text(source)
     assert _run_linter() != 0
-    broken = [line for line in capsys.readouterr().out.splitlines() if line.endswith("BROKEN")]
+    out = ANSI.sub("", capsys.readouterr().out)  # FORCE_COLOR in the environment adds codes
+    broken = [line for line in out.splitlines() if line.endswith("BROKEN")]
     assert any(line.startswith(contract) for line in broken), broken

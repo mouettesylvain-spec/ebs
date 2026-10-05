@@ -89,6 +89,11 @@ url = "postgresql+psycopg://…"     # P0 direct mode; P1+: "https://ebs-meta.ex
 [scratch]
 dir = "${TMPDIR}/ebs"
 
+[runner]                       # P0-13
+passthrough_env = ["LM_LICENSE_FILE", "*_LICENSE_FILE", "SLURM_*"]   # caller vars the tool sees
+max_log = "2GiB"               # tool log cap; the tail is kept
+kill_grace_s = 30              # SIGTERM -> SIGKILL on timeout
+
 [stat_cache]
 racy_window_s = 3
 audit_fraction = 0.01

@@ -94,6 +94,14 @@ def test_top_level_layout(cas: FsCAS, tmp_path: Path) -> None:
     assert doc["v"] == 1
     assert doc["key_schema"] == KEY_SCHEMA_VERSION
     assert doc["flow"] == {"path": "flow.yaml", "git": None}
+    # P0-13: the runner applies the toolchain env, so the plan carries it ($HOME left literal).
+    toolchains = doc["toolchains"]
+    assert isinstance(toolchains, dict)
+    assert toolchains["questa"] == {
+        "module": "questa/2025.2",
+        "id": doc["actions"][0]["toolchain"]["id"],  # type: ignore[call-overload,index]
+        "env": {"TOOL_HOME": "/opt/eda-tools/questa/2025.2"},
+    }
 
 
 def _plan_doc(cas: FsCAS, tmp_path: Path) -> dict[str, Any]:
@@ -116,6 +124,8 @@ def _plan_doc(cas: FsCAS, tmp_path: Path) -> dict[str, Any]:
         (lambda d: d["actions"][0]["params"].update(x=1.5), r"params"),
         (lambda d: d["actions"][0]["resources"].update(cpus="2"), r"resources"),
         (lambda d: d.update(edges=[["a", "b"]]), r"edges"),
+        (lambda d: d["toolchains"]["questa"].pop("env"), r"toolchains\.questa.*env"),
+        (lambda d: d["toolchains"]["questa"]["env"].update(X=1), r"toolchains\.questa\.env"),
         (lambda d: d["actions"][0]["argv"].append("-x"), r"actions\[0\]\.key does not match"),
         (
             lambda d: d["actions"][0]["inputs"][0].update(id=None),

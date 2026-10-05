@@ -141,6 +141,25 @@ forbidden_modules =
     ebs.plan.planner
     ebs.meta.service
 
+# The runner runs on compute nodes with a minimal dependency set (overview.md): it reads a plan
+# (plan.types/keys/planfile), stages from the CAS, runs a rule's classify and posts through the
+# metadata store. Planning, sources, toolchain capture and the other L3/L4 packages stay out (P0-13).
+[importlinter:contract:runner-imports-only-allowed]
+name = runner imports only core, config, flow, cas, plan (data), rules, meta store
+type = forbidden
+source_modules =
+    ebs.runner
+forbidden_modules =
+    ebs.plan.graph
+    ebs.plan.diff
+    ebs.sources
+    ebs.toolchain
+    ebs.exec
+    ebs.sandbox
+    ebs.gc
+    ebs.release
+    ebs.cli
+
 [importlinter:contract:rules-plugins]
 name = rules import only core, flow and rules.api
 type = forbidden
