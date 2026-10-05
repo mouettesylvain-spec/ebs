@@ -65,7 +65,7 @@ Implementation notes (P0-02):
   `test_rfc_sort_example_is_rejected_as_non_nfc` pins the rejection of the verbatim input.
 - Integers are limited to ±(2**53 − 1) (the JCS exact range), so output is byte-identical to any
   RFC 8785 implementation. Relaxing this later changes no existing key; tightening it would.
-  Documented in interfaces.md §1. Open question for the human: confirm, or allow larger ints.
+  Documented in interfaces.md §1. Confirmed by the human on 2026-09-28.
 - Int subclasses (IntEnum) are accepted and encoded as plain digits; str subclasses as plain strings.
 - Nesting beyond the Python recursion limit raises `CanonError`, not `RecursionError`.
 - `JsonValue` uses invariant `dict`/`list`, so callers holding e.g. `dict[str, str]` must annotate

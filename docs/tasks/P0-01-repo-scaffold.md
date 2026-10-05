@@ -100,5 +100,5 @@ Any functional code. The CLI has only `--version`.
   httpx + core/cas/runner" once the runner's metadata-client dependency is settled.
 - P1-12: mutmut 3.x reads `paths_to_mutate` from `[tool.mutmut]`; move it there when enabling nightly.
 - Agent kit: `scripts/claude-*.sh` show a mode change 644 → 755 in the working tree (needed for the
-  hooks to run). Not included in this commit; the human should decide whether to commit it.
+  hooks to run). The human chose to commit them as executable (2026-10-05).
 
