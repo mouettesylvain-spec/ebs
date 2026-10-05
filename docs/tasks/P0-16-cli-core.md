@@ -27,6 +27,10 @@ The primary user interface for phase 0: explain a plan, run a build, watch it, r
   (running, local executor: scratch log file); ACTION accepts a unique prefix of the action id.
 - R5 Errors are rendered as one-line messages with location and hint; `--debug` shows tracebacks.
 - R6 Every command supports `--json` for scripting, and `NO_COLOR` is honoured.
+- R7 (human decision 2026-10-05) The stat cache defaults to local disk, never to `~/.cache` (often
+  NFS, where SQLite WAL is unsafe): `[stat_cache] path` from the config if set, else
+  `/var/tmp/ebs-<uid>/statcache.sqlite`, with the directory created mode 0700. A missing or unwritable
+  default degrades to rehashing with a warning, never to a failed plan.
 
 ## Tests (write these first)
 | Test | Covers | Kind |
@@ -36,6 +40,7 @@ The primary user interface for phase 0: explain a plan, run a build, watch it, r
 | `test_status.py::test_pending_reasons_split` | R3 | unit |
 | `test_logs.py::test_prefix_match`, `::test_follow` | R4 | unit |
 | `test_errors.py::test_flow_error_rendering` | R5 | unit |
+| `test_statcache_path.py::test_default_is_local`, `::test_config_override`, `::test_unwritable_degrades` | R7 | unit |
 | `tests/e2e/test_cli_local.py::test_plan_build_status_logs` | R1–R4 | e2e |
 
 ## Done when

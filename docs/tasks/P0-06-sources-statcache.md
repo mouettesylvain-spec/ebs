@@ -93,8 +93,8 @@ symlinks; the matched set is snapshotted as one tree preserving relative paths.
   `tests/helpers/sources.py`, `tests/helpers/statcache_workers.py`, `git_repo` fixture in
   tests/conftest.py (named by testing.md). Sources unit tests no-op the CAS fsync
   (tests/unit/sources/conftest.py): it dominated cold snapshots (~50 s for R8's 5,000 files).
-- Follow-up (deployment/P0-16): WAL SQLite is unsafe on NFS; if `~/.cache` is on NFS, the CLI
-  should default the stat cache to local disk (e.g. `$TMPDIR` or a `[stat_cache] path` key).
+- Follow-up (P0-16 R7): WAL SQLite is unsafe on NFS. Decided by the human (2026-10-05): the CLI
+  defaults the stat cache to local disk (`/var/tmp/ebs-<uid>/`), overridable by `[stat_cache] path`.
 - Follow-up (P0-08/P0-16): wire `[stat_cache]` config keys and report `audit_mismatches` as the
   `stat_audit_mismatch` event.
 - Follow-up (P0-09 tests): `FsCAS._put_manifests` dedupe branch (fs.py `if d in written: return`)
