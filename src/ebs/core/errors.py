@@ -97,3 +97,7 @@ class SourceError(EbsError):
 
 class SourceEscapeError(SourceError):
     """A source pattern or symlink resolves outside its base directory (sandbox v1 rule)."""
+
+
+class ToolchainError(EbsError):
+    """A toolchain could not be fingerprinted, captured or resolved."""
