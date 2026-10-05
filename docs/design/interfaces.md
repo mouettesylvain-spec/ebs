@@ -173,7 +173,7 @@ class ActionSpec:
     step: str
     rule: RuleRef                       # kind + rule implementation version
     argv: tuple[str, ...]               # fully expanded; paths are logical (relative to scratch)
-    params: Mapping[str, str | int]
+    params: Mapping[str, str | int | bool | tuple[str, ...]]   # resolved values as written (P0-08)
     env: Mapping[str, str]              # declared env only
     toolchain: ToolchainRef | None      # name + toolchain id
     inputs: tuple[InputRef, ...]        # sorted by logical_path
@@ -184,11 +184,22 @@ class ActionSpec:
     debug: DebugSpec                    # NOT in key
     domain: str
     key: Digest | None                  # None while any input id is None
+    runtime_env: Mapping[str, str] = {} # NOT in key; the rule's runtime env, expanded by the runner
 
 def action_key_document(spec: ActionSpec) -> JsonValue: ...   # exactly the fields below
 def compute_key(spec: ActionSpec) -> Digest: ...              # raises if an input id is None
 def nondeterministic_output_id(producer_key: Digest, output_name: str) -> Digest: ...
+def with_key(spec: ActionSpec) -> ActionSpec: ...             # key set, or None while ids are unknown
 ```
+
+Supporting types (P0-08, `ebs.plan.types`): `RuleRef(kind, version)`, `ToolchainRef(name, module,
+id)`, `SourceInput(input, pattern)`, `ActionOutputInput(action_id, output)`, `ImportInput(name,
+path)` (P2-03), `OutputSpec(name, path, type: "file"|"dir", deterministic, optional)`,
+`DebugSpec(collect, max_size: bytes | None, on_success)`, `FlowInfo(path, git: GitInfo | None)`,
+`GitInfo(repo, commit, dirty)`, `PlanToolchain(module, id)`, `Plan(ebs_version, domain, project,
+flow, toolchains, actions, edges, lock, key_schema, v)` with `Plan.action(id)`,
+`ActionSpec.input(path)` / `.output(name)`, and `ActionDiff(action_id, status, changed, pending)`
+with status `added | removed | unchanged | changed | unknown`.
 
 Key document (the only thing hashed):
 
@@ -203,6 +214,18 @@ Key document (the only thing hashed):
   keys are therefore unknown until the producer ran or hit the cache; the planner leaves
   `key=None` and the driver finalizes keys as results arrive (`Planner.refine(plan, results)`).
 - `domain` is not in the key: the action cache is keyed by `(domain, key)`.
+- Input logical paths: each file a source glob matches is a `file` input at its path relative to
+  the flow directory (id: snapshot digest). An output reference `${steps.S.outputs.O[sel]}`
+  stages the producer instance's output at `O/<instance_id>` (a `tree`) or
+  `O/<instance_id>/<file name>` (a `file`), and renders to that path. Inputs, config files and
+  outputs of one action must not share or nest paths. Symlinks matched by a source glob are a
+  `PlanError` for now.
+- Sandbox v1 (R4): output, config file and debug paths must be relative and stay in the work
+  dir; source patterns must be relative to the flow directory; an argv element (or a part of it
+  after `=`, `+`, `,`, `:` or an option prefix such as `-I`) naming an absolute or `~` path is
+  rejected unless it lies under the toolchain's install roots or `planner.SYSTEM_PATHS`; so is a
+  relative path leaving the work dir (`../x`). `http(s)://` and `ftp://` URLs are not paths;
+  `file://` URLs are. `decode` rejects an action whose stored key does not match its fields.
 
 Plan file (`plan.json`, canonical JSON, stored in CAS; its digest is the build's plan digest):
 
@@ -213,13 +236,35 @@ Plan file (`plan.json`, canonical JSON, stored in CAS; its digest is the build's
  "actions": [ActionSpec…], "edges": [["from_action_id", "output", "to_action_id"]]}
 ```
 
+`actions` are in topological order (producers first; steps in declaration order on ties), edges
+sorted. Action JSON layout: `ebs.plan.planfile` module docstring; `encode`/`decode`/`plan_digest`,
+`to_json`/`from_json`, `spec_to_json`/`spec_from_json`. `decode` rejects another plan format
+version or key schema (re-plan).
+
 ```python
 class Planner:
-    def __init__(self, cas: CAS, sources: SourceSnapshotter, toolchains: ToolchainResolver, rules: RuleRegistry) -> None: ...
-    def plan(self, flow: Flow, *, targets: Sequence[str] = (), rehash: bool = False) -> Plan: ...
+    def __init__(self, cas: CAS, sources: Snapshotter, toolchains: ToolchainResolver, rules: RuleRegistry) -> None: ...
+    def plan(self, flow: Flow, *, base: Path, info: FlowInfo | None = None,
+             targets: Sequence[str] = (), rehash: bool = False) -> Plan: ...
     def refine(self, plan: Plan, produced: Mapping[tuple[str, str], Digest]) -> Plan: ...  # (action_id, output) -> id
 def diff_plans(old: Plan, new: Plan) -> list[ActionDiff]: ...   # per action: which key fields changed
+
+class Snapshotter(Protocol):        # implemented by ebs.sources.SourceSnapshotter
+    @property
+    def rehash(self) -> bool: ...
+    def snapshot(self, base: Path, pattern: str, *, optional: bool = False) -> SnapshotResult: ...
 ```
+
+- `base` is the flow directory (tables and source globs resolve against it); `info` is recorded
+  as plan.json `flow` (default `{"path": "flow.yaml", "git": null}`). `rehash=True` requires a
+  snapshotter with `rehash` set. `${imports.*}` raises `PlanError` until P2-03.
+- `refine` is idempotent and processes actions in plan order, so one call propagates through
+  chains of nondeterministic outputs; ids of nondeterministic outputs always come from the
+  producer's key, never from `produced`.
+- `diff_plans` lists the new plan's actions in order, then removed ones. Changed fields are named
+  `schema`, `rule`, `argv`, `toolchain`, `params.<n>`, `env.<n>`, `outputs.<n>`,
+  `config_files["<path>"]`, `inputs["<path>"]`; `unknown` actions carry
+  `pending = ("depends on <producer action_id>", …)`.
 
 ## 5. CAS — `ebs.cas.api`
 
@@ -444,6 +489,8 @@ class SourceSnapshotter:        # one per plan: git state is read once per repo 
                  audit_fraction: float = 0.01, untrusted_mounts: Sequence[Path] = (),
                  git: GitIds | Literal["auto"] | None = "auto",     # None disables the git guard
                  rng: random.Random | None = None) -> None: ...     # audit sampling (seed in tests)
+    @property
+    def rehash(self) -> bool: ...                                   # strict mode (P0-08)
     def snapshot(self, base: Path, pattern: str, *, optional: bool = False) -> SnapshotResult: ...
     def snapshot_file(self, path: Path) -> Digest: ...              # follows symlinks
     audit_mismatches: list[Path]
