@@ -43,6 +43,13 @@ def cache(tmp_path: Path) -> Iterator[StatCache]:
         yield c
 
 
+def test_rehash_is_exposed_for_the_planner(tmp_path: Path, cache: StatCache) -> None:
+    cas = CountingCAS(tmp_path / "cas")
+    assert _snap(tmp_path, cache, cas).rehash is False
+    strict = SourceSnapshotter(cas, cache, clock=_later(), git=None, rehash=True)
+    assert strict.rehash is True
+
+
 # R7
 def test_tree_layout(tmp_path: Path, cache: StatCache) -> None:
     src = tmp_path / "src"

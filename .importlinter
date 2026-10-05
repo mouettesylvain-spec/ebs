@@ -4,6 +4,9 @@
 #   L0 core · L1 config, flow, cas, toolchain.fingerprint · L2 sources, plan, rules, meta (store)
 #   L3 exec, runner, sandbox, gc, release, toolchain (registry) · L4 driver, meta.service · L5 cli
 #
+# Within L2, plan sits above sources and rules: the planner drives both, and neither may import
+# plan (P0-08). Siblings separated by ':' may import each other.
+#
 # `meta` and `toolchain` span several layers, so they are not in the layers contract (import-linter
 # rejects overlapping layers); the forbidden contracts below pin their parts instead. Modules named
 # here that do not exist yet are ignored by import-linter until a later task creates them.
@@ -19,7 +22,8 @@ layers =
     ebs.cli
     ebs.driver
     ebs.exec : ebs.runner : ebs.sandbox : ebs.gc : ebs.release
-    ebs.sources : ebs.plan : ebs.rules
+    ebs.plan
+    ebs.sources : ebs.rules
     ebs.config : ebs.flow : ebs.cas
     ebs.core
 

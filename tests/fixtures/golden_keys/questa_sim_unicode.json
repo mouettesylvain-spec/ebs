@@ -1,0 +1,80 @@
+{
+ "key": "sha256:326a2a6c961ab9fa876838254b410fc206f7e154ee4cdeb9f1e752a7ee1dceef",
+ "key_schema": 1,
+ "name": "questa_sim_unicode",
+ "spec": {
+  "action_id": "sim[seed=17,test=caf%C3%A9]",
+  "argv": [
+   "vsim",
+   "-c",
+   "-sv_seed",
+   "17",
+   "+name=café",
+   "model/elab"
+  ],
+  "config_files": {},
+  "debug": {
+   "collect": [
+    "transcript"
+   ],
+   "max_size": 2147483648,
+   "on_success": false
+  },
+  "domain": "demo",
+  "env": {
+   "UVM_TESTNAME": "café"
+  },
+  "inputs": [
+   {
+    "id": "sha256:9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4",
+    "kind": "tree",
+    "path": "model/elab",
+    "source": {
+     "action": "elab",
+     "output": "model",
+     "type": "output"
+    }
+   }
+  ],
+  "key": null,
+  "licenses": {},
+  "outputs": [
+   {
+    "deterministic": true,
+    "name": "cov",
+    "optional": true,
+    "path": "cov.ucdb",
+    "type": "file"
+   },
+   {
+    "deterministic": true,
+    "name": "result",
+    "optional": false,
+    "path": "result.json",
+    "type": "file"
+   }
+  ],
+  "params": {
+   "seed": "17",
+   "test": "café",
+   "timeout_s": -1,
+   "verbose": true
+  },
+  "resources": {
+   "cpus": null,
+   "mem": null,
+   "time": null
+  },
+  "rule": {
+   "kind": "questa.sim",
+   "version": "1"
+  },
+  "runtime_env": {},
+  "step": "sim",
+  "toolchain": {
+   "id": "sha256:28e873dfe5b69747424b42885fd2c4857c836bb25a7cc0114759740a33ed3503",
+   "module": "questa/2025.2",
+   "name": "questa"
+  }
+ }
+}

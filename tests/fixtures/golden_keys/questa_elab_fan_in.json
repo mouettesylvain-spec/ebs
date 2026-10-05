@@ -1,0 +1,72 @@
+{
+ "key": "sha256:6420b746187e7cfb714b782b5ccb60d4c356ae2cba6512925cbfeed6695b1f2f",
+ "key_schema": 1,
+ "name": "questa_elab_fan_in",
+ "spec": {
+  "action_id": "elab",
+  "argv": [
+   "vopt",
+   "-L",
+   "worklib/compile[filelist=core.f,lib=core]",
+   "tb_top",
+   "-o",
+   "opt"
+  ],
+  "config_files": {
+   "modelsim.ini": "[Library]\ncore = worklib/compile[filelist=core.f,lib=core]\n"
+  },
+  "debug": {
+   "collect": [],
+   "max_size": null,
+   "on_success": false
+  },
+  "domain": "demo",
+  "env": {},
+  "inputs": [
+   {
+    "id": "sha256:cf2bf97e922d698d5ff16679f8f90ebbca84c6938643f09d854008b2b2d9d6be",
+    "kind": "tree",
+    "path": "worklib/compile[filelist=core.f,lib=core]",
+    "source": {
+     "action": "compile[filelist=core.f,lib=core]",
+     "output": "worklib",
+     "type": "output"
+    }
+   }
+  ],
+  "key": null,
+  "licenses": {},
+  "outputs": [
+   {
+    "deterministic": false,
+    "name": "model",
+    "optional": false,
+    "path": "opt",
+    "type": "dir"
+   }
+  ],
+  "params": {
+   "libs": [
+    "core",
+    "alu"
+   ],
+   "top": "tb_top"
+  },
+  "resources": {
+   "cpus": null,
+   "mem": null,
+   "time": null
+  },
+  "rule": {
+   "kind": "questa.opt",
+   "version": "1"
+  },
+  "runtime_env": {},
+  "step": "elab",
+  "toolchain": {
+   "id": "sha256:28e873dfe5b69747424b42885fd2c4857c836bb25a7cc0114759740a33ed3503",
+   "module": "questa/2025.2",
+   "name": "questa"
+  }
+ }
+}

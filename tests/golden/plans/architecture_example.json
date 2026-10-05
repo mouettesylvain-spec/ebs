@@ -1,0 +1,602 @@
+{
+ "actions": [
+  {
+   "action_id": "compile[filelist=core.f,lib=core]",
+   "argv": [
+    "compile",
+    "lib=core",
+    "vlog_opts=-sv -timescale 1ns/1ps"
+   ],
+   "config_files": {},
+   "debug": {
+    "collect": [],
+    "max_size": null,
+    "on_success": false
+   },
+   "domain": "cpu-nda",
+   "env": {},
+   "inputs": [
+    {
+     "id": "sha256:7525a9af125b4e64165912c47d49f1c54bdd8ba58d43f078d3ad7f8408a6a64f",
+     "kind": "file",
+     "path": "rtl/alu.sv",
+     "source": {
+      "input": "srcs",
+      "pattern": "rtl/**/*.sv",
+      "type": "source"
+     }
+    },
+    {
+     "id": "sha256:a1f08e91a25eb82cf46622cc2b7924cb36052b33e9b56b665ea3b22f0d98b2ca",
+     "kind": "file",
+     "path": "rtl/core.f",
+     "source": {
+      "input": "filelist",
+      "pattern": "rtl/core.f",
+      "type": "source"
+     }
+    },
+    {
+     "id": "sha256:d2dd1e425b8758152f473312a6c9552aaeac343058ff4522c01a88557242b2dc",
+     "kind": "file",
+     "path": "rtl/core.sv",
+     "source": {
+      "input": "srcs",
+      "pattern": "rtl/**/*.sv",
+      "type": "source"
+     }
+    }
+   ],
+   "key": "sha256:69b63f1d260398bfe1012f7d3bd5f549a82b31b4f8d5be46bffb36b5fd5ab785",
+   "licenses": {
+    "msimhdlsim": 1
+   },
+   "outputs": [
+    {
+     "deterministic": false,
+     "name": "worklib",
+     "optional": false,
+     "path": "work/core",
+     "type": "dir"
+    }
+   ],
+   "params": {
+    "lib": "core",
+    "vlog_opts": "-sv -timescale 1ns/1ps"
+   },
+   "resources": {
+    "cpus": 2,
+    "mem": 8589934592,
+    "time": 1800
+   },
+   "rule": {
+    "kind": "questa.compile",
+    "version": "1"
+   },
+   "runtime_env": {},
+   "step": "compile",
+   "toolchain": {
+    "id": "sha256:e36038013798a8e7b6c0bed4cd85530db7add6c5e276847e0e0cfd871db6af08",
+    "module": "questa/2025.2",
+    "name": "questa"
+   }
+  },
+  {
+   "action_id": "compile[filelist=alu.f,lib=alu]",
+   "argv": [
+    "compile",
+    "lib=alu",
+    "vlog_opts=-sv -timescale 1ns/1ps"
+   ],
+   "config_files": {},
+   "debug": {
+    "collect": [],
+    "max_size": null,
+    "on_success": false
+   },
+   "domain": "cpu-nda",
+   "env": {},
+   "inputs": [
+    {
+     "id": "sha256:5ae934141597c020845e2f5ac4a1778dba5146210b15cc9f815ff21165940977",
+     "kind": "file",
+     "path": "rtl/alu.f",
+     "source": {
+      "input": "filelist",
+      "pattern": "rtl/alu.f",
+      "type": "source"
+     }
+    },
+    {
+     "id": "sha256:7525a9af125b4e64165912c47d49f1c54bdd8ba58d43f078d3ad7f8408a6a64f",
+     "kind": "file",
+     "path": "rtl/alu.sv",
+     "source": {
+      "input": "srcs",
+      "pattern": "rtl/**/*.sv",
+      "type": "source"
+     }
+    },
+    {
+     "id": "sha256:d2dd1e425b8758152f473312a6c9552aaeac343058ff4522c01a88557242b2dc",
+     "kind": "file",
+     "path": "rtl/core.sv",
+     "source": {
+      "input": "srcs",
+      "pattern": "rtl/**/*.sv",
+      "type": "source"
+     }
+    }
+   ],
+   "key": "sha256:b3ab1c108918b760164412d0f84828586be42410cd72de14d077c8ef598653a7",
+   "licenses": {
+    "msimhdlsim": 1
+   },
+   "outputs": [
+    {
+     "deterministic": false,
+     "name": "worklib",
+     "optional": false,
+     "path": "work/alu",
+     "type": "dir"
+    }
+   ],
+   "params": {
+    "lib": "alu",
+    "vlog_opts": "-sv -timescale 1ns/1ps"
+   },
+   "resources": {
+    "cpus": 2,
+    "mem": 8589934592,
+    "time": 1800
+   },
+   "rule": {
+    "kind": "questa.compile",
+    "version": "1"
+   },
+   "runtime_env": {},
+   "step": "compile",
+   "toolchain": {
+    "id": "sha256:e36038013798a8e7b6c0bed4cd85530db7add6c5e276847e0e0cfd871db6af08",
+    "module": "questa/2025.2",
+    "name": "questa"
+   }
+  },
+  {
+   "action_id": "elab",
+   "argv": [
+    "opt",
+    "top=tb_top"
+   ],
+   "config_files": {},
+   "debug": {
+    "collect": [],
+    "max_size": null,
+    "on_success": false
+   },
+   "domain": "cpu-nda",
+   "env": {},
+   "inputs": [
+    {
+     "id": "sha256:7b0e805b297940fd2e85cab7be52f39c556a247993d7e69a06644ea9ec09d6fc",
+     "kind": "tree",
+     "path": "worklib/compile[filelist=alu.f,lib=alu]",
+     "source": {
+      "action": "compile[filelist=alu.f,lib=alu]",
+      "output": "worklib",
+      "type": "output"
+     }
+    },
+    {
+     "id": "sha256:b66688aaed3d6ed94dab31d69792b983f710566f6642c95c681335d5e63e829c",
+     "kind": "tree",
+     "path": "worklib/compile[filelist=core.f,lib=core]",
+     "source": {
+      "action": "compile[filelist=core.f,lib=core]",
+      "output": "worklib",
+      "type": "output"
+     }
+    }
+   ],
+   "key": "sha256:8d2af4265538909e9c4ee2a6f59d9a6f92419f2f52edeeeb07cc86e989b28052",
+   "licenses": {
+    "msimhdlsim": 1
+   },
+   "outputs": [
+    {
+     "deterministic": false,
+     "name": "model",
+     "optional": false,
+     "path": "opt",
+     "type": "dir"
+    }
+   ],
+   "params": {
+    "top": "tb_top"
+   },
+   "resources": {
+    "cpus": null,
+    "mem": null,
+    "time": null
+   },
+   "rule": {
+    "kind": "questa.opt",
+    "version": "1"
+   },
+   "runtime_env": {},
+   "step": "elab",
+   "toolchain": {
+    "id": "sha256:e36038013798a8e7b6c0bed4cd85530db7add6c5e276847e0e0cfd871db6af08",
+    "module": "questa/2025.2",
+    "name": "questa"
+   }
+  },
+  {
+   "action_id": "sim[plusargs=,seed=1,test=smoke,timeout=10m]",
+   "argv": [
+    "sim",
+    "plusargs=",
+    "seed=1",
+    "test=smoke"
+   ],
+   "config_files": {},
+   "debug": {
+    "collect": [
+     "transcript",
+     "*.log"
+    ],
+    "max_size": 2147483648,
+    "on_success": false
+   },
+   "domain": "cpu-nda",
+   "env": {},
+   "inputs": [
+    {
+     "id": "sha256:a8cf0c3f16ea66f7636e25734c1a5bc99a5e007b8d2571f5dfee2630baaa3a34",
+     "kind": "tree",
+     "path": "model/elab",
+     "source": {
+      "action": "elab",
+      "output": "model",
+      "type": "output"
+     }
+    }
+   ],
+   "key": "sha256:b1f782a209dde5750251f1d3ef6de566675aba975722c2634940ce600beef8e7",
+   "licenses": {
+    "msimhdlsim": 1
+   },
+   "outputs": [
+    {
+     "deterministic": true,
+     "name": "cov",
+     "optional": true,
+     "path": "cov.ucdb",
+     "type": "file"
+    },
+    {
+     "deterministic": true,
+     "name": "result",
+     "optional": false,
+     "path": "result.json",
+     "type": "file"
+    }
+   ],
+   "params": {
+    "plusargs": "",
+    "seed": "1",
+    "test": "smoke"
+   },
+   "resources": {
+    "cpus": 1,
+    "mem": 4294967296,
+    "time": 600
+   },
+   "rule": {
+    "kind": "questa.sim",
+    "version": "1"
+   },
+   "runtime_env": {},
+   "step": "sim",
+   "toolchain": {
+    "id": "sha256:e36038013798a8e7b6c0bed4cd85530db7add6c5e276847e0e0cfd871db6af08",
+    "module": "questa/2025.2",
+    "name": "questa"
+   }
+  },
+  {
+   "action_id": "sim[plusargs=%2Bverbose,seed=2,test=smoke,timeout=10m]",
+   "argv": [
+    "sim",
+    "plusargs=+verbose",
+    "seed=2",
+    "test=smoke"
+   ],
+   "config_files": {},
+   "debug": {
+    "collect": [
+     "transcript",
+     "*.log"
+    ],
+    "max_size": 2147483648,
+    "on_success": false
+   },
+   "domain": "cpu-nda",
+   "env": {},
+   "inputs": [
+    {
+     "id": "sha256:a8cf0c3f16ea66f7636e25734c1a5bc99a5e007b8d2571f5dfee2630baaa3a34",
+     "kind": "tree",
+     "path": "model/elab",
+     "source": {
+      "action": "elab",
+      "output": "model",
+      "type": "output"
+     }
+    }
+   ],
+   "key": "sha256:72bdae2e82de8e2017b944bbc0e06ca63b5f2651283fab8cddd924a6bfcdaf92",
+   "licenses": {
+    "msimhdlsim": 1
+   },
+   "outputs": [
+    {
+     "deterministic": true,
+     "name": "cov",
+     "optional": true,
+     "path": "cov.ucdb",
+     "type": "file"
+    },
+    {
+     "deterministic": true,
+     "name": "result",
+     "optional": false,
+     "path": "result.json",
+     "type": "file"
+    }
+   ],
+   "params": {
+    "plusargs": "+verbose",
+    "seed": "2",
+    "test": "smoke"
+   },
+   "resources": {
+    "cpus": 1,
+    "mem": 4294967296,
+    "time": 600
+   },
+   "rule": {
+    "kind": "questa.sim",
+    "version": "1"
+   },
+   "runtime_env": {},
+   "step": "sim",
+   "toolchain": {
+    "id": "sha256:e36038013798a8e7b6c0bed4cd85530db7add6c5e276847e0e0cfd871db6af08",
+    "module": "questa/2025.2",
+    "name": "questa"
+   }
+  },
+  {
+   "action_id": "sim[plusargs=%2Ba%3D1,seed=17,test=alu_rand,timeout=1h]",
+   "argv": [
+    "sim",
+    "plusargs=+a=1",
+    "seed=17",
+    "test=alu_rand"
+   ],
+   "config_files": {},
+   "debug": {
+    "collect": [
+     "transcript",
+     "*.log"
+    ],
+    "max_size": 2147483648,
+    "on_success": false
+   },
+   "domain": "cpu-nda",
+   "env": {},
+   "inputs": [
+    {
+     "id": "sha256:a8cf0c3f16ea66f7636e25734c1a5bc99a5e007b8d2571f5dfee2630baaa3a34",
+     "kind": "tree",
+     "path": "model/elab",
+     "source": {
+      "action": "elab",
+      "output": "model",
+      "type": "output"
+     }
+    }
+   ],
+   "key": "sha256:c9e9a79ce248d26f6ca013faf821620b12cb7d8164875d603cbe0f0907638fc4",
+   "licenses": {
+    "msimhdlsim": 1
+   },
+   "outputs": [
+    {
+     "deterministic": true,
+     "name": "cov",
+     "optional": true,
+     "path": "cov.ucdb",
+     "type": "file"
+    },
+    {
+     "deterministic": true,
+     "name": "result",
+     "optional": false,
+     "path": "result.json",
+     "type": "file"
+    }
+   ],
+   "params": {
+    "plusargs": "+a=1",
+    "seed": "17",
+    "test": "alu_rand"
+   },
+   "resources": {
+    "cpus": 1,
+    "mem": 4294967296,
+    "time": 3600
+   },
+   "rule": {
+    "kind": "questa.sim",
+    "version": "1"
+   },
+   "runtime_env": {},
+   "step": "sim",
+   "toolchain": {
+    "id": "sha256:e36038013798a8e7b6c0bed4cd85530db7add6c5e276847e0e0cfd871db6af08",
+    "module": "questa/2025.2",
+    "name": "questa"
+   }
+  },
+  {
+   "action_id": "lint_legacy",
+   "argv": [
+    "make",
+    "-C",
+    "flows/lint",
+    "lint"
+   ],
+   "config_files": {},
+   "debug": {
+    "collect": [],
+    "max_size": null,
+    "on_success": false
+   },
+   "domain": "cpu-nda",
+   "env": {},
+   "inputs": [
+    {
+     "id": "sha256:3491b79ebd84cb79ccbd33fff12a4c300f8d4627baa2872f8ace2fb29419dd0a",
+     "kind": "file",
+     "path": "flows/lint/Makefile",
+     "source": {
+      "input": "flow",
+      "pattern": "flows/lint/**",
+      "type": "source"
+     }
+    },
+    {
+     "id": "sha256:5ae934141597c020845e2f5ac4a1778dba5146210b15cc9f815ff21165940977",
+     "kind": "file",
+     "path": "rtl/alu.f",
+     "source": {
+      "input": "rtl",
+      "pattern": "rtl/**",
+      "type": "source"
+     }
+    },
+    {
+     "id": "sha256:7525a9af125b4e64165912c47d49f1c54bdd8ba58d43f078d3ad7f8408a6a64f",
+     "kind": "file",
+     "path": "rtl/alu.sv",
+     "source": {
+      "input": "rtl",
+      "pattern": "rtl/**",
+      "type": "source"
+     }
+    },
+    {
+     "id": "sha256:a1f08e91a25eb82cf46622cc2b7924cb36052b33e9b56b665ea3b22f0d98b2ca",
+     "kind": "file",
+     "path": "rtl/core.f",
+     "source": {
+      "input": "rtl",
+      "pattern": "rtl/**",
+      "type": "source"
+     }
+    },
+    {
+     "id": "sha256:d2dd1e425b8758152f473312a6c9552aaeac343058ff4522c01a88557242b2dc",
+     "kind": "file",
+     "path": "rtl/core.sv",
+     "source": {
+      "input": "rtl",
+      "pattern": "rtl/**",
+      "type": "source"
+     }
+    }
+   ],
+   "key": "sha256:3c58525c986ea053f1ecaac9bc6bbb4754710e419154df7918aea37f4482b107",
+   "licenses": {
+    "vcspyglass": 1
+   },
+   "outputs": [
+    {
+     "deterministic": true,
+     "name": "reports",
+     "optional": false,
+     "path": "reports/lint",
+     "type": "dir"
+    }
+   ],
+   "params": {},
+   "resources": {
+    "cpus": null,
+    "mem": null,
+    "time": null
+   },
+   "rule": {
+    "kind": "make",
+    "version": "1"
+   },
+   "runtime_env": {
+    "MAKEFLAGS": "-j$EBS_CPUS"
+   },
+   "step": "lint_legacy",
+   "toolchain": {
+    "id": "sha256:338021bcfac6c046fcbca0597350347f31e747fbb0045366866faf4bbdce1cc5",
+    "module": "vc_spyglass/2025.06",
+    "name": "spyglass"
+   }
+  }
+ ],
+ "domain": "cpu-nda",
+ "ebs_version": "golden",
+ "edges": [
+  [
+   "compile[filelist=alu.f,lib=alu]",
+   "worklib",
+   "elab"
+  ],
+  [
+   "compile[filelist=core.f,lib=core]",
+   "worklib",
+   "elab"
+  ],
+  [
+   "elab",
+   "model",
+   "sim[plusargs=%2Ba%3D1,seed=17,test=alu_rand,timeout=1h]"
+  ],
+  [
+   "elab",
+   "model",
+   "sim[plusargs=%2Bverbose,seed=2,test=smoke,timeout=10m]"
+  ],
+  [
+   "elab",
+   "model",
+   "sim[plusargs=,seed=1,test=smoke,timeout=10m]"
+  ]
+ ],
+ "flow": {
+  "git": null,
+  "path": "flow.yaml"
+ },
+ "key_schema": 1,
+ "lock": null,
+ "project": "rv32x-cpu",
+ "toolchains": {
+  "questa": {
+   "id": "sha256:e36038013798a8e7b6c0bed4cd85530db7add6c5e276847e0e0cfd871db6af08",
+   "module": "questa/2025.2"
+  },
+  "spyglass": {
+   "id": "sha256:338021bcfac6c046fcbca0597350347f31e747fbb0045366866faf4bbdce1cc5",
+   "module": "vc_spyglass/2025.06"
+  }
+ },
+ "v": 1
+}

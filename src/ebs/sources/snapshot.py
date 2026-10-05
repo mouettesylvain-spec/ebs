@@ -88,6 +88,11 @@ class SourceSnapshotter:
 
     # -- public -----------------------------------------------------------------------------
 
+    @property
+    def rehash(self) -> bool:
+        """True if git ids and the stat cache are never used (strict mode, `--rehash`)."""
+        return self._rehash
+
     def snapshot(self, base: Path, pattern: str, *, optional: bool = False) -> SnapshotResult:
         """Glob -> tree digest (logical layout relative to `base`), every blob in the CAS."""
         files = resolve_glob(base, pattern, optional=optional)

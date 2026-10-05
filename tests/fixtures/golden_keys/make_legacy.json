@@ -1,0 +1,73 @@
+{
+ "key": "sha256:b59bb8164595f43fa03fec1f047d99057502aa88859b24c51ecdbc4a4902f575",
+ "key_schema": 1,
+ "name": "make_legacy",
+ "spec": {
+  "action_id": "lint_legacy",
+  "argv": [
+   "make",
+   "-C",
+   "flows/lint",
+   "lint",
+   "STRICT=1"
+  ],
+  "config_files": {},
+  "debug": {
+   "collect": [],
+   "max_size": null,
+   "on_success": false
+  },
+  "domain": "demo",
+  "env": {},
+  "inputs": [
+   {
+    "id": "sha256:4c3b3284e206c3db72440736cfdbd185f0e61a3c7fd9f049987196b987d3d1ee",
+    "kind": "file",
+    "path": "flows/lint/Makefile",
+    "source": {
+     "input": "ebs.workdir",
+     "pattern": "flows/lint/**",
+     "type": "source"
+    }
+   },
+   {
+    "id": "sha256:5cbb90f594096aa46a13bfc12ef9c6bbae80125a91923a036c44d6a9af97d905",
+    "kind": "file",
+    "path": "rtl/alu.sv",
+    "source": {
+     "input": "rtl",
+     "pattern": "rtl/**",
+     "type": "source"
+    }
+   }
+  ],
+  "key": null,
+  "licenses": {},
+  "outputs": [
+   {
+    "deterministic": true,
+    "name": "reports",
+    "optional": false,
+    "path": "reports/lint",
+    "type": "dir"
+   }
+  ],
+  "params": {
+   "STRICT": 1
+  },
+  "resources": {
+   "cpus": 4,
+   "mem": 8589934592,
+   "time": 1800
+  },
+  "rule": {
+   "kind": "make",
+   "version": "1"
+  },
+  "runtime_env": {
+   "MAKEFLAGS": "-j$EBS_CPUS"
+  },
+  "step": "lint_legacy",
+  "toolchain": null
+ }
+}

@@ -1,0 +1,66 @@
+{
+ "key": "sha256:77619c134de6831b079ebe8a4e2cf0541034f5c9389757684da0a99ab2eb4abb",
+ "key_schema": 1,
+ "name": "shell_script",
+ "spec": {
+  "action_id": "lint",
+  "argv": [
+   "bash",
+   "--noprofile",
+   "--norc",
+   "-eo",
+   "pipefail",
+   ".ebs/script.sh"
+  ],
+  "config_files": {
+   ".ebs/script.sh": "lint --mode strict rtl/top.sv > lint.txt\n"
+  },
+  "debug": {
+   "collect": [],
+   "max_size": null,
+   "on_success": false
+  },
+  "domain": "demo",
+  "env": {
+   "LINT_LEVEL": "2"
+  },
+  "inputs": [
+   {
+    "id": "sha256:28720365c5e7476a011e4f43ac003ee5f16247a263b9d623aa85ed311d73bf39",
+    "kind": "file",
+    "path": "rtl/top.sv",
+    "source": {
+     "input": "rtl",
+     "pattern": "rtl/**",
+     "type": "source"
+    }
+   }
+  ],
+  "key": null,
+  "licenses": {},
+  "outputs": [
+   {
+    "deterministic": true,
+    "name": "report",
+    "optional": false,
+    "path": "lint.txt",
+    "type": "file"
+   }
+  ],
+  "params": {
+   "mode": "strict"
+  },
+  "resources": {
+   "cpus": null,
+   "mem": null,
+   "time": null
+  },
+  "rule": {
+   "kind": "shell",
+   "version": "1"
+  },
+  "runtime_env": {},
+  "step": "lint",
+  "toolchain": null
+ }
+}
