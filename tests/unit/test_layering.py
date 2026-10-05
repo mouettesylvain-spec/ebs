@@ -51,6 +51,8 @@ def test_copy_is_what_gets_analysed(ebs_copy: Path) -> None:
         ("meta/_violation.py", "import ebs.exec\n", "meta store (L2)"),
         ("flow/_violation.py", "import ebs.plan\n", "Package layering"),  # L1 -> L2
         ("cas/_violation.py", "import ebs.sources\n", "Package layering"),  # L1 -> L2
+        ("sources/_violation.py", "import ebs.plan\n", "Package layering"),  # plan drives sources
+        ("rules/_violation.py", "import ebs.plan.types\n", "Package layering"),  # and rules
         ("core/_violation.py", "import ebs.meta\n", "core (L0)"),
         ("core/_violation.py", "import ebs.toolchain\n", "core (L0)"),
         ("flow/_violation.py", "import ebs.meta\n", "L0-L1 do not import meta"),

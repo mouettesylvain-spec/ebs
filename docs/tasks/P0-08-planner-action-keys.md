@@ -1,6 +1,6 @@
 # P0-08 — Planner, action keys, plan.json, plan diff
 
-Status: todo · Phase: 0 · Depends on: P0-05, P0-06, P0-07, P0-12 · Parallel-safe with: P0-14 · Size: L
+Status: review · Phase: 0 · Depends on: P0-05, P0-06, P0-07, P0-12 · Parallel-safe with: P0-14 · Size: L
 
 ## Goal
 The heart of the system: turn a loaded flow into a static DAG of fully explicit actions with
@@ -68,9 +68,32 @@ interfaces.md §4 exactly: `ActionSpec`, `InputRef`, `KEY_SCHEMA_VERSION`, `acti
 | `test_planner.py::test_large_plan_perf` (mark `slow`) | R11 | unit |
 
 ## Done when
-- [ ] `make check` passes; `ebs.plan` ≥ 95 % line coverage
-- [ ] invariants I3/I4/I14 reference the real test names
+- [x] `make check` passes; `ebs.plan` ≥ 95 % line coverage
+- [x] invariants I3/I4/I14 reference the real test names
 
 ## Notes
 Keep planning pure: all I/O goes through injected `CAS`, `SourceSnapshotter`, `ToolchainResolver`,
 `RuleRegistry`. Use `FakeSnapshotter` (returns digests from a dict) in unit tests.
+
+Implementation notes (P0-08):
+- CONTRACT CHANGES (interfaces.md § 4, § 12): `Planner.plan(flow, *, base, info=None, targets=(),
+  rehash=False)` (the flow directory is needed and `Flow` carries no path); `ActionSpec.runtime_env`
+  (non-key); `ActionSpec.params` keeps bool/tuple values; `Snapshotter` protocol with the new public
+  `SourceSnapshotter.rehash` property; supporting types live in `ebs.plan.types`.
+- Layering: `plan` now sits above `sources : rules` in `.importlinter` (they never import plan).
+- Source inputs are one file `InputRef` per matched file (fine-grained diffs such as
+  `inputs["src/alu.sv"]`); output references are staged at `<output>/<instance id>[/<file name>]`.
+- Golden plan snapshot uses a small golden-file helper (`EBS_UPDATE_GOLDEN=1`) instead of syrupy,
+  which is allowed but not in uv.lock; adding it needs network access.
+
+Follow-ups / open questions:
+- Executable bit of source files: per-file `InputRef`s carry no mode, so a chmod-only change does
+  not change the key and the runner (P0-13) cannot restore `+x` on staged scripts. Needs an
+  `executable` flag in `InputRef` and the key document (KEY_SCHEMA_VERSION bump) — decide before P0-13.
+- `OutputSpec.optional` is not in the key (per contract): flipping an output from optional to
+  required can hit an old cache entry that lacks it. Either add it to the key (bump) or have the
+  driver (P0-15) reject cached manifests missing a required output.
+- Symlinks matched by a source glob are a PlanError for now (no symlink InputRef kind).
+- Sandbox v1 checks argv, input patterns, outputs, config file paths and debug patterns; absolute
+  paths inside `shell` scripts (config file content) and env values are not checked (P0-13/P3-01).
+- `Plan.action()` / `ActionSpec.input()` are linear scans; the driver should build its own index.

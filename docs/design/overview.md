@@ -54,6 +54,8 @@ L4  driver, meta(service)
 L5  cli
 ```
 
+- Within L2, `plan` sits above `sources` and `rules` (the planner drives both); they never
+  import `plan`.
 - `runner` must not import `driver`, `plan.planner` or `meta.service` (it runs on compute nodes
   with a minimal dependency set: it reads an ActionSpec and talks to CAS + metadata client).
 - `rules` plugins may import `core`, `flow`, `rules.api` only.

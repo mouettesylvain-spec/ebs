@@ -1,0 +1,81 @@
+{
+ "key": "sha256:49d4a3126ccd32831196f0f03a4ffc47381d1b7d6c444792323563f264924c9b",
+ "key_schema": 1,
+ "name": "questa_compile",
+ "spec": {
+  "action_id": "compile[filelist=core.f,lib=core]",
+  "argv": [
+   "vlog",
+   "-work",
+   "work/core",
+   "-f",
+   "rtl/core.f",
+   "-sv",
+   "-timescale",
+   "1ns/1ps"
+  ],
+  "config_files": {},
+  "debug": {
+   "collect": [],
+   "max_size": null,
+   "on_success": false
+  },
+  "domain": "demo",
+  "env": {},
+  "inputs": [
+   {
+    "id": "sha256:252f10c83610ebca1a059c0bae8255eba2f95be4d1d7bcfa89d7248a82d9f111",
+    "kind": "file",
+    "path": "rtl/core.f",
+    "source": {
+     "input": "filelist",
+     "pattern": "rtl/core.f",
+     "type": "source"
+    }
+   },
+   {
+    "id": "sha256:2e7d2c03a9507ae265ecf5b5356885a53393a2029d241394997265a1a25aefc6",
+    "kind": "file",
+    "path": "rtl/core.sv",
+    "source": {
+     "input": "srcs",
+     "pattern": "rtl/**/*.sv",
+     "type": "source"
+    }
+   }
+  ],
+  "key": null,
+  "licenses": {
+   "msimhdlsim": 1
+  },
+  "outputs": [
+   {
+    "deterministic": false,
+    "name": "worklib",
+    "optional": false,
+    "path": "work/core",
+    "type": "dir"
+   }
+  ],
+  "params": {
+   "lib": "core",
+   "vlog_opts": "-sv -timescale 1ns/1ps"
+  },
+  "resources": {
+   "cpus": null,
+   "mem": null,
+   "time": null
+  },
+  "rule": {
+   "kind": "questa.compile",
+   "version": "1"
+  },
+  "runtime_env": {},
+  "step": "compile",
+  "toolchain": {
+   "id": "sha256:28e873dfe5b69747424b42885fd2c4857c836bb25a7cc0114759740a33ed3503",
+   "module": "questa/2025.2",
+   "name": "questa"
+  }
+ }
+}
