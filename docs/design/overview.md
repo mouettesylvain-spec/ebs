@@ -92,6 +92,9 @@ racy_window_s = 3
 audit_fraction = 0.01
 untrusted_mounts = []
 
+[rules]                        # read into ebs.rules.api.RuleSettings (config wiring: P0-16)
+license_error_patterns = []    # regexes on the log tail => INFRA("license"); replaces the defaults
+
 [slurm]                        # P1
 default_partition = ""
 max_array_size = 1000

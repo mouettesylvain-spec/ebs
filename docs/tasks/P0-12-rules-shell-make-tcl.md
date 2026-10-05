@@ -1,6 +1,6 @@
 # P0-12 — Rule plugin API and `shell`, `make`, `tcl` rules
 
-Status: todo · Phase: 0 · Depends on: P0-05 · Parallel-safe with: P0-09 · Size: M
+Status: review · Phase: 0 · Depends on: P0-05 · Parallel-safe with: P0-09 · Size: M
 
 ## Goal
 A plugin interface for step kinds, plus the three generic rules that let teams wrap existing Makefile
@@ -51,4 +51,28 @@ outputs, config files, default `classify` behaviour.
 | `test_*::test_golden_argv` | R6 | unit/golden |
 
 ## Done when
-- [ ] `make check` passes
+- [x] `make check` passes
+
+## Notes
+- Contract: interfaces.md §7 now defines `ExpandContext`, `ActionTemplate`, `Classification`,
+  `RuleSettings`, `RuleRegistry` and helpers (they were named but undefined).
+- `ActionTemplate.runtime_env` (make: `MAKEFLAGS=-j$EBS_CPUS`) is not part of the key. **P0-08** must
+  carry it in a non-key `ActionSpec` field, and **P0-13** must expand it with `expand_runtime_env`
+  after setting `EBS_CPUS`. P0-08 also merges the template's implicit inputs/config files with the
+  declared ones and must reject name/path collisions (generated files live under `.ebs/`).
+- `Classification` reason `"tool_crash"` (R5) is not in `meta.api.InfraReason` (P0-10). **P0-13**
+  must map it, or meta should add `tool_crash`.
+- `[rules].license_error_patterns` is defined in `RuleSettings`, but nothing loads it from
+  `ebs.toml` yet (`ebs.config` is a stub). It gets wired up where the registry is built (P0-16).
+- Default classify also treats exit codes 128+N (a shell or make reporting that a child was
+  killed by SIGKILL/SIGSEGV/SIGBUS) as a crash. The trade-off: a tool that genuinely exits
+  135/137/139 gets retried instead of cached, which is better than caching a crash as a test failure.
+- Tcl quoting is property-tested against real Tcl via stdlib `tkinter.Tcl()`: Tcl 9.0 locally
+  (uv's Python) and Tcl 8.6 in CI (bookworm). `test_real_tclsh` skips when there is no `tclsh`.
+- `tcl` rejects values with characters above U+FFFF (RuleError): Tcl 8.6 reads `\U` escapes for
+  them as U+FFFD, and many EDA tools still embed 8.6 or older (found by CI on 8.6).
+- Follow-ups: the tcl argv shape `<tool> <script> [args]` cannot express `dc_shell -f x.tcl` or
+  `vsim -do x.tcl` (vendor packs, P1-08, or a script placeholder); tcl does not add the user script
+  as an implicit input (it must be declared; strict staging makes an omission fail loudly).
+- P0-05 was merged to main (5cbfd41) while the README still said `review`; treated as done.
+
