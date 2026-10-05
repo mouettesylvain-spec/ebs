@@ -1,6 +1,6 @@
 # P0-07 — Toolchain fingerprint and environment capture
 
-Status: todo · Phase: 0 · Depends on: P0-02 · Parallel-safe with: P0-03, P0-05, P0-10 · Size: S
+Status: review · Phase: 0 · Depends on: P0-02 · Parallel-safe with: P0-03, P0-05, P0-10 · Size: S
 
 ## Goal
 Compute an immutable toolchain id from an install tree and a captured environment, so tool
@@ -53,4 +53,19 @@ class StaticToolchainResolver: ...
 | `test_fingerprint.py::test_large_tree_perf` (mark `slow`) | R5 | unit |
 
 ## Done when
-- [ ] `make check` passes
+- [x] `make check` passes
+
+## Notes
+- CONTRACT CHANGE: new `ebs.core.errors.ToolchainError`; the toolchain contract is documented in
+  docs/design/interfaces.md § 13.
+- `toolchain_id` lives in `model.py`, not `env.py`: import-linter forbids L0-L2 (the planner)
+  from importing `toolchain.env`, and `StaticToolchainResolver` needs the id.
+- `capture_env` takes an injected `runner`. `base_env` rejects HOME, non-identifier names
+  (exported `BASH_FUNC_…%%`), `BASH_*` and bash startup variables (`BASH_ENV` would otherwise
+  run command substitutions).
+- `.ebs/toolchains.yaml` is keyed by module, so the flow-level name does not affect the id.
+- Follow-up (P0-17): in-repo fake tool trees get new mtimes in every clone, so their fingerprint
+  (and every action key) differs per checkout; pin `fingerprint:` in the demo's toolchains.yaml
+  if the e2e test needs cache hits across checkouts.
+- Follow-up (P1-07): the setup command is trusted and can still subvert the final `env -0` (e.g.
+  by defining a `builtin` function); registration should log the module command it ran.

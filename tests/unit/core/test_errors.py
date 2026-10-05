@@ -18,6 +18,7 @@ SUBCLASSES = [
     "SandboxError",
     "TreeError",
     "SourceError",
+    "ToolchainError",
 ]
 
 
