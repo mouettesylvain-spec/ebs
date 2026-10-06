@@ -59,6 +59,7 @@ def test_exit_codes_match_interfaces() -> None:
         ("USAGE", 2),
         ("INFRA", 3),
         ("INTERNAL", 4),
+        ("CANCELLED", 130),  # P0-15: interrupted by the user (128 + SIGINT), shell convention
     ]
 
 

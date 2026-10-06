@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from ebs.core.clock import Clock, SystemClock
@@ -20,6 +20,7 @@ from ebs.meta._common import (
     check_result,
     edge_rows,
     revalidate,
+    stored_result,
     touch_cutoff,
     transition,
 )
@@ -60,6 +61,7 @@ class _Blob:
 class _Build:
     view: BuildView
     actions: dict[str, ActionRow]
+    results: dict[str, dict[str, object]] = field(default_factory=dict)  # JSON, like a jsonb row
 
 
 class InMemoryMetadataStore:
@@ -108,6 +110,18 @@ class InMemoryMetadataStore:
             now = self._clock.now()
             self._domains.add(domain)
             self._cache[(domain, str(key))] = _CacheEntry(payload, now, now, 0)
+            return True
+
+    def cache_replace_failed(self, domain: str, key: Digest, result: ResultManifest) -> bool:
+        check_domain(domain)
+        check_digest(key, "cache_replace_failed key")
+        payload = check_result(key, result, f"cache_replace_failed {domain}/{key}").to_json()
+        with self._lock:
+            entry = self._cache.get((domain, str(key)))
+            if entry is None or entry.result.get("status") != "failed":
+                return False
+            now = self._clock.now()
+            entry.result, entry.created_at, entry.last_access = payload, now, now
             return True
 
     # --- builds ---------------------------------------------------------------------------------
@@ -190,6 +204,13 @@ class InMemoryMetadataStore:
             for k, blob in blobs.items():
                 self._blobs.setdefault(k, blob)
             b.actions[action_id] = new_row
+            b.results[action_id] = checked.to_json()
+
+    def get_result(self, build: BuildId, action_id: str) -> ResultManifest | None:
+        with self._lock:
+            b, _ = self._action(build, action_id)
+            payload = b.results.get(action_id)
+        return None if payload is None else stored_result(payload, build, action_id)
 
     def _write_edges(self, edges: dict[_EdgeKey, tuple[str, str | None]]) -> None:
         for k, v in edges.items():

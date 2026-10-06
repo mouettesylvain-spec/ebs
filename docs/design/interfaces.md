@@ -310,11 +310,13 @@ class MetadataStore(Protocol):
     # action cache
     def cache_get(self, domain: str, key: Digest) -> ResultManifest | None: ...     # also touches last_access
     def cache_put(self, domain: str, key: Digest, result: ResultManifest) -> bool: ...  # False if already present
+    def cache_replace_failed(self, domain: str, key: Digest, result: ResultManifest) -> bool: ...  # P0-15: --rerun-failed
     # builds
     def create_build(self, b: BuildCreate) -> BuildId: ...
     def add_actions(self, build: BuildId, actions: Sequence[ActionRow]) -> None: ...
     def set_action_state(self, build: BuildId, action_id: str, state: ActionState, **fields: object) -> None: ...
     def record_result(self, build: BuildId, action_id: str, result: ResultManifest) -> None: ...  # also writes provenance edges; never changes state
+    def get_result(self, build: BuildId, action_id: str) -> ResultManifest | None: ...  # P0-15: last recorded manifest
     def finish_build(self, build: BuildId, status: BuildStatus) -> None: ...
     def get_build(self, build: BuildId) -> BuildView: ...
     def list_actions(self, build: BuildId, *, state: ActionState | None = None) -> list[ActionRow]: ...
@@ -332,6 +334,10 @@ Implementations: `PgMetadataStore` (SQLAlchemy), `InMemoryMetadataStore` (tests)
 Every method is one short transaction and raises `MetadataError`; models are frozen, strict and
 re-validated on write (values must also pass `canonical_json`).
 
+- `cache_replace_failed` (P0-15) replaces an entry only while it holds a `failed` result (new
+  `created_at`/`last_access`, hits kept); it never inserts and never overwrites a passed result.
+  The driver calls it after a `--rerun-failed` run in cache mode `write`, because the runner's
+  `cache_put` keeps the old failure.
 - `cache_put` is insert-if-absent and requires `result.action_key == key`. `cache_get` counts a
   hit on every call and rewrites `last_access` at most once per hour (`TOUCH_INTERVAL_S`); `touch`
   applies the same throttle to known `blobs` rows and ignores unknown digests.
@@ -340,9 +346,11 @@ re-validated on write (values must also pass `canonical_json`).
 - `InfraReason = oom | timeout | node_fail | preempted | license | runner_crash |
   input_verification | other` (`input_verification` = runner exit 76, added by P0-14 with
   migration `0002`); `PendingReason = licenses | resources | priority | other`.
-- `ActionState` transitions (`TRANSITIONS`): `queued → pending|running|cached|cancelled|infra_failed`,
+- `ActionState` transitions (`TRANSITIONS`): `queued → pending|running|cached|cancelled|infra_failed|skipped`,
   `pending → pending|running|infra_failed|cancelled`, `running → done|failed|infra_failed|cancelled`,
-  `infra_failed → queued` (retry); `done`, `failed`, `cached`, `cancelled` are final. The store
+  `infra_failed → queued` (retry); `done`, `failed`, `cached`, `cancelled`, `skipped` are final.
+  `skipped` (P0-15, migration `0003`) = never started: a producer did not succeed, an input was
+  not produced, or the build stopped after a failure without `--keep-going`. The store
   stamps `queued_at`/`started_at`/`finished_at`, counts `attempts` on entering `running`, sets
   `cached` on `cached`, and a retry clears the previous attempt's job id, reasons and times.
   `**fields` accepts `key` (only while unset or unchanged), `result_key`, `slurm_job_id`, `pending_reason` (state `pending` only),
@@ -350,8 +358,13 @@ re-validated on write (values must also pass `canonical_json`).
 - `record_result` sets the action's `key` (if still unset; a different key is refused) and
   `result_key`, writes one `in` provenance edge per `inputs` entry and one `out` edge per output
   (`object_id` = passed-down id, `content_digest` = content), and registers output blobs, all in
-  one transaction and idempotently. It does not change the state: the runner may post before the
-  driver has seen `running`; the driver sets `done`/`failed` after reading the result.
+  one transaction and idempotently. It also stores the manifest on the action row (P0-15,
+  migration `0003`, column `actions.result`); a later manifest for the same key replaces it. It
+  does not change the state: the runner may post before the driver has seen `running`; the
+  driver sets `done`/`failed` after reading the result with `get_result`.
+- `get_result(build, action_id)` (P0-15) returns the last manifest recorded for that action of
+  that build (also for cache hits, which the driver records), or None; unknown build or action
+  ⇒ `MetadataError`. It is how the driver learns pass/fail and output ids in every cache mode.
 - `resolve_output(domain, object_id)` (P0-13) returns the `content_digest` of an `out` edge
   whose passed-down id is `object_id`, else None (also for `in` edges and other domains). The
   runner uses it to fetch the bytes of a `deterministic: false` input, whose id is derived from
@@ -546,7 +559,44 @@ The `Event` model is defined in `ebs.meta.api` (§ 6) and re-exported here.
 `Event` = `{v, ts, build, type, action_id?, data}` with types: `build_started`, `plan_ready`,
 `cache_hit`, `submitted`, `pending`, `running`, `finished`, `infra_failed`, `retrying`,
 `build_finished`, `stat_audit_mismatch`. Emitted to MetadataStore and to a local JSONL file
-(`.ebs/builds/<id>/events.jsonl`) used by `ebs status` / `ebs logs` when offline.
+(`<workdir>/.ebs/builds/<uuid>/events.jsonl`, written before the store so an outage leaves a
+trace) used by `ebs status` / `ebs logs` when offline; `read_events(path)` parses it. Data (no
+floats): `submitted {job_id, attempt, batch_size}`, `pending {reason}`, `running {job_id}`,
+`cache_hit {key, status}`, `infra_failed {reason, exit_code?, detail?}`, `retrying {attempt,
+delay_ms}`, `finished {state ∈ done|failed|infra_failed|skipped|cancelled, exit_code?, attempts?,
+reason?}`, `build_finished {status, counts}`.
+
+Driver API (P0-15; used by the CLI, P0-16, and retry tuning, P1-05):
+
+```python
+def run_build(plan: Plan, *, refiner: Refiner, cas: CAS, store: MetadataStore, executor: Executor,
+              workdir: Path, user: str, config: DriverConfig | None = None, ci_job: str | None = None,
+              clock: Clock | None = None, retry: RetryPolicy | None = None,
+              handle_sigint: bool = False) -> BuildOutcome: ...
+# BuildOutcome(build, uuid, status, exit_code, states: {action_id: final state}, plan (refined), events_path)
+
+@dataclass(frozen=True)
+class DriverConfig:                 # ebs.driver.scheduler
+    cache_mode: CacheMode = "read"; rerun_failed: bool = False; keep_going: bool = False
+    max_retries: int = 2; max_batch: int = 1000; poll_min_s: float = 0.5; poll_max_s: float = 10.0
+
+class RetryPolicy(Protocol):        # ebs.driver.retry
+    def decide(self, spec: ActionSpec, attempt: int, reason: InfraReason) -> RetryDecision | None: ...
+RetryDecision(delay_s: float, resources: Resources | None = None)   # resources: e.g. more mem after OOM
+BackoffRetry(max_retries=2, base_s=10.0, factor=2.0, max_s=300.0)
+CachePolicy(mode, rerun_failed=False)   # .reads, .writes, .accept(result)
+```
+
+Driver rules: an action is looked up in the cache and, on a miss, submitted only once all its
+producers succeeded and its key is known; the refined plan is stored in the CAS before each
+submit (the runner needs keys). Batches group one step with identical resources and licenses.
+One `poll` per loop iteration; the wait doubles from `poll_min_s` to `poll_max_s` while nothing
+changes and also ends when a retry is due. Executor results: `done` ⇒ `get_result` (none posted
+⇒ infra `runner_crash`); `infra_failed` ⇒ retry policy; `cancelled` not requested by the driver,
+or a job missing from 10 polls in a row ⇒ infra `other`. A waiting retry stays `infra_failed`
+until resubmitted; if the build stops it is abandoned in that state. Ctrl-C (`handle_sigint`)
+cancels submitted work, keeps results of jobs that already finished, marks the rest
+`cancelled`, and restores the previous handler so a second Ctrl-C interrupts at once.
 
 ## 11. Errors and CLI exit codes — `ebs.core.errors`
 
@@ -554,7 +604,12 @@ The `Event` model is defined in `ebs.meta.api` (§ 6) and re-exported here.
 `TreeError`, `PlanError`, `CasError`, `MetadataError`, `ExecutorError`, `RuleError`, `SandboxError`,
 `SourceError` (→ `SourceEscapeError`), `ToolchainError`.
 CLI exit codes: `0` ok, `1` build finished with failed actions, `2` usage/flow error,
-`3` infrastructure error (retries exhausted), `4` internal bug (with "please report" hint).
+`3` infrastructure error (retries exhausted), `4` internal bug (with "please report" hint),
+`130` cancelled by the user (Ctrl-C; 128 + SIGINT, P0-15).
+Build status → exit code (`ebs.driver.build.EXIT_CODES`, P0-15): `passed` 0, `failed` 1,
+`infra_failed` 3, `cancelled` 130. `cancelled` beats
+`infra_failed`, which beats `failed`; `infra_failed` only when some action really used up its
+retries (an infra failure seen while the build was already stopping counts as `failed`).
 
 ## 12. Sources — `ebs.sources`
 

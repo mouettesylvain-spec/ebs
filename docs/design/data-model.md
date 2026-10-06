@@ -29,7 +29,11 @@ builds(id bigserial PK, uuid uuid unique, domain FK, project text, plan_digest t
 actions(build_id FK, action_id text, step text, key text null, state text, attempts int,
         slurm_job_id text null, pending_reason text null, infra_reason text null,
         queued_at not null, started_at, finished_at, cached bool, result_key text null,
+        result jsonb null,                                 -- last ResultManifest (0003, P0-15)
         PRIMARY KEY(build_id, action_id))
+        check state in (… , 'skipped')                     -- 'skipped' added by 0003 (P0-15)
+        check result is null or (object with v = 1)        -- ck_actions_result_manifest
+        -- 0003 downgrade: skipped -> cancelled, result dropped
         index (build_id, state), index (key)
 
 action_cache(domain FK, key text, result jsonb, created_at, last_access, hits bigint default 0,

@@ -28,6 +28,7 @@ from ebs.meta._common import (
     check_result,
     edge_rows,
     revalidate,
+    stored_result,
     touch_cutoff,
     transition,
 )
@@ -48,7 +49,10 @@ __all__ = ["MetadataConfig", "PgMetadataStore"]
 
 _log = get_logger(__name__)
 
-_ACTION_COLUMNS: Final = tuple(c.name for c in actions.columns if c.name != "build_id")
+# ActionRow columns; the stored manifest (`result`) is only read by `get_result`.
+_ACTION_COLUMNS: Final = tuple(
+    c.name for c in actions.columns if c.name not in {"build_id", "result"}
+)
 # Scalar results below carry explicit annotations: SQLAlchemy 2.1's stubs type
 # `scalar_one_or_none()` of an untyped Core select as `None`.
 
@@ -198,6 +202,25 @@ class PgMetadataStore:
             ).first()
         return inserted is not None
 
+    def cache_replace_failed(self, domain: str, key: Digest, result: ResultManifest) -> bool:
+        check_domain(domain)
+        check_digest(key, "cache_replace_failed key")
+        payload = check_result(key, result, f"cache_replace_failed {domain}/{key}").to_json()
+        now = self._clock.now()
+        t = action_cache
+        with self._tx(f"cache_replace_failed {domain}/{key}") as conn:
+            replaced = conn.execute(
+                sa.update(t)
+                .where(
+                    t.c.domain == domain,
+                    t.c.key == str(key),
+                    t.c.result["status"].astext == "failed",
+                )
+                .values(result=payload, created_at=now, last_access=now)
+                .returning(t.c.key)
+            ).first()
+        return replaced is not None
+
     @staticmethod
     def _ensure_domain(conn: sa.Connection, domain: str) -> None:
         conn.execute(pg_insert(domains).values(name=domain).on_conflict_do_nothing())
@@ -319,6 +342,11 @@ class PgMetadataStore:
             self._update_action(
                 conn, build, row.model_copy(update={"key": key, "result_key": checked.action_key})
             )
+            conn.execute(
+                sa.update(actions)
+                .where(actions.c.build_id == build, actions.c.action_id == action_id)
+                .values(result=checked.to_json())
+            )
             edges = [
                 {
                     "domain": domain,
@@ -345,6 +373,18 @@ class PgMetadataStore:
             ]
             if outputs:
                 conn.execute(pg_insert(blobs).on_conflict_do_nothing(), outputs)
+
+    def get_result(self, build: BuildId, action_id: str) -> ResultManifest | None:
+        stmt = sa.select(actions.c.result).where(
+            actions.c.build_id == build, actions.c.action_id == action_id
+        )
+        with self._tx(f"get_result {build}/{action_id}") as conn:
+            found = conn.execute(stmt).first()
+            if found is None:
+                self._build_status(conn, build)
+                raise MetadataError(f"build {build} has no action {action_id!r}")
+        payload: dict[str, object] | None = found[0]
+        return None if payload is None else stored_result(payload, build, action_id)
 
     def finish_build(self, build: BuildId, status: BuildStatus) -> None:
         check_final_status(status)
