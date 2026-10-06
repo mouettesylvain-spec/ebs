@@ -77,7 +77,15 @@ TOUCH_INTERVAL_S: Final = 3600
 BuildId = NewType("BuildId", int)
 
 ActionState = Literal[
-    "queued", "pending", "running", "done", "failed", "infra_failed", "cached", "cancelled"
+    "queued",
+    "pending",
+    "running",
+    "done",
+    "failed",
+    "infra_failed",
+    "cached",
+    "cancelled",
+    "skipped",  # P0-15: never started, because a dependency failed or the build stopped
 ]
 BuildStatus = Literal["running", "passed", "failed", "infra_failed", "cancelled"]
 CacheMode = Literal["off", "read", "write"]
@@ -111,11 +119,11 @@ FINAL_BUILD_STATUSES: Final[frozenset[str]] = frozenset(
 )
 
 TERMINAL_STATES: Final[frozenset[str]] = frozenset(
-    {"done", "failed", "infra_failed", "cached", "cancelled"}
+    {"done", "failed", "infra_failed", "cached", "cancelled", "skipped"}
 )
 
 TRANSITIONS: Final[Mapping[str, frozenset[str]]] = {
-    "queued": frozenset({"pending", "running", "cached", "cancelled", "infra_failed"}),
+    "queued": frozenset({"pending", "running", "cached", "cancelled", "infra_failed", "skipped"}),
     "pending": frozenset({"pending", "running", "infra_failed", "cancelled"}),
     "running": frozenset({"done", "failed", "infra_failed", "cancelled"}),
     "infra_failed": frozenset({"queued"}),  # retry
@@ -123,6 +131,7 @@ TRANSITIONS: Final[Mapping[str, frozenset[str]]] = {
     "failed": frozenset(),
     "cached": frozenset(),
     "cancelled": frozenset(),
+    "skipped": frozenset(),
 }
 """Legal action state changes (R7). `pending -> pending` updates the pending reason."""
 
@@ -338,6 +347,11 @@ class MetadataStore(Protocol):
         """Insert if absent; True if this call inserted, False if the key was already cached."""
         ...
 
+    def cache_replace_failed(self, domain: str, key: Digest, result: ResultManifest) -> bool:
+        """Replace the cached result of `key` only if it is a test failure (`--rerun-failed`);
+        True if replaced. Never inserts and never overwrites a passed result (P0-15)."""
+        ...
+
     # builds
     def create_build(self, b: BuildCreate) -> BuildId: ...
 
@@ -353,8 +367,14 @@ class MetadataStore(Protocol):
         ...
 
     def record_result(self, build: BuildId, action_id: str, result: ResultManifest) -> None:
-        """Store the action's key and result key, its provenance edges and its output blobs,
-        in one transaction. Idempotent. Does not change the action's state."""
+        """Store the action's key, result key and manifest, its provenance edges and its output
+        blobs, in one transaction. Idempotent; a later manifest for the same key replaces the
+        stored one. Does not change the action's state."""
+        ...
+
+    def get_result(self, build: BuildId, action_id: str) -> ResultManifest | None:
+        """The manifest last recorded for this action of this build, or None (P0-15: the
+        driver reads it when the executor reports `done`, in every cache mode)."""
         ...
 
     def finish_build(self, build: BuildId, status: BuildStatus) -> None: ...

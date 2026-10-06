@@ -132,3 +132,14 @@ def edge_rows(result: ResultManifest) -> list[tuple[str, str, str, str | None]]:
         ("out", name, str(out.id), str(out.digest)) for name, out in sorted(result.outputs.items())
     ]
     return rows
+
+
+def stored_result(payload: object, build: int, action_id: str) -> ResultManifest:
+    """A manifest stored on an action row, validated again on read like any database row."""
+    try:
+        return ResultManifest.model_validate(payload)
+    except ValueError as exc:
+        raise MetadataError(
+            f"build {build} action {action_id!r} holds an invalid result manifest; rerun the "
+            f"action: {exc}"
+        ) from None

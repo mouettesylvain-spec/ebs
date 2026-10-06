@@ -278,6 +278,48 @@ def test_cache_put_idempotent(h: Harness) -> None:
     assert h.inspect.cache_count() == 1
 
 
+# P0-15: --rerun-failed in `write` mode replaces a cached test failure with the rerun's result.
+def test_cache_replace_failed(h: Harness) -> None:
+    key = dg("k1")
+    failed = make_result(key, status="failed", exit_code=1)
+    h.store.cache_put("test", key, failed)
+    rerun = make_result(key)
+    h.clock.advance(10)
+    assert h.store.cache_replace_failed("test", key, rerun) is True
+    assert h.store.cache_get("test", key) == rerun
+    assert h.inspect.cache_count() == 1
+    # A failing rerun may replace a failure too (fresh log and summary).
+    other = dg("k2")
+    h.store.cache_put("test", other, make_result(other, status="failed", exit_code=1))
+    again = make_result(other, status="failed", exit_code=2)
+    assert h.store.cache_replace_failed("test", other, again) is True
+    assert h.store.cache_get("test", other) == again
+
+
+# P0-15: a passing entry is never replaced, and nothing is inserted where nothing was cached.
+def test_cache_replace_failed_leaves_passed_and_absent_alone(h: Harness) -> None:
+    key = dg("k1")
+    passed = make_result(key)
+    h.store.cache_put("test", key, passed)
+    assert h.store.cache_replace_failed("test", key, make_result(key, status="failed")) is False
+    assert h.store.cache_get("test", key) == passed
+    absent = dg("never")
+    assert h.store.cache_replace_failed("test", absent, make_result(absent)) is False
+    assert h.store.cache_get("test", absent) is None
+
+
+# P0-15 / I13: replacing is scoped by domain and checks the manifest's key.
+def test_cache_replace_failed_scoped_and_checked(h: Harness) -> None:
+    key = dg("k1")
+    h.store.cache_put("nda", key, make_result(key, status="failed", exit_code=1))
+    assert h.store.cache_replace_failed("test", key, make_result(key)) is False
+    assert h.store.cache_get("nda", key) == make_result(key, status="failed", exit_code=1)
+    with pytest.raises(MetadataError, match="action key"):
+        h.store.cache_replace_failed("nda", key, make_result(dg("other")))
+    with pytest.raises(MetadataError, match="domain"):
+        h.store.cache_replace_failed("no/such", key, make_result(key))
+
+
 # R2
 def test_cache_put_concurrent(h: Harness) -> None:
     key = dg("race")
@@ -483,10 +525,11 @@ STATES: tuple[ActionState, ...] = (
     "infra_failed",
     "cached",
     "cancelled",
+    "skipped",
 )
 # Written independently of the implementation's table on purpose.
 LEGAL: dict[str, set[str]] = {
-    "queued": {"pending", "running", "cached", "cancelled", "infra_failed"},
+    "queued": {"pending", "running", "cached", "cancelled", "infra_failed", "skipped"},
     "pending": {"pending", "running", "infra_failed", "cancelled"},
     "running": {"done", "failed", "infra_failed", "cancelled"},
     "infra_failed": {"queued"},
@@ -494,6 +537,7 @@ LEGAL: dict[str, set[str]] = {
     "failed": set(),
     "cached": set(),
     "cancelled": set(),
+    "skipped": set(),  # P0-15: blocked by a failed dependency, or never started after a failure
 }
 PATH_TO: dict[str, list[ActionState]] = {
     "queued": [],
@@ -504,6 +548,7 @@ PATH_TO: dict[str, list[ActionState]] = {
     "infra_failed": ["running", "infra_failed"],
     "cached": ["cached"],
     "cancelled": ["cancelled"],
+    "skipped": ["skipped"],
 }
 
 
@@ -562,6 +607,52 @@ def test_every_infra_reason_is_storable(h: Harness, reason: str) -> None:
     h.store.set_action_state(build, "a", "running")
     h.store.set_action_state(build, "a", "infra_failed", infra_reason=reason)
     assert action(h, build, "a").infra_reason == reason
+
+
+# P0-15: the driver reads a finished action's manifest back, in every cache mode.
+def test_get_result_returns_recorded_manifest(h: Harness) -> None:
+    build = new_build(h, "a", "b")
+    key = dg("key")
+    assert h.store.get_result(build, "a") is None
+    result = make_result(key, status="failed", exit_code=3)
+    h.store.record_result(build, "a", result)
+    assert h.store.get_result(build, "a") == result
+    assert h.store.get_result(build, "b") is None  # per action, not per build
+
+
+# P0-15
+def test_get_result_latest_record_wins(h: Harness) -> None:
+    build = new_build(h, "a")
+    key = dg("key")
+    h.store.record_result(build, "a", make_result(key, status="failed", exit_code=1))
+    second = make_result(key)  # e.g. the runner posted again after a retry
+    h.store.record_result(build, "a", second)
+    assert h.store.get_result(build, "a") == second
+
+
+# P0-15
+def test_get_result_is_scoped_to_its_build(h: Harness) -> None:
+    first = new_build(h, "a")
+    second = new_build(h, "a")
+    h.store.record_result(first, "a", make_result(dg("key")))
+    assert h.store.get_result(second, "a") is None
+
+
+# P0-15
+def test_get_result_unknown_action_or_build(h: Harness) -> None:
+    build = new_build(h, "a")
+    with pytest.raises(MetadataError, match="no action 'b'"):
+        h.store.get_result(build, "b")
+    with pytest.raises(MetadataError):
+        h.store.get_result(BuildId(build + 1000), "a")
+
+
+# P0-15
+def test_skipped_state_is_final_and_counted(h: Harness) -> None:
+    build = new_build(h, "a", "b")
+    h.store.set_action_state(build, "a", "skipped")
+    assert action(h, build, "a").state == "skipped"
+    assert h.store.get_build(build).action_counts == {"queued": 1, "skipped": 1}
 
 
 def test_cached_state_sets_flag_and_result_key(h: Harness) -> None:

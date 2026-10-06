@@ -125,8 +125,13 @@ actions = sa.Table(
     sa.Column("finished_at", _TS, nullable=True),
     sa.Column("cached", sa.Boolean, nullable=False, server_default=sa.false()),
     sa.Column("result_key", sa.Text, nullable=True),
+    sa.Column("result", JSONB, nullable=True),  # last recorded ResultManifest (0003, P0-15)
     _digest_check("key"),
     _digest_check("result_key"),
+    sa.CheckConstraint(
+        "result IS NULL OR (jsonb_typeof(result) = 'object' AND result->'v' = '1'::jsonb)",
+        name="result_manifest",
+    ),
     _in_check("state", ActionState),
     _in_check("pending_reason", PendingReason),
     _in_check("infra_reason", InfraReason),

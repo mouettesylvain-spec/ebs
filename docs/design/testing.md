@@ -21,11 +21,15 @@ requirements (R1…Rn) is covered by a test that would fail if the requirement w
 missing in CI (`CI=true`); locally it skips with a clear message. Unit tests must not touch the
 network, real `$HOME`, `/tmp` outside `tmp_path`, or wall-clock time (use `ebs.core.clock.FakeClock`).
 
-## Fakes (shared, in `tests/fakes/` — each built by the task that first needs it)
+## Fakes (shared, in `tests/fakes/` or `tests/helpers/` — each built by the task that first needs it)
 
 - **InMemoryMetadataStore** (`ebs.meta.memory`, shipped code, not test-only): must pass the
   MetadataStore contract suite. (P0-10)
 - **tmp CAS**: fixture `cas(tmp_path, domain="test")` returning an `FsCAS`. (P0-09)
+- **ScriptedExecutor** (`tests/helpers/driver.py`): an in-process Executor playing the runner's
+  part (loads the plan from the CAS, checks keys and producers, posts results, caches in `write`
+  mode) with outcomes scripted per attempt; plus `make_plan` for hand-built DAGs and
+  `SleepRecorder`. (P0-15)
 - **Fake tools** (`tests/fakes/bin/`): small Python scripts named `vlog`, `vopt`, `vsim`, `vlib`,
   `vmap`, `spyglass`, `make`-compatible Makefiles. They reproduce the *observable behaviour* the
   rules depend on: argv parsing, output files, transcript format (UVM report summary lines,
