@@ -337,6 +337,9 @@ re-validated on write (values must also pass `canonical_json`).
   applies the same throttle to known `blobs` rows and ignores unknown digests.
 - Domains are registered implicitly by the first `create_build`/`cache_put` naming them
   (`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`, as the fs CAS); P2-01 adds the admin side.
+- `InfraReason = oom | timeout | node_fail | preempted | license | runner_crash |
+  input_verification | other` (`input_verification` = runner exit 76, added by P0-14 with
+  migration `0002`); `PendingReason = licenses | resources | priority | other`.
 - `ActionState` transitions (`TRANSITIONS`): `queued → pending|running|cached|cancelled|infra_failed`,
   `pending → pending|running|infra_failed|cancelled`, `running → done|failed|infra_failed|cancelled`,
   `infra_failed → queued` (retry); `done`, `failed`, `cached`, `cancelled` are final. The store
@@ -442,19 +445,47 @@ class RuleRegistry:                                  # ebs.rules.registry
 ```python
 class Executor(Protocol):
     name: str
-    def submit(self, batch: SubmitBatch) -> list[JobHandle]: ...   # batch = same step, compatible resources
-    def poll(self, handles: Sequence[JobHandle]) -> dict[JobHandle, JobStatus]: ...   # ONE backend call per poll
-    def cancel(self, handles: Sequence[JobHandle]) -> None: ...
+    def submit(self, batch: SubmitBatch) -> list[JobHandle]: ...   # one handle per action, in batch order
+    def poll(self, handles: Sequence[JobHandle]) -> dict[JobHandle, JobStatus]: ...   # ONE backend call per poll; never blocks
+    def cancel(self, handles: Sequence[JobHandle]) -> None: ...   # finished jobs keep their state
 
-class JobStatus(BaseModel):
+@dataclass(frozen=True)
+class JobHandle:                          # hashable value
+    executor: str                         # Executor.name
+    job_id: str                           # "17" locally, "1234_5" for a SLURM array element
+    action_id: str
+
+@dataclass(frozen=True)
+class SubmitBatch:                        # non-empty; one step, one domain, unique action ids (else ExecutorError)
+    plan: Digest                          # plan.json in the domain's CAS
+    domain: str
+    build: BuildId | None                 # None: the runner posts nothing and prints the result
+    actions: tuple[ActionSpec, ...]
+
+class JobStatus(BaseModel):               # frozen, strict
     state: Literal["pending", "running", "done", "infra_failed", "cancelled"]
-    pending_reason: Literal["licenses", "resources", "priority", "other"] | None
-    infra_reason: Literal["oom", "timeout", "node_fail", "preempted", "license", "runner_crash", "other"] | None
-    exit_code: int | None
+    pending_reason: PendingReason | None = None   # only for `pending`
+    infra_reason: InfraReason | None = None       # exactly for `infra_failed`
+    exit_code: int | None = None                  # the runner's; negative = killed by that signal
 ```
 
 `done` means the runner finished and posted a ResultManifest (passed or failed); the driver reads
-the result from MetadataStore, not from the executor.
+the result from MetadataStore, not from the executor. Every executor maps runner exit codes
+(§ 9) the same way (`ebs.exec.api.status_for_exit`): `0` ⇒ `done`; `75` ⇒ `infra_failed` with the
+reason from the runner's infra line on stderr (default `other`); `76` ⇒
+`infra_failed("input_verification")`; any other code or death by a signal ⇒
+`infra_failed("runner_crash")`. `cancel` sends SIGTERM to a running runner (which removes its
+scratch) and drops queued work; the job reports `cancelled` from then on, whatever the runner's
+exit code. All executors pass `tests/contract/test_executor.py`.
+
+`LocalExecutor(log_dir=, runner_argv=("ebs-runner",), max_parallel=None, env=None)` (P0-14) runs
+runner subprocesses on this machine: at most `max_parallel` slots (default `os.cpu_count()`), an
+action taking `resources.cpus` slots (default 1; more than `max_parallel` is capped, so it runs
+alone, with a warning), started FIFO from `submit`/`poll` — a head action that does not fit
+blocks those behind it; queued actions are `pending` with `pending_reason="resources"`. Memory
+requests are advisory (logged with `enforced=False`, never applied). Runners start in their own
+session with stdin closed; stdout/stderr go to files under `<log_dir>/local-*/` (`log_paths`).
+`close(grace_s=30)` cancels everything and waits, SIGKILLing a runner that outlives the grace.
 
 ## 9. Runner — `ebs-runner`
 
@@ -465,6 +496,10 @@ ebs-runner --plan sha256:<plan digest> --array-map sha256:<map digest>    # uses
 
 Exit codes: `0` result posted (passed or failed), `64` bad usage, `70` internal error,
 `75` infra failure (temporary; driver retries), `76` input verification failed (digest mismatch).
+With exit 75 the runner's last stderr line is `ebs-runner: infra_failed {"detail": …, "reason":
+<InfraReason>}` (JSON on one line; `ebs.runner.errors.format_infra_line`/`parse_infra_reason`),
+so executors learn the reason with or without `--build` (P0-14). The tool's own output goes to
+`logs/tool.log`, never to this stream; the reason only picks a retry policy, never a cache entry.
 Lifecycle and guarantees: architecture.md "Runner lifecycle on a node". P0-13 details:
 
 - Options: `--domain` is required without `--build` (else taken from the build, must match);

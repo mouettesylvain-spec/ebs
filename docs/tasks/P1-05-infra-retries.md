@@ -17,7 +17,8 @@ automatically and sensibly, never cached, and clearly reported.
 - R1 Retry policy per infra reason (config `[retry]`): `oom` ⇒ memory × 1.5 (cap `max_mem`), `timeout` ⇒ not
   retried by default (usually a hang) but still never cached — final state `infra_failed(timeout)`; a step may
   set `retry_on_timeout: true` — `node_fail`/`preempted`/`runner_crash` ⇒ same resources, `license` ⇒ backoff
-  60 s × attempt.
+  60 s × attempt. TODO (from P0-14): decide `input_verification` (runner exit 76, staged bytes do not match
+  their digest: CAS corruption or a stale NFS view) — e.g. retry once on another node, then fail loudly.
 - R2 Retried attempts are separate rows/events with attempt number; final status shows the reason history.
 - R3 Nodes that failed an action twice with `node_fail` are excluded (`--exclude`) for that build.
 - R4 Resource usage from successful manifests is stored; `ebs plan` prints a hint when requested memory is
