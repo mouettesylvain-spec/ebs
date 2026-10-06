@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -87,13 +88,13 @@ def test_cleanup_on_exception(tmp_path: Path) -> None:
     digest = store_plan(
         cas, shell_spec("echo x > out.txt\n", outputs=[OutputSpec("o", "out.txt", "file")])
     )
+    # Replace the CAS staging dir with a regular file: uploads then fail for every user. (A
+    # read-only dir is not enough: CI runs as root, which ignores permission bits.)
     staging = tmp_path / "cas" / "test" / "tmp"
-    staging.chmod(0o555)
-    try:
-        proc = _runner(digest, env)
-        _out, err = proc.communicate(timeout=60)
-    finally:
-        staging.chmod(0o755)
+    shutil.rmtree(staging)
+    staging.write_text("not a directory")
+    proc = _runner(digest, env)
+    _out, err = proc.communicate(timeout=60)
     assert proc.returncode == EXIT_INFRA, err  # CAS trouble is temporary: the driver retries
     assert "out.txt" in err or "CAS" in err
     assert _scratch_left(tmp_path) == []
