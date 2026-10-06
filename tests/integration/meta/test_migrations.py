@@ -12,7 +12,7 @@ from alembic.runtime.migration import MigrationContext
 from sqlalchemy.engine import URL
 
 from ebs.meta import migrations
-from ebs.meta.api import InfraReason
+from ebs.meta.api import ActionState, InfraReason
 from ebs.meta.models import SCHEMA, metadata
 from tests.helpers.pg import fresh_database, url_string
 
@@ -278,3 +278,62 @@ def test_downgrade_0002(empty_db: URL) -> None:
     finally:
         engine.dispose()
     migrations.upgrade(url)
+
+
+# P0-15: revision 0003 adds action state `skipped`; every state the API allows passes the CHECK.
+@pytest.mark.parametrize("state", [*get_args(ActionState), "sleeping"])
+def test_action_states_match_api(pg_url: URL, state: str) -> None:
+    engine = sa.create_engine(pg_url, poolclass=sa.pool.NullPool)
+    try:
+        with engine.connect() as conn:
+            row = {**_valid_row(conn, "actions"), "state": state}
+            if state in get_args(ActionState):
+                _insert(conn, "actions", row)
+            else:
+                with pytest.raises(sa.exc.IntegrityError, match="check constraint"):
+                    _insert(conn, "actions", row)
+            conn.rollback()
+    finally:
+        engine.dispose()
+
+
+# P0-15: revision 0003 stores the result manifest on the action row; it must be a JSON object.
+def test_action_result_must_be_an_object(pg_url: URL) -> None:
+    engine = sa.create_engine(pg_url, poolclass=sa.pool.NullPool)
+    try:
+        with engine.connect() as conn:
+            row = _valid_row(conn, "actions")
+            _insert(conn, "actions", {**row, "result": '{"v": 1}'})
+            with pytest.raises(sa.exc.IntegrityError, match="check constraint"):
+                _insert(conn, "actions", {**row, "action_id": "b", "result": "[1]"})
+            conn.rollback()
+    finally:
+        engine.dispose()
+
+
+# P0-15: downgrading 0003 maps `skipped` to `cancelled` and drops the stored results.
+def test_downgrade_0003(empty_db: URL) -> None:
+    url = url_string(empty_db)
+    migrations.upgrade(url)
+    engine = sa.create_engine(empty_db, poolclass=sa.pool.NullPool)
+    try:
+        with engine.begin() as conn:
+            row = {**_valid_row(conn, "actions"), "state": "skipped", "result": '{"v": 1}'}
+            _insert(conn, "actions", row)
+        migrations.downgrade(url, "0002_infra_input_verification")
+        with engine.connect() as conn:
+            found = conn.execute(sa.text("SELECT state FROM ebs.actions"))
+            states: list[str] = list(found.scalars())
+            assert states == ["cancelled"]
+            columns = {c["name"] for c in sa.inspect(conn).get_columns("actions", schema=SCHEMA)}
+            assert "result" not in columns
+            with pytest.raises(sa.exc.IntegrityError, match="check constraint"):
+                _insert(conn, "actions", {**_without(row, "result"), "action_id": "b"})
+            conn.rollback()
+    finally:
+        engine.dispose()
+    migrations.upgrade(url)
+
+
+def _without(row: dict[str, object], key: str) -> dict[str, object]:
+    return {k: v for k, v in row.items() if k != key}

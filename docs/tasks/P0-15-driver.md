@@ -1,6 +1,6 @@
 # P0-15 — Driver / scheduler
 
-Status: todo · Phase: 0 · Depends on: P0-08, P0-10, P0-14 · Parallel-safe with: — · Size: L
+Status: review · Phase: 0 · Depends on: P0-08, P0-10, P0-14 · Parallel-safe with: — · Size: L
 
 ## Goal
 Walk the plan, satisfy what the cache already knows, submit only ready cache misses, react to results,
@@ -14,7 +14,10 @@ refine keys, retry infrastructure failures, and keep an event log — the loop t
 ## Scope (files)
 - create `src/ebs/driver/scheduler.py`, `cache_policy.py`, `retry.py`, `events.py`, `build.py`
 - create `tests/unit/driver/*` using `InMemoryMetadataStore`, tmp CAS and a `ScriptedExecutor` test double
-  (in `tests/fakes/executor.py`) whose results are declared per action
+  (in `tests/helpers/driver.py`, the repo's convention; `tests/fakes/` does not exist) whose results are
+  declared per action
+- added during the task (human-approved contract change): `MetadataStore.get_result`, action state
+  `skipped`, migration `src/ebs/meta/migrations/versions/0003_skipped_state_action_result.py`
 
 ## Requirements
 - R1 An action is submitted only when every input id is known and its key is computed; before submitting,
@@ -56,4 +59,38 @@ refine keys, retry infrastructure failures, and keep an event log — the loop t
   state, no action runs before its inputs, and cached+run == all non-skipped actions | R1, R5, R6 | property |
 
 ## Done when
-- [ ] `make check` passes; property test runs 500 examples in < 20 s
+- [x] `make check` passes (apart from pre-existing flaky timing tests, see Notes); property test runs
+  500 examples in ~14 s
+
+## Notes
+- CONTRACT CHANGE 1 (approved by the human): the driver must read a finished action's manifest in
+  every cache mode, but the store only kept it in the action cache (`write` mode). `record_result`
+  now also stores it (`actions.result`, migration 0003) and `get_result(build, action_id)` reads it.
+- CONTRACT CHANGE 2: R5 says dependents are marked `skipped`, which was not an `ActionState`;
+  added (final, only from `queued`), same migration. Downgrade maps it to `cancelled`.
+- Decisions: cache lookup only once all producers succeeded (conservative; a nondeterministic
+  producer's consumer could look up earlier); cache writes stay with the runner (§ 9), the driver
+  calls `record_result` on a hit so `get_result`/provenance work for cached actions; a waiting
+  retry stays `infra_failed` until resubmitted and is abandoned if the build stops; exit 3 only
+  when retries were really used up; `cancelled` exits 1 (P0-16 may prefer 130); a job reported
+  `cancelled` without our asking, missing from 10 polls, or `done` without a posted manifest is an
+  infrastructure failure; a consumer of a missing optional output is `skipped` and fails the build.
+- Review: task-reviewer (no blocker; fixed: no submission after a failure found mid-pass, Ctrl-C
+  ends long backoffs at once via an Event on the real clock, exit 3 only for exhausted retries,
+  refine only for actions with consumers, warm-cache property runs, internal errors raise
+  RuntimeError (exit 4), leaked handles cancelled, lost jobs, KeyboardInterrupt => cancelled,
+  second Ctrl-C restores the old handler). test-critic: 15 surviving mutants, all killed and
+  re-verified (e.g. status read from exit code, lone cached failure reported as passed, cancelled
+  exiting 0, pending -> done crashing the store transition, license counts not splitting batches).
+  The warm-cache property test then found a hang (a cached failure late in a pass left an earlier
+  waiting action unfinished); fixed with `test_stop_found_late_in_pass_skips_waiting_actions`.
+- Follow-ups:
+  - `--rerun-failed` in `write` mode: `cache_put` is insert-if-absent, so a flaky test that now
+    passes keeps its cached `failed` entry; needs a replace-on-rerun store method (P1-05?).
+  - Pre-existing flaky timing tests under coverage (also on main): P0-08's
+    `test_large_plan_perf` (2 s budget) and `test_refine_idempotent` (Hypothesis 200 ms
+    deadline). Human to decide how to fix (separate perf run without coverage recommended).
+  - Pre-existing P0-09 property failure found by a random example:
+    `tests/unit/cas/test_materialize.py::test_resolve_matches_kernel` with links
+    `{'l0': 'l1/..', 'l1': 'd/../l0/..'}`: `_resolve` and the kernel disagree on a link cycle.
+  - P0-16: map `BuildOutcome.exit_code`, read `.ebs/builds/<uuid>/events.jsonl` with `read_events`.

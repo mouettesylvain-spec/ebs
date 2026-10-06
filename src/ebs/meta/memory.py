@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from ebs.core.clock import Clock, SystemClock
@@ -20,6 +20,7 @@ from ebs.meta._common import (
     check_result,
     edge_rows,
     revalidate,
+    stored_result,
     touch_cutoff,
     transition,
 )
@@ -60,6 +61,7 @@ class _Blob:
 class _Build:
     view: BuildView
     actions: dict[str, ActionRow]
+    results: dict[str, dict[str, object]] = field(default_factory=dict)  # JSON, like a jsonb row
 
 
 class InMemoryMetadataStore:
@@ -190,6 +192,13 @@ class InMemoryMetadataStore:
             for k, blob in blobs.items():
                 self._blobs.setdefault(k, blob)
             b.actions[action_id] = new_row
+            b.results[action_id] = checked.to_json()
+
+    def get_result(self, build: BuildId, action_id: str) -> ResultManifest | None:
+        with self._lock:
+            b, _ = self._action(build, action_id)
+            payload = b.results.get(action_id)
+        return None if payload is None else stored_result(payload, build, action_id)
 
     def _write_edges(self, edges: dict[_EdgeKey, tuple[str, str | None]]) -> None:
         for k, v in edges.items():

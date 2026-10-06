@@ -28,6 +28,7 @@ from ebs.meta._common import (
     check_result,
     edge_rows,
     revalidate,
+    stored_result,
     touch_cutoff,
     transition,
 )
@@ -48,7 +49,10 @@ __all__ = ["MetadataConfig", "PgMetadataStore"]
 
 _log = get_logger(__name__)
 
-_ACTION_COLUMNS: Final = tuple(c.name for c in actions.columns if c.name != "build_id")
+# ActionRow columns; the stored manifest (`result`) is only read by `get_result`.
+_ACTION_COLUMNS: Final = tuple(
+    c.name for c in actions.columns if c.name not in {"build_id", "result"}
+)
 # Scalar results below carry explicit annotations: SQLAlchemy 2.1's stubs type
 # `scalar_one_or_none()` of an untyped Core select as `None`.
 
@@ -319,6 +323,11 @@ class PgMetadataStore:
             self._update_action(
                 conn, build, row.model_copy(update={"key": key, "result_key": checked.action_key})
             )
+            conn.execute(
+                sa.update(actions)
+                .where(actions.c.build_id == build, actions.c.action_id == action_id)
+                .values(result=checked.to_json())
+            )
             edges = [
                 {
                     "domain": domain,
@@ -345,6 +354,18 @@ class PgMetadataStore:
             ]
             if outputs:
                 conn.execute(pg_insert(blobs).on_conflict_do_nothing(), outputs)
+
+    def get_result(self, build: BuildId, action_id: str) -> ResultManifest | None:
+        stmt = sa.select(actions.c.result).where(
+            actions.c.build_id == build, actions.c.action_id == action_id
+        )
+        with self._tx(f"get_result {build}/{action_id}") as conn:
+            found = conn.execute(stmt).first()
+            if found is None:
+                self._build_status(conn, build)
+                raise MetadataError(f"build {build} has no action {action_id!r}")
+        payload: dict[str, object] | None = found[0]
+        return None if payload is None else stored_result(payload, build, action_id)
 
     def finish_build(self, build: BuildId, status: BuildStatus) -> None:
         check_final_status(status)
