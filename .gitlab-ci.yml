@@ -53,6 +53,7 @@ unit:
       - PYTHON_VERSION: ["3.11", "3.12", "3.13"]
   script:
     - make test-unit
+    - make test-perf
   coverage: '/TOTAL.*\s(\d+(?:\.\d+)?)%/'
   artifacts:
     when: always

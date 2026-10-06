@@ -476,7 +476,8 @@ def _all_produced() -> dict[tuple[str, str], Digest]:
     return {(CORE, "worklib"): hash_bytes(b"c"), (ALU, "worklib"): hash_bytes(b"a")}
 
 
-# R7
+# R7 (perf: Hypothesis' 200 ms deadline per example is a wall-clock budget)
+@pytest.mark.perf
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture], max_examples=50)
 @given(
     subset=st.sets(st.sampled_from(sorted(_all_produced()))),
@@ -513,6 +514,7 @@ def test_plan_metadata(cas: FsCAS, tmp_path: Path) -> None:
 
 # R11
 @pytest.mark.slow
+@pytest.mark.perf
 def test_large_plan_perf(tmp_path: Path) -> None:
     cas = FsCAS(tmp_path / "cas", "test")
     libs = "lib,filelist\n" + "".join(f"l{i},l{i}.f\n" for i in range(50))

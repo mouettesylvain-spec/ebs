@@ -21,7 +21,14 @@ MARKERS = {
     "grid": "needs a real SLURM partition; nightly only",
     "vendor": "needs EDA tool licenses; nightly only",
     "slow": "slower than the unit budget; excluded from the fast loop",
+    "perf": "asserts a wall-clock budget; runs in `make test-perf`, never under coverage tracing",
 }
+
+PERF_UNDER_COVERAGE = (
+    "perf tests assert wall-clock budgets and coverage tracing slows code down 2-3x, which makes "
+    "them flaky: run them with `make test-perf` (no --cov), and exclude them from coverage runs "
+    "with -m 'not perf'"
+)
 
 # First directory under tests/ -> marker applied to every test in it.
 DIRECTORY_MARKERS = {
@@ -70,6 +77,19 @@ def _top_directory(path: Path) -> str | None:
     except ValueError:
         return None
     return parts[0] if len(parts) > 1 else None
+
+
+def _coverage_active() -> bool:
+    try:
+        from coverage import Coverage
+    except ImportError:  # pragma: no cover - dev extra always installs it
+        return False
+    return Coverage.current() is not None
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    if item.get_closest_marker("perf") is not None and _coverage_active():
+        pytest.fail(PERF_UNDER_COVERAGE, pytrace=False)
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
