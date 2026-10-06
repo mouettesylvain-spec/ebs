@@ -186,12 +186,21 @@ class FlowInfo:
     git: GitInfo | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PlanToolchain:
-    """A toolchain used by the plan: module and immutable id."""
+    """A toolchain used by the plan: module, immutable id and the captured env the runner applies.
+
+    `env` is HOME-normalized (values hold a literal `$HOME`, see `ebs.toolchain.env`); the runner
+    substitutes the action's scratch home. It is already hashed into `id`, so it adds nothing to
+    the key.
+    """
 
     module: str
     id: Digest
+    env: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "env", _ro(self.env))
 
 
 @dataclass(frozen=True)

@@ -195,6 +195,17 @@ class InMemoryMetadataStore:
         for k, v in edges.items():
             self._edges.setdefault(k, v)  # first writer wins, like ON CONFLICT DO NOTHING
 
+    def resolve_output(self, domain: str, object_id: Digest) -> Digest | None:
+        check_domain(domain)
+        wanted = str(check_digest(object_id, "resolve_output object_id"))
+        with self._lock:
+            # An `out` edge is keyed by (producer key, output name) and never overwritten, so a
+            # nondeterministic id has one row: the first recorded bytes.
+            for (d, _key, direction, _path), (oid, content) in self._edges.items():
+                if d == domain and direction == "out" and oid == wanted and content is not None:
+                    return Digest.parse(content)
+        return None
+
     def finish_build(self, build: BuildId, status: BuildStatus) -> None:
         check_final_status(status)
         with self._lock:

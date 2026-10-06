@@ -386,6 +386,23 @@ class PgMetadataStore:
             found = conn.execute(stmt).mappings().all()
         return [ActionRow.model_validate(dict(r)) for r in found]
 
+    def resolve_output(self, domain: str, object_id: Digest) -> Digest | None:
+        check_domain(domain)
+        wanted = str(check_digest(object_id, "resolve_output object_id"))
+        with self._tx(f"resolve_output {domain}") as conn:
+            # Uses the (domain, object_id) index. An `out` edge is never overwritten (ON CONFLICT
+            # DO NOTHING), so a nondeterministic id has one row: the first recorded bytes.
+            content = conn.execute(
+                sa.select(provenance_edges.c.content_digest)
+                .where(
+                    provenance_edges.c.domain == domain,
+                    provenance_edges.c.object_id == wanted,
+                    provenance_edges.c.direction == "out",
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+        return None if content is None else Digest.parse(content)
+
     # --- access tracking, events ----------------------------------------------------------------
 
     def touch(self, domain: str, digests: Iterable[Digest]) -> None:
