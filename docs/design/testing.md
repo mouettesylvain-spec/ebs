@@ -9,6 +9,7 @@ requirements (R1…Rn) is covered by a test that would fail if the requirement w
 | --- | --- | --- | --- | --- |
 | Unit | `unit` (auto-applied under tests/unit) | tests/unit/ mirrors src/ebs/ | every commit, `make check` | < 1 s per test, whole suite < 60 s |
 | Property | `unit` + Hypothesis | next to the unit tests | every commit (`max_examples=200`), nightly (`=5000`) | |
+| Perf | `unit` + `perf` | next to the unit tests | every commit, `make test-perf` (no coverage: tracing slows code 2-3x) | the budget the test asserts; a `perf` test run under coverage fails on purpose |
 | Contract | `unit` or `integration` | tests/contract/ | every commit | one suite per protocol, parametrized over all implementations |
 | Integration | `integration` | tests/integration/ | every MR (`make check-all`) | < 10 min total |
 | Golden | `unit` | tests/golden/ with syrupy snapshots | every commit | snapshot updates need a reason in the commit body |

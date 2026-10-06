@@ -79,6 +79,36 @@ def test_known_markers_are_registered(suite: pytest.Pytester) -> None:
     suite.runpytest("--import-mode=importlib", "--strict-markers").assert_outcomes(passed=1)
 
 
+PERF_TEST = "import pytest\n\n@pytest.mark.perf\ndef test_budget():\n    pass\n"
+
+
+class _FakeCoverage:
+    pass
+
+
+# perf tests (wall-clock budgets) refuse to run under coverage tracing, which makes them flaky.
+def test_perf_test_fails_under_coverage(
+    suite: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import coverage
+
+    monkeypatch.setattr(coverage.Coverage, "current", classmethod(lambda cls: _FakeCoverage()))
+    _add(suite, "unit/test_sample.py", PERF_TEST)
+    result = suite.runpytest("--import-mode=importlib", "-p", "no:cacheprovider")
+    result.assert_outcomes(errors=1)  # refused in setup, before the body runs
+    result.stdout.fnmatch_lines(["*make test-perf*"])
+
+
+def test_perf_test_runs_without_coverage(
+    suite: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import coverage
+
+    monkeypatch.setattr(coverage.Coverage, "current", classmethod(lambda cls: None))
+    _add(suite, "unit/test_sample.py", PERF_TEST)
+    suite.runpytest("--import-mode=importlib", "-m", "perf").assert_outcomes(passed=1)
+
+
 MISSING_DEP = (
     "import pytest\n\n"
     "def test_needs_postgres():\n"
