@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Mapping
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Final
@@ -51,11 +50,13 @@ _SCHEMA: Final = (
 )
 
 
-def default_statcache_path(env: Mapping[str, str]) -> Path:
-    """`$XDG_CACHE_HOME/ebs/statcache.sqlite`, else `~/.cache/ebs/statcache.sqlite`."""
-    home = env.get("HOME") or os.path.expanduser("~")
-    cache_home = env.get("XDG_CACHE_HOME") or os.path.join(home, ".cache")
-    return Path(cache_home) / "ebs" / "statcache.sqlite"
+def default_statcache_path(uid: int) -> Path:
+    """`/var/tmp/ebs-<uid>/statcache.sqlite`: local disk, one directory per user (P0-16 R7).
+
+    Never `~/.cache`, which is often on NFS, where SQLite WAL is unsafe. `/var/tmp` is shared,
+    so callers must create the directory with mode 0700 and check who owns it.
+    """
+    return Path("/var/tmp") / f"ebs-{uid}" / "statcache.sqlite"
 
 
 def _is_busy(exc: sqlite3.OperationalError) -> bool:

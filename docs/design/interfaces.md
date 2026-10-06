@@ -631,7 +631,7 @@ class SourceSnapshotter:        # one per plan: git state is read once per repo 
     def snapshot_file(self, path: Path) -> Digest: ...              # follows symlinks
     audit_mismatches: list[Path]
 
-class StatCache:                # sqlite (WAL); default_statcache_path(env) -> ~/.cache/ebs/statcache.sqlite
+class StatCache:                # sqlite (WAL); default_statcache_path(uid) -> /var/tmp/ebs-<uid>/statcache.sqlite (P0-16)
     def __init__(self, db_path: Path, *, racy_window_s: float = 3.0, busy_timeout_s: float = 30.0,
                  clock: Clock | None = None) -> None: ...   # retries a locked first open until the timeout
     def lookup(self, st: os.stat_result, path: Path) -> Digest | None: ...
@@ -651,6 +651,12 @@ def resolve_glob(base: Path, pattern: str, *, optional: bool = False) -> list[st
 - Stat cache I/O failures after opening are logged and treated as misses / skipped writes; an
   unopenable database raises `SourceError`. Keep the database on local disk (WAL needs shared
   memory; it is unsafe on NFS).
+- Location (P0-16 R7, human decision 2026-10-05): `[stat_cache].path` if set, else
+  `default_statcache_path(os.getuid())`, never `~/.cache`. The CLI creates the default's
+  directory with mode 0700 and uses it only if it is a directory owned by the user with no
+  group/other bits (`/var/tmp` is shared). If that check or opening fails, the CLI warns and uses
+  an in-memory stat cache (`StatCache(Path(":memory:"))`): every source is rehashed, the plan
+  never fails because of the stat cache.
 - The git guard ignores assume-unchanged and skip-worktree entries (`ls-files -v` tags other
   than `H`) and runs git with `core.fsmonitor=false`.
 - A symlink whose target is inside the base but not matched by the pattern is snapshotted as a
@@ -725,3 +731,80 @@ class StaticToolchainResolver:  # reads .ebs/toolchains.yaml (P0); P1-07 adds th
   walking the roots. Fingerprints are computed once per resolver. A tree checked out from version
   control gets fresh mtimes in every clone, so demos and fixtures that need a stable id across
   checkouts pin `fingerprint`.
+
+## 14. CLI — `ebs.cli` (P0-16)
+
+Commands: `ebs plan`, `build`, `status`, `logs`, `rules list`; global `--debug` (tracebacks,
+debug logs). Exit codes: § 11. Every command has `--json`; `NO_COLOR` disables colors. The
+working directory holds `.ebs/` (config lookup, `builds/`, executor logs); `-f` names the flow
+(default `./flow.yaml`). `ebs.cli._context.SiteServices` builds the CAS, metadata store,
+executor, rules (`[rules]`) and stat cache from ebs.toml; tests pass a subclass as the Typer
+context object.
+
+**Errors.** One line on stderr: `ebs: error: <message>` (a `FlowError` message starts with
+`file:line:col`); internal bugs: `ebs: internal error: …; … please report …`. With `--json`,
+stdout also gets `{"error": {"type", "message", "file"?, "line"?, "col"?}, "exit_code"}`.
+Usage/flow/config/plan/rule/source/toolchain/digest errors exit 2; metadata/CAS/executor/
+sandbox errors 3; anything else 4.
+
+**Build record** (`.ebs/builds/<uuid>/build.json`, next to the driver's `events.jsonl`), written
+by `ebs build` on `build_started` and rewritten when the build ends:
+
+```json
+{"v": 1, "uuid": "…", "build": 7, "domain": "…", "project": "…", "flow": "/abs/flow.yaml",
+ "plan": "sha256:… (as submitted)", "final_plan": "sha256:…|null (as refined, stored in CAS)",
+ "status": "running|passed|failed|infra_failed|cancelled", "actions": {"<action_id>": "<step>"},
+ "created_at": "…", "host": "<driver host>", "pid": 1234}
+```
+
+The build's status is that of its `build_finished` event, else the record's; a `running` build
+whose driver (`host`, `pid`) is this host and no longer alive shows as `interrupted`, so
+`status --watch` and `logs -f` end when `ebs build` was killed without a trace.
+
+`ebs status` and `ebs logs` read it plus the events, so they work without the metadata store.
+A BUILD argument is a build id, else a UUID or a unique UUID prefix; the default is the latest
+build in the directory (for `plan`: the latest build of the same flow file). Action states
+folded from events: `queued` (no event yet), `submitted`, `pending: <reason>`, `running`,
+`infra_failed`, `retrying`, `cached`, then `finished.state`.
+
+**`ebs plan --json`** (v1; keys in this order):
+
+```json
+{"v": 1, "flow": "<plan.json flow.path>", "domain": "…", "project": "…", "plan": "sha256:…",
+ "cache": "available|unavailable", "baseline": {"build": "<uuid>|null"},
+ "totals": {"actions": 3, "hit": 0, "miss": 1, "unknown": 2},
+ "steps": [{"step": "gen", "actions": 1, "hit": 0, "miss": 1, "unknown": 0}],
+ "actions": [{"action_id": "…", "step": "…", "key": "sha256:…|null",
+              "cache": "hit|miss|unknown", "cached_status": "passed|failed|null",
+              "change": {"status": "added|changed|unchanged|unknown|null", "fields": […],
+                         "pending": ["depends on <action_id>"]}}],
+ "removed": ["<action_id>"], "warnings": ["…"]}
+```
+
+Prediction mirrors the driver: keyed actions are looked up with `cache_get` (which counts a hit
+and touches `last_access`); the output ids of passed hits refine the plan, repeated until no new
+key appears. `cache` is `unknown` for actions still unkeyed, or for all without
+`[metadata].url`. `change` comes from `diff_plans(baseline final plan, predicted plan)`;
+`status` is null without a baseline.
+
+**`ebs build --json`**: one line per driver event (`Event` JSON), then
+`{"build", "uuid", "status", "exit_code", "counts": {state: n}}`. Text mode prints
+`build <uuid> (id <n>)` first, then one line per event (non-TTY) or a live per-step table (TTY),
+then `build <uuid>: build <status> (<state>=<n>, …)`.
+
+**`ebs status --json`**: `{"v": 1, "uuid", "build", "status", "flow", "created_at", "steps":
+[{"step", "actions", "states": {state: n}}], "totals": {state: n}}`. `--watch` redraws every
+`--interval` seconds until the build is no longer `running`.
+
+**`ebs logs ACTION`**: ACTION is an action id or a unique prefix. Finished actions: the log blob
+of `get_result(build, action)` (or of the last `infra_failed` event's `log`), read from the CAS.
+Running actions (local executor): the runner's live files in
+`<[scratch].dir>/<build id>/<action dir>/logs/` — `tool.log.cur` (opened unbuffered), renamed to
+`tool.log.prev` at the `[runner].max_log` cap, joined into `tool.log` when the tool ends.
+`-f` keeps `.cur` open (renames do not disturb it), switches to a new `.cur` after reading the
+old one to its end (rotation; or a retry, marked by a separator line), and stops when the
+action is final or the build has ended; an action that wrote nothing while followed gets its
+stored log. Limits at the size cap: `ebs.cli.logs` docstring. `--json`: `{"action_id", "build",
+"uuid", "state", "log"}`; `-f` with `--json` is a usage error.
+
+**`ebs rules list --json`**: `{"v": 1, "rules": [{"kind", "version", "impl"}]}`, sorted by kind.
