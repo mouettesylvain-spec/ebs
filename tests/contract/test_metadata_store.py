@@ -430,6 +430,41 @@ def test_record_result_key_mismatch(h: Harness) -> None:
     assert h.inspect.edges("test") == set()
 
 
+# P0-13: the runner stages a nondeterministic input by resolving its id to the stored bytes.
+def test_resolve_output(h: Harness) -> None:
+    build = new_build(h, "compile[lib=core]", domain="nda")
+    h.store.record_result(build, "compile[lib=core]", _nd_result(dg("key")))
+    assert h.store.resolve_output("nda", dg("wl-nd-id")) == dg("wl-bytes")
+    assert h.store.resolve_output("nda", dg("rep")) == dg("rep")  # deterministic: id is content
+    assert h.store.resolve_output("nda", dg("libtree")) is None  # an input id, not an output
+    assert h.store.resolve_output("nda", dg("unknown")) is None
+    assert h.store.resolve_output("test", dg("wl-nd-id")) is None  # scoped by domain (I13)
+
+
+def test_resolve_output_first_writer_wins(h: Harness) -> None:
+    # A rerun of the same nondeterministic producer (cache off) records other bytes for the same
+    # id; consumers keep seeing the first run's bytes.
+    key = dg("key")
+    first, second = new_build(h, "a"), new_build(h, "a")
+    h.store.record_result(first, "a", _nd_result(key))
+    rerun = _nd_result(key).model_copy(
+        update={
+            "outputs": {
+                "worklib": OutputResult(
+                    digest=dg("other-bytes"), id=dg("wl-nd-id"), type="tree", size=1
+                )
+            }
+        }
+    )
+    h.store.record_result(second, "a", rerun)
+    assert h.store.resolve_output("test", dg("wl-nd-id")) == dg("wl-bytes")
+
+
+def test_resolve_output_invalid_domain(h: Harness) -> None:
+    with pytest.raises(MetadataError, match="domain"):
+        h.store.resolve_output("../escape", dg("k"))
+
+
 def test_record_result_unknown_action(h: Harness) -> None:
     build = new_build(h, "a")
     with pytest.raises(MetadataError, match="no action 'b'"):

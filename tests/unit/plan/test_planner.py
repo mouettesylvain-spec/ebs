@@ -384,7 +384,11 @@ def test_make_step(cas: FsCAS, tmp_path: Path) -> None:
     assert "flows/lint/Makefile" in paths
     assert lint.toolchain is not None
     assert lint.toolchain.module == "vc_spyglass/2025.06"
-    assert plan.toolchains["spyglass"] == PlanToolchain("vc_spyglass/2025.06", lint.toolchain.id)
+    assert plan.toolchains["spyglass"] == PlanToolchain(
+        "vc_spyglass/2025.06",
+        lint.toolchain.id,
+        {"TOOL_HOME": str(TOOLS_ROOT / "vc_spyglass/2025.06")},  # the runner sets it (P0-13)
+    )
 
 
 def test_toolchain_defaults_merge_with_step(cas: FsCAS, tmp_path: Path) -> None:

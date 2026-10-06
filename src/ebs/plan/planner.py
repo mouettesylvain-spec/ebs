@@ -260,7 +260,7 @@ class _Run:
             project=self._flow.project,
             flow=info,
             toolchains={
-                name: PlanToolchain(tc.module, tc.id)
+                name: PlanToolchain(tc.module, tc.id, tc.env)
                 for name, tc in sorted(self._toolchains.items())
             },
             actions=tuple(actions),

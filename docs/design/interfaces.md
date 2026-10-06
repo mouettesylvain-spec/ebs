@@ -196,10 +196,14 @@ Supporting types (P0-08, `ebs.plan.types`): `RuleRef(kind, version)`, `Toolchain
 id)`, `SourceInput(input, pattern)`, `ActionOutputInput(action_id, output)`, `ImportInput(name,
 path)` (P2-03), `OutputSpec(name, path, type: "file"|"dir", deterministic, optional)`,
 `DebugSpec(collect, max_size: bytes | None, on_success)`, `FlowInfo(path, git: GitInfo | None)`,
-`GitInfo(repo, commit, dirty)`, `PlanToolchain(module, id)`, `Plan(ebs_version, domain, project,
+`GitInfo(repo, commit, dirty)`, `PlanToolchain(module, id, env)`, `Plan(ebs_version, domain, project,
 flow, toolchains, actions, edges, lock, key_schema, v)` with `Plan.action(id)`,
 `ActionSpec.input(path)` / `.output(name)`, and `ActionDiff(action_id, status, changed, pending)`
 with status `added | removed | unchanged | changed | unknown`.
+`PlanToolchain.env` (P0-13) is the toolchain's captured env, HOME-normalized (literal `$HOME`,
+§ 13); the runner applies it with `$HOME` replaced by the action's scratch home. It is already
+hashed into the toolchain id, so it changes no action key; plan.json `toolchains` entries are
+`{"module", "id", "env"}`.
 
 Key document (the only thing hashed):
 
@@ -232,7 +236,7 @@ Plan file (`plan.json`, canonical JSON, stored in CAS; its digest is the build's
 ```json
 {"v": 1, "ebs_version": "…", "key_schema": 1, "flow": {"path": "...", "git": {"repo": "...", "commit": "...", "dirty": false}},
  "lock": "sha256:…|null", "domain": "cpu-nda", "project": "rv32x-cpu",
- "toolchains": {"questa": {"module": "questa/2025.2", "id": "sha256:…"}},
+ "toolchains": {"questa": {"module": "questa/2025.2", "id": "sha256:…", "env": {…}}},
  "actions": [ActionSpec…], "edges": [["from_action_id", "output", "to_action_id"]]}
 ```
 
@@ -316,6 +320,7 @@ class MetadataStore(Protocol):
     def list_actions(self, build: BuildId, *, state: ActionState | None = None) -> list[ActionRow]: ...
     # access (P0), leases and GC (P1-09)
     def touch(self, domain: str, digests: Iterable[Digest]) -> None: ...
+    def resolve_output(self, domain: str, object_id: Digest) -> Digest | None: ...   # P0-13
     def acquire_lease(self, domain: str, build: BuildId, digests: Iterable[Digest], ttl_s: int) -> LeaseId: ...
     def renew_lease(self, lease: LeaseId, ttl_s: int) -> None: ...
     # events
@@ -344,6 +349,10 @@ re-validated on write (values must also pass `canonical_json`).
   (`object_id` = passed-down id, `content_digest` = content), and registers output blobs, all in
   one transaction and idempotently. It does not change the state: the runner may post before the
   driver has seen `running`; the driver sets `done`/`failed` after reading the result.
+- `resolve_output(domain, object_id)` (P0-13) returns the `content_digest` of an `out` edge
+  whose passed-down id is `object_id`, else None (also for `in` edges and other domains). The
+  runner uses it to fetch the bytes of a `deterministic: false` input, whose id is derived from
+  the producer key. `out` edges are never overwritten, so the first recorded bytes win.
 - `BuildStatus = running | passed | failed | infra_failed | cancelled`; `finish_build` takes a
   final one, once. `BuildView` = `BuildCreate` fields + `id, status, created_at, finished_at,
   pinned, action_counts` (per-state counts for `ebs status`).
@@ -456,7 +465,44 @@ ebs-runner --plan sha256:<plan digest> --array-map sha256:<map digest>    # uses
 
 Exit codes: `0` result posted (passed or failed), `64` bad usage, `70` internal error,
 `75` infra failure (temporary; driver retries), `76` input verification failed (digest mismatch).
-Lifecycle and guarantees: architecture.md "Runner lifecycle on a node".
+Lifecycle and guarantees: architecture.md "Runner lifecycle on a node". P0-13 details:
+
+- Options: `--domain` is required without `--build` (else taken from the build, must match);
+  `--keep-scratch` keeps the scratch dir and prints `scratch kept at <path>` on stderr. Without
+  `--build` nothing is posted and the ResultManifest is printed as JSON on stdout. `--array-map`
+  is P1-04 (exit 64 until then). Config: `[cas].root`, `[scratch].dir`, `[runner]`, `[rules]`,
+  `[metadata]` (only with `--build`), via `ebs.config.load_config`.
+- Exit 64 also for: a plan not in the CAS or of another domain, an unknown action id, an
+  action whose key or input ids are unset (the driver must refine the plan), a rule kind or
+  version that differs from the planner's, a toolchain id missing from plan `toolchains`, an
+  unexpanded `resources.time`. A plan whose bytes do not hash to `--plan` is 76. An explicit
+  `$EBS_CONFIG` that is not a file is a ConfigError (exit 64).
+- Scratch `<scratch>/<build|local>/<sha256(action_id)[:16]>/{work,home,tmp,logs}`; a stale dir
+  is replaced. Inputs are materialized at `work/<logical path>` (copies, or hard links for tree
+  files; never symlinks in P0), config files written read-only; each input is re-hashed
+  (file: blob digest, tree: manifest digest) against its content digest: the input id, or
+  `resolve_output(id)` for a nondeterministic producer output (I10).
+- Env (I11), later layers winning: toolchain env (`$HOME` replaced) → declared env → runtime
+  env (expanded with the runner's vars) → `HOME`, `TMPDIR`, `EBS_CPUS` (`resources.cpus`, else
+  1), `EBS_ACTION_ID`, `EBS_SCRATCH`. `PATH` defaults to `/usr/bin:/bin` if no layer sets it.
+  Caller variables matching `[runner].passthrough_env` (default `LM_LICENSE_FILE`,
+  `*_LICENSE_FILE`, `SLURM_*`; case-sensitive globs) only fill names no layer set.
+- The tool runs in its own session with stdin closed; stdout+stderr go to `logs/tool.log`,
+  capped at `[runner].max_log` (default 2 GiB) keeping the tail after a
+  `[ebs-runner: N bytes of log dropped …]` line. Timeout `resources.time`: SIGTERM to the group,
+  SIGKILL after `[runner].kill_grace_s` (default 30). Leftover group members are killed when
+  the tool exits. Usage from `wait4` rusage: `max_rss_kb`, `cpu_s` (user+sys), `wall_s`.
+- Classification: an exec failure (program not found: treated as a node/toolchain install
+  problem, never cached as FAILED), a log write error (scratch disk full), a timeout (even if
+  the tool then exits 0) or the rule's `INFRA(reason)` ⇒ exit 75 with an
+  `infra_failed` event `data = {reason: InfraReason, detail, exit_code, log}` (rule reasons
+  other than `license`/`timeout` map to `other`, kept in `detail`); the log is uploaded, no
+  result or cache entry. Any other exit-75 failure (CAS or metadata unreachable, input bytes
+  missing, scratch not creatable, SIGTERM/SIGINT ⇒ `preempted`; repeated signals are ignored
+  during cleanup) emits the same event when it can. Outputs that are symlinks count as missing. Otherwise outputs
+  are uploaded; a missing required output (or one of the wrong type) makes the result `failed`
+  with `summary.missing_output = "<name>[,<name>…]"`; `record_result`, then `cache_put` if the
+  build's cache mode is `write`.
 
 ## 10. Driver events — `ebs.driver.events`
 

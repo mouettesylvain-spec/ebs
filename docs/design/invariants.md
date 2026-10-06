@@ -15,8 +15,8 @@ that test green, and a PR that weakens one needs explicit human approval.
 | I7 | Actions execute on the plan-time snapshot bytes, never on live source paths | `tests/integration/test_snapshot_isolation.py` (edit file during build) | P0-06 / P0-13 |
 | I8 | A CAS object is visible only when complete; concurrent writers of the same digest both succeed and leave one valid object | `tests/unit/cas/test_fs_atomic.py`, `tests/integration/test_cas_concurrency.py` (multiprocess) | P0-09 |
 | I9 | A tree manifest is written only after all its blobs and child manifests | `tests/unit/cas/test_fs_tree_order.py` (fault injection) | P0-09 |
-| I10 | The runner verifies input digests before executing; mismatch ⇒ exit 76, no result posted | `tests/unit/runner/test_verify_inputs.py` | P0-13 |
-| I11 | Only declared env vars + toolchain env reach the tool; HOME is an empty scratch dir | `tests/unit/runner/test_env_scrub.py` | P0-13 |
+| I10 | The runner verifies input digests before executing; mismatch ⇒ exit 76, no result posted | `tests/unit/runner/test_verify_inputs.py::test_mismatch_exit_76_no_result` | P0-13 |
+| I11 | Only declared env vars + toolchain env reach the tool; HOME is an empty scratch dir | `tests/unit/runner/test_env_scrub.py::test_env_exact`, `::test_home_empty` | P0-13 |
 | I12 | Infrastructure failures are never cached; test failures are | `tests/unit/driver/test_failure_classes.py` | P0-16 |
 | I13 | Cache lookups are scoped by domain; a key present in domain A is a miss in domain B | `tests/contract/test_metadata_store.py::test_domain_scoping` | P0-10 |
 | I14 | Nondeterministic outputs pass `nondeterministic_output_id(producer_key, name)` downstream; re-running the producer does not change downstream keys | `tests/unit/plan/test_nondeterministic.py::test_nd_id_stable_across_producer_runs`, `::test_deterministic_pending` | P0-08 |
