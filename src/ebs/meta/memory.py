@@ -112,6 +112,18 @@ class InMemoryMetadataStore:
             self._cache[(domain, str(key))] = _CacheEntry(payload, now, now, 0)
             return True
 
+    def cache_replace_failed(self, domain: str, key: Digest, result: ResultManifest) -> bool:
+        check_domain(domain)
+        check_digest(key, "cache_replace_failed key")
+        payload = check_result(key, result, f"cache_replace_failed {domain}/{key}").to_json()
+        with self._lock:
+            entry = self._cache.get((domain, str(key)))
+            if entry is None or entry.result.get("status") != "failed":
+                return False
+            now = self._clock.now()
+            entry.result, entry.created_at, entry.last_access = payload, now, now
+            return True
+
     # --- builds ---------------------------------------------------------------------------------
 
     def create_build(self, b: BuildCreate) -> BuildId:

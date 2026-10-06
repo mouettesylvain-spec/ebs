@@ -202,6 +202,25 @@ class PgMetadataStore:
             ).first()
         return inserted is not None
 
+    def cache_replace_failed(self, domain: str, key: Digest, result: ResultManifest) -> bool:
+        check_domain(domain)
+        check_digest(key, "cache_replace_failed key")
+        payload = check_result(key, result, f"cache_replace_failed {domain}/{key}").to_json()
+        now = self._clock.now()
+        t = action_cache
+        with self._tx(f"cache_replace_failed {domain}/{key}") as conn:
+            replaced = conn.execute(
+                sa.update(t)
+                .where(
+                    t.c.domain == domain,
+                    t.c.key == str(key),
+                    t.c.result["status"].astext == "failed",
+                )
+                .values(result=payload, created_at=now, last_access=now)
+                .returning(t.c.key)
+            ).first()
+        return replaced is not None
+
     @staticmethod
     def _ensure_domain(conn: sa.Connection, domain: str) -> None:
         conn.execute(pg_insert(domains).values(name=domain).on_conflict_do_nothing())

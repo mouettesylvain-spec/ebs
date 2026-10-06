@@ -17,6 +17,7 @@ class ExitCode(IntEnum):
     USAGE = 2  # usage or flow error
     INFRA = 3  # infrastructure error, retries exhausted
     INTERNAL = 4  # bug in ebs ("please report")
+    CANCELLED = 130  # interrupted by the user (128 + SIGINT, the shell convention)
 
 
 class EbsError(Exception):

@@ -278,6 +278,48 @@ def test_cache_put_idempotent(h: Harness) -> None:
     assert h.inspect.cache_count() == 1
 
 
+# P0-15: --rerun-failed in `write` mode replaces a cached test failure with the rerun's result.
+def test_cache_replace_failed(h: Harness) -> None:
+    key = dg("k1")
+    failed = make_result(key, status="failed", exit_code=1)
+    h.store.cache_put("test", key, failed)
+    rerun = make_result(key)
+    h.clock.advance(10)
+    assert h.store.cache_replace_failed("test", key, rerun) is True
+    assert h.store.cache_get("test", key) == rerun
+    assert h.inspect.cache_count() == 1
+    # A failing rerun may replace a failure too (fresh log and summary).
+    other = dg("k2")
+    h.store.cache_put("test", other, make_result(other, status="failed", exit_code=1))
+    again = make_result(other, status="failed", exit_code=2)
+    assert h.store.cache_replace_failed("test", other, again) is True
+    assert h.store.cache_get("test", other) == again
+
+
+# P0-15: a passing entry is never replaced, and nothing is inserted where nothing was cached.
+def test_cache_replace_failed_leaves_passed_and_absent_alone(h: Harness) -> None:
+    key = dg("k1")
+    passed = make_result(key)
+    h.store.cache_put("test", key, passed)
+    assert h.store.cache_replace_failed("test", key, make_result(key, status="failed")) is False
+    assert h.store.cache_get("test", key) == passed
+    absent = dg("never")
+    assert h.store.cache_replace_failed("test", absent, make_result(absent)) is False
+    assert h.store.cache_get("test", absent) is None
+
+
+# P0-15 / I13: replacing is scoped by domain and checks the manifest's key.
+def test_cache_replace_failed_scoped_and_checked(h: Harness) -> None:
+    key = dg("k1")
+    h.store.cache_put("nda", key, make_result(key, status="failed", exit_code=1))
+    assert h.store.cache_replace_failed("test", key, make_result(key)) is False
+    assert h.store.cache_get("nda", key) == make_result(key, status="failed", exit_code=1)
+    with pytest.raises(MetadataError, match="action key"):
+        h.store.cache_replace_failed("nda", key, make_result(dg("other")))
+    with pytest.raises(MetadataError, match="domain"):
+        h.store.cache_replace_failed("no/such", key, make_result(key))
+
+
 # R2
 def test_cache_put_concurrent(h: Harness) -> None:
     key = dg("race")

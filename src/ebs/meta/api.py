@@ -347,6 +347,11 @@ class MetadataStore(Protocol):
         """Insert if absent; True if this call inserted, False if the key was already cached."""
         ...
 
+    def cache_replace_failed(self, domain: str, key: Digest, result: ResultManifest) -> bool:
+        """Replace the cached result of `key` only if it is a test failure (`--rerun-failed`);
+        True if replaced. Never inserts and never overwrites a passed result (P0-15)."""
+        ...
+
     # builds
     def create_build(self, b: BuildCreate) -> BuildId: ...
 

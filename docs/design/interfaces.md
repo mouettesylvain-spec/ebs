@@ -310,6 +310,7 @@ class MetadataStore(Protocol):
     # action cache
     def cache_get(self, domain: str, key: Digest) -> ResultManifest | None: ...     # also touches last_access
     def cache_put(self, domain: str, key: Digest, result: ResultManifest) -> bool: ...  # False if already present
+    def cache_replace_failed(self, domain: str, key: Digest, result: ResultManifest) -> bool: ...  # P0-15: --rerun-failed
     # builds
     def create_build(self, b: BuildCreate) -> BuildId: ...
     def add_actions(self, build: BuildId, actions: Sequence[ActionRow]) -> None: ...
@@ -333,6 +334,10 @@ Implementations: `PgMetadataStore` (SQLAlchemy), `InMemoryMetadataStore` (tests)
 Every method is one short transaction and raises `MetadataError`; models are frozen, strict and
 re-validated on write (values must also pass `canonical_json`).
 
+- `cache_replace_failed` (P0-15) replaces an entry only while it holds a `failed` result (new
+  `created_at`/`last_access`, hits kept); it never inserts and never overwrites a passed result.
+  The driver calls it after a `--rerun-failed` run in cache mode `write`, because the runner's
+  `cache_put` keeps the old failure.
 - `cache_put` is insert-if-absent and requires `result.action_key == key`. `cache_get` counts a
   hit on every call and rewrites `last_access` at most once per hour (`TOUCH_INTERVAL_S`); `touch`
   applies the same throttle to known `blobs` rows and ignores unknown digests.
@@ -599,9 +604,10 @@ cancels submitted work, keeps results of jobs that already finished, marks the r
 `TreeError`, `PlanError`, `CasError`, `MetadataError`, `ExecutorError`, `RuleError`, `SandboxError`,
 `SourceError` (→ `SourceEscapeError`), `ToolchainError`.
 CLI exit codes: `0` ok, `1` build finished with failed actions, `2` usage/flow error,
-`3` infrastructure error (retries exhausted), `4` internal bug (with "please report" hint).
+`3` infrastructure error (retries exhausted), `4` internal bug (with "please report" hint),
+`130` cancelled by the user (Ctrl-C; 128 + SIGINT, P0-15).
 Build status → exit code (`ebs.driver.build.EXIT_CODES`, P0-15): `passed` 0, `failed` 1,
-`infra_failed` 3, `cancelled` 1 for now (P0-16 may choose 130). `cancelled` beats
+`infra_failed` 3, `cancelled` 130. `cancelled` beats
 `infra_failed`, which beats `failed`; `infra_failed` only when some action really used up its
 retries (an infra failure seen while the build was already stopping counts as `failed`).
 

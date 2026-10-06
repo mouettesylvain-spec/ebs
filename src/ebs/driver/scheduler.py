@@ -122,6 +122,7 @@ class Scheduler:
         self._attempts: dict[str, int] = {}  # failed attempts (infrastructure)
         self._retry_at: dict[str, float] = {}  # action -> monotonic time it may be resubmitted
         self._missed_polls: dict[JobHandle, int] = {}
+        self._replacing: set[str] = set()  # cached failures bypassed by --rerun-failed
         self._stopping = False
         self._cancel_requested = False
         self._wake = threading.Event()  # set by request_cancel: ends a real-clock wait early
@@ -242,7 +243,10 @@ class Scheduler:
 
     def _try_cache(self, spec: ActionSpec, key: Digest) -> bool:
         hit = self._store.cache_get(spec.domain, key)
-        if hit is None or not self._policy.accept(hit):
+        if hit is None:
+            return False
+        if not self._policy.accept(hit):  # --rerun-failed: run it, then replace the failure
+            self._replacing.add(spec.action_id)
             return False
         action_id = spec.action_id
         self._store.record_result(self._build, action_id, hit)  # per-build manifest + provenance
@@ -363,6 +367,9 @@ class Scheduler:
             )
             return
         self._ensure_running(action_id, key)
+        if action_id in self._replacing and self._policy.writes:
+            # The runner's cache_put kept the old failure (insert-if-absent): replace it.
+            self._store.cache_replace_failed(self._plan.domain, result.action_key, result)
         state: FinalState = "done" if result.status == "passed" else "failed"
         self._set_state(action_id, state, result_key=result.action_key)
         self._final[action_id] = state

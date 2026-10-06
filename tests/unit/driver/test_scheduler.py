@@ -189,3 +189,40 @@ def test_adaptive_polling_single_call(env: Env) -> None:
     assert executor.poll_sizes == [3] * 6
     # Poll 1 sees "running" (a change), polls 2-5 see nothing new, poll 6 sees "done".
     assert env.clock.sleeps == [1.0, 1.0, 2.0, 4.0, 4.0, 4.0]
+
+
+# R2: --rerun-failed in `write` mode replaces the cached failure, so the next build reuses the pass.
+def test_rerun_failed_replaces_cached_failure(env: Env) -> None:
+    plan = env.plan({"a": Node()})
+    first = env.executor()
+    first.script("a", "fail")
+    env.run(plan, first, cache_mode="write")
+
+    rerun = env.executor()  # the flaky test passes this time
+    again = env.run(plan, rerun, cache_mode="write", rerun_failed=True)
+    assert again.states == {"a": "done"}
+    key = plan.action("a").key
+    assert key is not None
+    cached = env.store.cache_get("test", key)
+    assert cached is not None
+    assert cached.status == "passed"
+
+    later = env.executor()
+    third = env.run(plan, later, cache_mode="read")
+    assert later.submitted == []
+    assert third.states == {"a": "cached"}
+    assert third.status == "passed"
+
+
+# R2: in `read` mode a rerun never writes the cache, not even to replace a failure.
+def test_rerun_failed_read_mode_keeps_cache(env: Env) -> None:
+    plan = env.plan({"a": Node()})
+    first = env.executor()
+    first.script("a", "fail")
+    env.run(plan, first, cache_mode="write")
+    env.run(plan, env.executor(), cache_mode="read", rerun_failed=True)
+    key = plan.action("a").key
+    assert key is not None
+    cached = env.store.cache_get("test", key)
+    assert cached is not None
+    assert cached.status == "failed"

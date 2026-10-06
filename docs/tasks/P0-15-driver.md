@@ -72,7 +72,8 @@ refine keys, retry infrastructure failures, and keep an event log — the loop t
   producer's consumer could look up earlier); cache writes stay with the runner (§ 9), the driver
   calls `record_result` on a hit so `get_result`/provenance work for cached actions; a waiting
   retry stays `infra_failed` until resubmitted and is abandoned if the build stops; exit 3 only
-  when retries were really used up; `cancelled` exits 1 (P0-16 may prefer 130); a job reported
+  when retries were really used up; `cancelled` exits 130 (`ExitCode.CANCELLED`, decided by the
+  human); a job reported
   `cancelled` without our asking, missing from 10 polls, or `done` without a posted manifest is an
   infrastructure failure; a consumer of a missing optional output is `skipped` and fails the build.
 - Review: task-reviewer (no blocker; fixed: no submission after a failure found mid-pass, Ctrl-C
@@ -85,8 +86,9 @@ refine keys, retry infrastructure failures, and keep an event log — the loop t
   The warm-cache property test then found a hang (a cached failure late in a pass left an earlier
   waiting action unfinished); fixed with `test_stop_found_late_in_pass_skips_waiting_actions`.
 - Follow-ups:
-  - `--rerun-failed` in `write` mode: `cache_put` is insert-if-absent, so a flaky test that now
-    passes keeps its cached `failed` entry; needs a replace-on-rerun store method (P1-05?).
+  - Done (human request): `--rerun-failed` in `write` mode replaces the cached failure through the
+    new `MetadataStore.cache_replace_failed` (CONTRACT CHANGE 3), so a flaky test that now passes
+    is reused by later builds.
   - Pre-existing flaky timing tests under coverage (also on main): P0-08's
     `test_large_plan_perf` (2 s budget) and `test_refine_idempotent` (Hypothesis 200 ms
     deadline). Human to decide how to fix (separate perf run without coverage recommended).

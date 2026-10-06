@@ -36,7 +36,7 @@ EXIT_CODES: dict[BuildStatus, ExitCode] = {
     "passed": ExitCode.OK,
     "failed": ExitCode.ACTIONS_FAILED,
     "infra_failed": ExitCode.INFRA,
-    "cancelled": ExitCode.ACTIONS_FAILED,  # P0-16 may choose 130 for Ctrl-C
+    "cancelled": ExitCode.CANCELLED,  # 130, like a shell after Ctrl-C
 }
 
 

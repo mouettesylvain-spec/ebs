@@ -84,7 +84,8 @@ def test_sigint_cancels(env: Env) -> None:
     assert executor.cancelled == ["a"]
     assert outcome.states == {"a": "cancelled", "b": "cancelled", "q": "done"}
     assert outcome.status == "cancelled"
-    assert outcome.exit_code == ExitCode.ACTIONS_FAILED  # never 0: CI must not see a pass
+    assert outcome.exit_code == ExitCode.CANCELLED  # 130; never 0: CI must not see a pass
+    assert int(outcome.exit_code) == 130
     view = env.store.get_build(outcome.build)
     assert view.status == "cancelled"
     assert view.action_counts == {"cancelled": 2, "done": 1}
