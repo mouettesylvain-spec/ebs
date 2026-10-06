@@ -83,7 +83,14 @@ BuildStatus = Literal["running", "passed", "failed", "infra_failed", "cancelled"
 CacheMode = Literal["off", "read", "write"]
 PendingReason = Literal["licenses", "resources", "priority", "other"]
 InfraReason = Literal[
-    "oom", "timeout", "node_fail", "preempted", "license", "runner_crash", "other"
+    "oom",
+    "timeout",
+    "node_fail",
+    "preempted",
+    "license",
+    "runner_crash",
+    "input_verification",  # runner exit 76: staged bytes did not match their digest (P0-14)
+    "other",
 ]
 EventType = Literal[
     "build_started",

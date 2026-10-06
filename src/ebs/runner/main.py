@@ -52,6 +52,7 @@ from ebs.runner.errors import (
     Interrupted,
     RunnerError,
     UsageError,
+    format_infra_line,
 )
 from ebs.runner.result import make_manifest
 from ebs.runner.run import ToolRun, run_tool
@@ -118,8 +119,11 @@ class Runner:
         try:
             return self._run(req)
         except InfraError as exc:
-            self._emit_infra(req, exc)
+            # stderr first: if the store is down, emitting raises and the reason must not be lost.
             self._err.write(f"ebs-runner: {req.action_id}: {exc}\n")
+            self._err.write(format_infra_line(exc.reason, exc.detail))
+            self._err.flush()
+            self._emit_infra(req, exc)
             return exc.exit_code
         except RunnerError as exc:
             self._err.write(f"ebs-runner: {req.action_id}: {exc}\n")
@@ -440,6 +444,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return exc.exit_code
     except MetadataError as exc:
         sys.stderr.write(f"ebs-runner: metadata store unavailable: {exc}\n")
+        sys.stderr.write(format_infra_line("other", f"metadata store unavailable: {exc}"))
         return EXIT_INFRA
     except (ConfigError, EbsError) as exc:
         sys.stderr.write(f"ebs-runner: {exc}\n")

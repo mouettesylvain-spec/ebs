@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, get_args
 from uuid import uuid4
 
 import pytest
@@ -30,6 +30,7 @@ from ebs.meta.api import (
     BuildCreate,
     BuildId,
     Event,
+    InfraReason,
     MetadataStore,
     OutputResult,
     ResourceUsage,
@@ -552,6 +553,15 @@ def test_retry_cycle_counts_attempts_and_stamps_times(h: Harness) -> None:
     h.store.set_action_state(build, "a", "running")
     h.store.set_action_state(build, "a", "done")
     assert action(h, build, "a").attempts == 2
+
+
+# P0-14: every executor infra reason, including runner exit 76's `input_verification`, is storable.
+@pytest.mark.parametrize("reason", get_args(InfraReason))
+def test_every_infra_reason_is_storable(h: Harness, reason: str) -> None:
+    build = new_build(h, "a")
+    h.store.set_action_state(build, "a", "running")
+    h.store.set_action_state(build, "a", "infra_failed", infra_reason=reason)
+    assert action(h, build, "a").infra_reason == reason
 
 
 def test_cached_state_sets_flag_and_result_key(h: Harness) -> None:

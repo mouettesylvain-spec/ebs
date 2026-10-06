@@ -9,9 +9,10 @@ from ebs.cas.fs import FsCAS
 from ebs.core.digest import Digest
 from ebs.plan.types import OutputSpec
 from ebs.runner.env import DEFAULT_PATH
-from ebs.runner.main import EXIT_INFRA, EXIT_OK, EXIT_USAGE
+from ebs.runner.errors import format_infra_line, parse_infra_reason
+from ebs.runner.main import EXIT_INFRA, EXIT_OK, EXIT_USAGE, RunRequest
 from ebs.runner.run import DROPPED_MARKER, run_tool
-from tests.helpers.runner import Harness, shell_spec
+from tests.helpers.runner import Harness, shell_spec, store_plan
 
 ENV = {"PATH": DEFAULT_PATH}
 
@@ -182,6 +183,7 @@ def test_pass_fail_infra_paths(
         assert h.store.cache_puts == [("test", spec.key)]
         assert h.store.cache_get("test", spec.key) == manifest
         assert h.store.events == []
+        assert parse_infra_reason(h.err.getvalue()) is None
     else:
         assert manifest is None  # infra: no result
         assert h.store.cache_puts == []  # and never cached (I12)
@@ -190,6 +192,8 @@ def test_pass_fail_infra_paths(
         assert event.action_id == "s"
         assert event.build == build
         assert event.data["reason"] == reason
+        # The executor reads the same reason from the runner's stderr (interfaces.md § 9).
+        assert parse_infra_reason(h.err.getvalue()) == reason
         log = event.data["log"]
         assert isinstance(log, str)
         with cas.open(Digest.parse(log)) as f:
@@ -293,6 +297,23 @@ def test_metadata_failure_is_infra(
     assert "connection refused" in h.err.getvalue()
 
 
+# R6 / P0-14: the infra reason reaches stderr even when emitting the event fails.
+def test_infra_line_survives_emit_failure(
+    cas: FsCAS, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ebs.core.errors import MetadataError
+
+    h = Harness(tmp_path, cas)
+
+    def down(*args: object) -> None:
+        raise MetadataError("connection refused")
+
+    monkeypatch.setattr(h.store, "emit", down)
+    rc, _ = h.run(shell_spec(LICENSE_FAIL))
+    assert rc == EXIT_INFRA
+    assert parse_infra_reason(h.err.getvalue()) == "license"  # not main()'s fallback "other"
+
+
 # R5: the group gets SIGTERM first and the grace period to react (not only the final SIGKILL).
 def test_timeout_sigterm_group_then_grace(tmp_path: Path) -> None:
     marker = tmp_path / "grandchild-got-term"
@@ -380,6 +401,29 @@ def test_exec_failure_is_infra(cas: FsCAS, tmp_path: Path) -> None:
     assert h.store.results == {}
     assert h.store.cache_puts == []
     assert [e.type for e in h.store.events] == ["infra_failed"]
+
+
+# R6: without --build there is no store to emit to; the reason still reaches the executor through
+# the runner's stderr (P0-14).
+def test_infra_line_without_build(cas: FsCAS, tmp_path: Path) -> None:
+    h = Harness(tmp_path, cas)
+    plan = store_plan(cas, shell_spec("", argv=["no-such-tool-ebs"]))
+    rc = h.runner().run(RunRequest(plan, "s", None))
+    assert rc == EXIT_INFRA
+    assert h.store.events == []
+    assert parse_infra_reason(h.err.getvalue()) == "other"
+
+
+def test_infra_line_round_trip() -> None:
+    text = "ebs-runner: s: boom\n" + format_infra_line("license", "no seat\nfree")
+    assert text.endswith("\n")
+    assert text.count("\n") == 2  # one line, whatever the detail holds
+    assert parse_infra_reason(text) == "license"
+    later = text + format_infra_line("timeout", "x")
+    assert parse_infra_reason(later) == "timeout"  # the last line wins
+    assert parse_infra_reason("ebs-runner: s: boom\n") is None
+    assert parse_infra_reason('ebs-runner: infra_failed {"reason": "nope"}\n') == "other"
+    assert parse_infra_reason("ebs-runner: infra_failed [1]\n") == "other"
 
 
 # R5/R6: a tool that handles SIGTERM and exits 0 after its timeout still timed out.
