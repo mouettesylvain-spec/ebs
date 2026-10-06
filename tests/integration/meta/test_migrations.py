@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import get_args
 
 import pytest
 import sqlalchemy as sa
@@ -11,6 +12,7 @@ from alembic.runtime.migration import MigrationContext
 from sqlalchemy.engine import URL
 
 from ebs.meta import migrations
+from ebs.meta.api import InfraReason
 from ebs.meta.models import SCHEMA, metadata
 from tests.helpers.pg import fresh_database, url_string
 
@@ -231,3 +233,46 @@ def test_check_constraints_reject_bad_rows(
             conn.rollback()
     finally:
         engine.dispose()
+
+
+def _infra_row(conn: sa.Connection, reason: str) -> dict[str, object]:
+    return {**_valid_row(conn, "actions"), "state": "infra_failed", "infra_reason": reason}
+
+
+# P0-14: revision 0002 adds infra reason `input_verification` (runner exit 76); every reason the
+# API allows passes the CHECK constraint, anything else does not.
+@pytest.mark.parametrize("reason", [*get_args(InfraReason), "coffee"])
+def test_infra_reasons_match_api(pg_url: URL, reason: str) -> None:
+    engine = sa.create_engine(pg_url, poolclass=sa.pool.NullPool)
+    try:
+        with engine.connect() as conn:
+            row = _infra_row(conn, reason)
+            if reason in get_args(InfraReason):
+                _insert(conn, "actions", row)
+            else:
+                with pytest.raises(sa.exc.IntegrityError, match="check constraint"):
+                    _insert(conn, "actions", row)
+            conn.rollback()
+    finally:
+        engine.dispose()
+
+
+# P0-14: downgrading 0002 restores the 0001 constraint.
+def test_downgrade_0002(empty_db: URL) -> None:
+    url = url_string(empty_db)
+    migrations.upgrade(url)
+    engine = sa.create_engine(empty_db, poolclass=sa.pool.NullPool)
+    try:
+        with engine.begin() as conn:  # a row only 0002 allows is rewritten, not lost
+            _insert(conn, "actions", _infra_row(conn, "input_verification"))
+        migrations.downgrade(url, "0001_initial")
+        with engine.connect() as conn:
+            rows = conn.execute(sa.text("SELECT infra_reason FROM ebs.actions"))
+            reasons: list[str] = list(rows.scalars())
+            assert reasons == ["other"]
+            with pytest.raises(sa.exc.IntegrityError, match="check constraint"):
+                _insert(conn, "actions", _infra_row(conn, "input_verification"))
+            conn.rollback()
+    finally:
+        engine.dispose()
+    migrations.upgrade(url)
