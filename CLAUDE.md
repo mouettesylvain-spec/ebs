@@ -16,8 +16,9 @@ shared content-addressed cache, team releases and provenance. Python 3.11+, Apac
 - `uv run pytest -m "unit and not slow" -x -q` — fast loop
 - `uv run ebs --help` — the CLI
 - Test markers: `unit` (default, hermetic, <1 s each), `integration` (Postgres/fake SLURM),
-  `grid` (real SLURM, nightly only), `vendor` (needs EDA licenses, nightly only). Never run
-  `grid`/`vendor` locally unless the task says so.
+  `grid` (real SLURM, nightly only), `vendor` (needs EDA licenses, nightly only), `perf`
+  (wall-clock budgets: `make test-perf`, never under `--cov`). Never run `grid`/`vendor`
+  locally unless the task says so.
 
 ## Workflow for every task
 
