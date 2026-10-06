@@ -264,14 +264,16 @@ def test_downgrade_0002(empty_db: URL) -> None:
     engine = sa.create_engine(empty_db, poolclass=sa.pool.NullPool)
     try:
         with engine.begin() as conn:  # a row only 0002 allows is rewritten, not lost
-            _insert(conn, "actions", _infra_row(conn, "input_verification"))
+            row = _infra_row(conn, "input_verification")
+            _insert(conn, "actions", row)
         migrations.downgrade(url, "0001_initial")
         with engine.connect() as conn:
             rows = conn.execute(sa.text("SELECT infra_reason FROM ebs.actions"))
             reasons: list[str] = list(rows.scalars())
             assert reasons == ["other"]
+            # Reuse the committed build: `_valid_row` would insert its fixed-uuid build again.
             with pytest.raises(sa.exc.IntegrityError, match="check constraint"):
-                _insert(conn, "actions", _infra_row(conn, "input_verification"))
+                _insert(conn, "actions", {**row, "action_id": "b"})
             conn.rollback()
     finally:
         engine.dispose()
