@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import errno
+import itertools
 import os
 import stat
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, BinaryIO
 
 import pytest
-from hypothesis import HealthCheck, assume, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
 from ebs.cas.fs import FsCAS
@@ -432,31 +434,197 @@ def _link_farms(draw: st.DrawFn) -> tuple[list[str], dict[str, str]]:
     return dirs, links
 
 
-# R7: the logical escape check agrees with the kernel's resolution on disk.
+Farm = tuple[list[str], dict[str, str]]
+# P0-09a: links that loop through a directory that does not exist. Python's non-strict realpath
+# lands outside the root for both; the kernel cannot follow either (ENOENT, or ELOOP once `d`
+# exists), and `_resolve` says "inside".
+_CYCLE_THROUGH_MISSING_DIR: Farm = ([], {"l0": "l1/..", "l1": "d/../l0/.."})
+# Lookups that fail on disk: nothing is reached, so nothing can escape.
+_UNRESOLVED = frozenset({errno.ENOENT, errno.ELOOP, errno.ENOTDIR})
+
+
+def _build_farm(work: Path, farm: Farm) -> Path:
+    """Create the farm at `<work>/outer/root`. Its dirs are mirrored in `outer`, so a link that
+    climbs out of the root usually lands on a real directory instead of failing with ENOENT."""
+    dirs, links = farm
+    outer = work / "outer"
+    root = outer / "root"
+    root.mkdir(parents=True)
+    for d in sorted(dirs):
+        (root / d).mkdir(parents=True, exist_ok=True)
+        (outer / d).mkdir(parents=True, exist_ok=True)
+    for rel, target in links.items():
+        (root / rel).symlink_to(target)
+    return root
+
+
+def _kernel_lands(path: Path) -> str | int:
+    """The kernel's own answer for `path`: the real path it resolves to, or the errno it fails
+    with. No userspace resolver is involved (the path comes back from /proc/self/fd)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)  # a farm holds only dirs and links
+    except OSError as exc:
+        if exc.errno not in _UNRESOLVED:
+            raise
+        return exc.errno
+    try:
+        return os.readlink(f"/proc/self/fd/{fd}")
+    finally:
+        os.close(fd)
+
+
+def _within(parent: str, path: str) -> bool:
+    return os.path.commonpath([parent, path]) == parent
+
+
+def _complete(work: str, path: Path) -> str | int | None:
+    """Resolve `path` after creating, one at a time, every missing directory its lookup needs, as
+    a tool on the node could at runtime (the worst case for an escape).
+
+    Returns what `_kernel_lands` returns for the completed disk, or None when the lookup needs a
+    directory outside `work`: it has then climbed out of the root, and in a farm (no name equals
+    the root's, no links outside it) nothing leads back in.
+    """
+    for _ in range(64):
+        landed = _kernel_lands(path)
+        if landed != errno.ENOENT:
+            return landed
+        try:
+            # Only to name the missing directory: it walks in the kernel's order.
+            os.path.realpath(path, strict=True)
+        except FileNotFoundError as exc:
+            missing = os.fspath(exc.filename)
+        else:
+            raise AssertionError(f"the kernel says ENOENT for {path} but realpath resolves it")
+        if not _within(work, missing):
+            return None
+        os.mkdir(missing)
+    raise AssertionError(f"{path}: too many missing directories")
+
+
+def _errno_of(call: Callable[..., object], *args: Any) -> int | None:
+    try:
+        call(*args)
+    except OSError as exc:
+        return exc.errno
+    return None
+
+
+def _table(links: dict[str, str]) -> dict[tuple[str, ...], str]:
+    return {tuple(rel.split("/")): target for rel, target in links.items()}
+
+
+# P0-09a R1: the counterexample on disk. The kernel never follows these links (ENOENT on the
+# missing `d`; ELOOP if `d` is created), so no path through them reaches outside the root.
+def test_link_cycle_through_missing_dir_on_disk(cas: FsCAS, tmp_path: Path) -> None:
+    root = _build_farm(tmp_path / "disk", _CYCLE_THROUGH_MISSING_DIR)
+    table = _table(_CYCLE_THROUGH_MISSING_DIR[1])
+    parts = ["l0", "l1", "d", "..", "."]
+    # Every path of up to 3 components through a link: the kernel fails each lookup.
+    through_links = [
+        "/".join(p)
+        for n in (1, 2, 3)
+        for p in itertools.product(parts, repeat=n)
+        if p[0] != ".." and {"l0", "l1"} & set(p)
+    ]
+    for d_exists, follow_errno in ((False, errno.ENOENT), (True, errno.ELOOP)):
+        if d_exists:
+            (root / "d").mkdir()  # the worst case: a tool on the node creates the missing dir
+        for name in ("l0", "l1"):
+            path = root / name
+            assert _errno_of(os.stat, path) == follow_errno, (d_exists, name)
+            assert _errno_of(os.open, path, os.O_RDONLY) == follow_errno, (d_exists, name)
+            nofollow = os.O_RDONLY | os.O_NOFOLLOW
+            assert _errno_of(os.open, path, nofollow) == errno.ELOOP, (d_exists, name)
+            assert _resolve((), table[(name,)], table) == ()  # inside: over the hop budget
+        for rel in through_links:
+            assert _kernel_lands(root / rel) in {errno.ENOENT, errno.ELOOP}, (d_exists, rel)
+
+    # So the tree is accepted, and its links are created as they are.
+    manifest = TreeManifest(tuple(_link(n, t) for n, t in _CYCLE_THROUGH_MISSING_DIR[1].items()))
+    dest = tmp_path / "out"
+    cas.materialize(_store_manifest(cas, manifest), "tree", dest)
+    assert os.readlink(dest / "l1") == "d/../l0/.."
+
+
+# R7 + P0-09a R2/R4/R5: the escape check agrees with the kernel for every link that resolves on
+# disk. A link the kernel cannot follow (ENOENT, ELOOP, ENOTDIR) reaches nothing, so there is no
+# location to compare with; the property below covers what a tool could make of it at runtime.
+# No example is discarded. os.path.realpath(strict=False) is not a model of the kernel for such
+# links (it resolved the first @example outside the root), so it is not used as the oracle.
 @settings(
     max_examples=150, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
 )
 @given(farm=_link_farms())
-def test_resolve_matches_kernel(tmp_path: Path, farm: tuple[list[str], dict[str, str]]) -> None:
-    dirs, links = farm
+@example(farm=_CYCLE_THROUGH_MISSING_DIR)
+@example(farm=(["d"], {"d/l0": "../../d", "l1": "d/l0/.."}))  # resolves outside, also via a chain
+@example(farm=(["d"], {"l0": "d/..", "d/l1": "../l0/d"}))  # resolves inside
+@example(farm=([], {"l0": ".", "x": "l0/l0/.."}))  # one link twice in a lookup is not a loop
+@example(farm=(["d"], {"l0": "d//../.."}))  # an empty component is not a name
+@example(farm=([], {"l0": "..", "l1": "l0/"}))  # a trailing slash still follows l0
+def test_resolve_matches_kernel(tmp_path: Path, farm: Farm) -> None:
     with tempfile.TemporaryDirectory(dir=tmp_path) as work:
-        root = Path(work) / "outer" / "root"
-        root.mkdir(parents=True)
-        for d in sorted(dirs):
-            (root / d).mkdir(parents=True, exist_ok=True)
-        for rel, target in links.items():
-            (root / rel).symlink_to(target)
-        table = {tuple(rel.split("/")): target for rel, target in links.items()}
+        root = _build_farm(Path(work), farm)
         real_root = os.path.realpath(root)
-        for rel, target in links.items():
-            try:
-                os.stat(root / rel)
-            except OSError as exc:
-                assume(exc.errno != errno.ELOOP)
-            on_disk = os.path.realpath(root / rel)
-            disk_escapes = os.path.commonpath([real_root, on_disk]) != real_root
+        table = _table(farm[1])
+        for rel, target in farm[1].items():
+            landed = _kernel_lands(root / rel)
+            if isinstance(landed, int):
+                continue
             key = tuple(rel.split("/"))
-            assert (_resolve(key[:-1], target, table) is None) == disk_escapes, (rel, target)
+            says_inside = _resolve(key[:-1], target, table) is not None
+            assert says_inside == _within(real_root, landed), (rel, target, landed)
+
+
+# R7 + P0-09a R2/R3: the safety direction holds even on the worst-case disk, where every
+# directory a link's lookup is missing gets created (a tool on the node could do this). There,
+# disk and `_resolve` share one model (missing names are plain dirs), so they also agree whenever
+# the lookup resolves. Only ELOOP leaves the disk result undefined: the kernel reaches nothing.
+@settings(
+    max_examples=150, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
+@given(farm=_link_farms())
+@example(farm=_CYCLE_THROUGH_MISSING_DIR)
+@example(farm=([], {"l0": "../e"}))  # dangling now, escapes once outer/e exists
+@example(farm=([], {"l0": "e/../../d", "l1": "l0/../l0"}))  # escapes through a missing dir
+@example(farm=([], {"l0": "..", "l1": "l0/.."}))  # '..' applies after following l0, not lexically
+@example(farm=([], {"l0": "../../../d"}))  # needs a directory above the work dir
+def test_resolve_never_says_inside_when_disk_escapes(tmp_path: Path, farm: Farm) -> None:
+    with tempfile.TemporaryDirectory(dir=tmp_path) as work:
+        root = _build_farm(Path(work), farm)
+        real_work, real_root = os.path.realpath(work), os.path.realpath(root)
+        table = _table(farm[1])
+        for rel, target in farm[1].items():
+            landed = _complete(real_work, root / rel)
+            key = tuple(rel.split("/"))
+            verdict = _resolve(key[:-1], target, table)
+            if landed is None or (isinstance(landed, str) and not _within(real_root, landed)):
+                assert verdict is None, (rel, target, landed)
+            elif isinstance(landed, str):
+                assert verdict is not None, (rel, target, landed)
+            else:
+                assert landed == errno.ELOOP, (rel, target, landed)
+
+
+# R7: the budget counts link follows, not path components: 83 plain names escape on disk.
+def test_resolve_budget_counts_links_not_components(tmp_path: Path) -> None:
+    deep = "/".join(["d"] * 41)
+    target = f"{deep}/" + "/".join([".."] * 42)
+    root = _build_farm(tmp_path / "disk", ([deep], {"x": target}))
+    landed = _kernel_lands(root / "x")
+    assert isinstance(landed, str)
+    assert not _within(os.path.realpath(root), landed)
+    assert _resolve((), target, {}) is None
+
+
+# R7: every link is checked against the whole tree's links, whatever order they are listed in.
+def test_escape_through_later_link_rejected(cas: FsCAS, tmp_path: Path) -> None:
+    # `z` alone stays inside; `a` escapes only by going through `z`.
+    root = TreeManifest((_link("a", "z/.."), _link("z", ".")))
+    dest = tmp_path / "scratch" / "out"
+    with pytest.raises(CasError, match=r"symlink a -> 'z/\.\.' escapes"):
+        cas.materialize(_store_manifest(cas, root), "tree", dest)
+    assert not os.path.lexists(dest)
 
 
 # R7: the link budget is the kernel's: a 40-link chain resolves (and here escapes), 41 is ELOOP.
