@@ -1,0 +1,90 @@
+# GitHub Actions port of the nightly stage of .gitlab-ci.yml.
+# Manual-only (GitLab: `when: manual` on scheduled pipelines) until P1-12 provides a real SLURM
+# partition and licensed nodes; then add `schedule:` and point grid/vendor at those runners.
+
+name: nightly
+
+on:
+  workflow_dispatch:
+    inputs:
+      grid:
+        description: "Run grid tests (needs a self-hosted runner labelled slurm)"
+        type: boolean
+        default: false
+      vendor:
+        description: "Run vendor tests (needs a self-hosted runner labelled eda-licensed)"
+        type: boolean
+        default: false
+      hypothesis:
+        description: "Run the long Hypothesis profile"
+        type: boolean
+        default: true
+      mutmut:
+        description: "Run mutmut on the invariant files"
+        type: boolean
+        default: true
+  # TODO(P1-12): enable the schedule.
+  # schedule:
+  #   - cron: "17 2 * * *"
+
+permissions:
+  contents: read
+
+env:
+  UV_CACHE_DIR: .uv-cache
+  UV_FROZEN: "1"
+  UV_LINK_MODE: copy
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  grid:
+    if: inputs.grid
+    runs-on: [self-hosted, slurm]
+    container: ghcr.io/astral-sh/uv:python3.12-bookworm
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: uv sync --all-extras
+      - run: uv run pytest -m grid -q
+
+  vendor:
+    if: inputs.vendor
+    runs-on: [self-hosted, eda-licensed]
+    container: ghcr.io/astral-sh/uv:python3.12-bookworm
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: uv sync --all-extras
+      - run: uv run pytest -m vendor -q
+
+  hypothesis:
+    if: inputs.hypothesis
+    runs-on: ubuntu-latest
+    container: ghcr.io/astral-sh/uv:python3.12-bookworm
+    continue-on-error: true
+    env:
+      HYPOTHESIS_PROFILE: nightly
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .uv-cache
+          key: uv-${{ hashFiles('uv.lock') }}
+      - run: uv sync --all-extras
+      - run: uv run pytest -m unit -q
+
+  mutmut:
+    if: inputs.mutmut
+    runs-on: ubuntu-latest
+    container: ghcr.io/astral-sh/uv:python3.12-bookworm
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .uv-cache
+          key: uv-${{ hashFiles('uv.lock') }}
+      - run: uv sync --all-extras
+      # Invariant files from docs/design/invariants.md § Mutation check (created by later tasks).
+      # TODO(P1-12): mutmut 3.x reads paths_to_mutate from [tool.mutmut]; move it there when enabling.
+      - run: uvx mutmut run --paths-to-mutate src/ebs/core/canon.py,src/ebs/core/tree.py,src/ebs/plan/keys.py,src/ebs/sources/statcache.py
