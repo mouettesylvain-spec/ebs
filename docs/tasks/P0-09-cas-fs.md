@@ -67,6 +67,11 @@ interfaces.md §5.
   created; symlinks are created after every file/dir; copies use `O_EXCL|O_NOFOLLOW`. The resolver
   is property-tested against the kernel, and the 40-link boundary is pinned. On failure `dest` is
   removed only if this call created it.
+- P0-09a (2026-10-06): the R7 property used `os.path.realpath(strict=False)` as its oracle,
+  which is not a model of the kernel for links that do not resolve: for `l0 -> l1/..`,
+  `l1 -> d/../l0/..` without `d` it lands outside the root, while the kernel fails with ENOENT
+  (ELOOP once `d` exists) and `_resolve` says inside. `_resolve` was right. The oracle is now the
+  kernel (`/proc/self/fd`), plus a worst-case property where missing directories are created.
 - Follow-up (low risk): a chain of more than 40 acyclic links counts as "inside", which is right
   for the kernel (ELOOP), but userspace resolvers without a hop limit could follow it out. We could
   reject acyclic over-budget chains while still allowing cycles.
