@@ -20,9 +20,15 @@
       "Bash(git switch -c task/*)",
       "Bash(git checkout -b task/*)",
       "Bash(git branch*)"
+      "Bash(git push -u origin *)",
+      "Bash(git push origin *)"
     ],
     "deny": [
-      "Bash(git push*)",
+      "Bash(git push*--force*)",
+      "Bash(git push*-f *)",
+      "Bash(git push*+*)",
+      "Bash(git push*--delete*)",
+      "Bash(git push*--mirror*)",
       "Bash(git reset --hard*)",
       "Bash(git clean*)",
       "Bash(sbatch*)",

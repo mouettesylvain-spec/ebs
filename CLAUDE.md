@@ -61,7 +61,7 @@ is wrong, say why in the commit message.
 ## Git
 
 - Branch `task/<ID>-<slug>`; Conventional Commits (`feat(plan): …`); DCO sign-off: `git commit -s`.
-- Never push, never force-push, never rewrite shared history. The human opens the MR.
+- Push your own branch with git push -u origin <branch> once make check passes. Never force-push, never push to main, never rewrite shared history. The human opens the MR.
 
 ## When compacting
 

@@ -23,4 +23,4 @@ Implement task $ARGUMENTS.
 9. Update docs if contracts or invariants changed. Set Status to `review` in the task file and in
    docs/tasks/README.md. Add follow-ups you discovered to the task's Notes.
 10. Commit with a Conventional Commit message and `-s` (DCO). Summarize: what was built, test evidence,
-    reviewer findings and how they were handled, open questions. Do not push.
+    reviewer findings and how they were handled, open questions. Push the branch (git push -u origin <branch>), never force-push.
