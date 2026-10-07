@@ -1,0 +1,113 @@
+# GitHub Actions port of .gitlab-ci.yml (pipeline from docs/design/testing.md § CI pipeline).
+# lint -> unit (3.11, 3.12, 3.13) -> integration (Postgres) -> e2e.
+# Nightly jobs live in nightly.yml.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# GitLab `interruptible: true`: a newer pipeline on the same ref cancels the running one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_CACHE_DIR: .uv-cache
+  UV_FROZEN: "1"
+  UV_LINK_MODE: copy
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    container: ghcr.io/astral-sh/uv:python3.12-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .uv-cache
+          key: uv-${{ hashFiles('uv.lock') }}
+      - run: uv sync --all-extras
+      - run: make lint
+
+  unit:
+    needs: lint
+    runs-on: ubuntu-latest
+    container: ghcr.io/astral-sh/uv:python${{ matrix.python-version }}-bookworm
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .uv-cache
+          key: uv-${{ hashFiles('uv.lock') }}
+      - run: uv sync --all-extras
+      - run: make test-unit
+      - run: make test-perf
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-py${{ matrix.python-version }}
+          path: coverage.json
+          if-no-files-found: ignore
+
+  integration:
+    needs: unit
+    runs-on: ubuntu-latest
+    container: ghcr.io/astral-sh/uv:python3.12-bookworm
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: ebs_test
+          POSTGRES_USER: ebs
+          POSTGRES_PASSWORD: ebs
+        options: >-
+          --health-cmd "pg_isready -U ebs -d ebs_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      EBS_TEST_PG_URL: postgresql+psycopg://ebs:ebs@postgres:5432/ebs_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .uv-cache
+          key: uv-${{ hashFiles('uv.lock') }}
+      - run: uv sync --all-extras
+      - run: uv run pytest -m integration -q --ignore=tests/e2e --junitxml=junit-integration.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-integration
+          path: junit-integration.xml
+          if-no-files-found: ignore
+
+  e2e:
+    needs: integration
+    runs-on: ubuntu-latest
+    container: ghcr.io/astral-sh/uv:python3.12-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .uv-cache
+          key: uv-${{ hashFiles('uv.lock') }}
+      - run: uv sync --all-extras
+      - run: uv run pytest tests/e2e -q --junitxml=junit-e2e.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-e2e
+          path: junit-e2e.xml
+          if-no-files-found: ignore

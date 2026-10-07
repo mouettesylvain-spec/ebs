@@ -1,0 +1,3 @@
+# Custom labels of the self-hosted runners used by nightly.yml.
+self-hosted-runner:
+  labels: [slurm, eda-licensed]

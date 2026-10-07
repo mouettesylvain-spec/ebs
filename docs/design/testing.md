@@ -66,7 +66,7 @@ network, real `$HOME`, `/tmp` outside `tmp_path`, or wall-clock time (use `ebs.c
   (checked per package by `scripts/coverage_gate.py`).
 - New code in a task must not reduce a package's coverage.
 
-## CI pipeline (GitLab CI, `.gitlab-ci.yml`)
+## CI pipeline (GitLab CI, `.gitlab-ci.yml`; GitHub Actions port in `.github/workflows/`)
 
 `lint` (ruff, mypy, import-linter) → `unit` (py3.11, py3.12, py3.13) → `integration` (Postgres
 service) → `e2e` (examples with local + fake SLURM) → nightly: `grid`, `vendor`, Hypothesis
