@@ -3,6 +3,9 @@
 UV ?= uv
 RUN := $(UV) run --frozen --extra dev
 PYTEST := $(RUN) pytest
+# CI narrows the unit selection and adds -x (see .github/workflows/ci.yml).
+PYTEST_SELECT ?= unit and not perf
+PYTEST_EXTRA ?=
 
 # Every commit: lint, types, layering, unit tests with coverage and per-package gates.
 check: lint test-unit test-perf
@@ -14,7 +17,7 @@ lint:
 	$(RUN) lint-imports
 
 test-unit:
-	$(PYTEST) -m "unit and not perf" -q --cov --cov-report=term --cov-report=json:coverage.json
+	$(PYTEST) -m "$(PYTEST_SELECT)" $(PYTEST_EXTRA) -q --cov --cov-report=term --cov-report=json:coverage.json
 	$(RUN) python scripts/coverage_gate.py coverage.json src
 
 # Wall-clock budgets, measured without coverage tracing (it slows code down 2-3x).

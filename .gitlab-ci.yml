@@ -1,3 +1,6 @@
+# LEGACY: GitHub (.github/workflows/) is the primary repo and CI since 2026-10-07 (decision D3).
+# This file is kept for reference only and is no longer maintained.
+
 # Pipeline from docs/design/testing.md § CI pipeline.
 # lint -> unit (3.11, 3.12, 3.13) -> integration (Postgres) -> e2e -> nightly (scheduled only).
 # Nightly jobs stay `when: manual` until P1-12 provides a real SLURM partition and licensed nodes.
