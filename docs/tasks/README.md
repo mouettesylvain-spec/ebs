@@ -59,6 +59,8 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P2-07 | GitLab CI integration (`--ci`, JUnit) | P2-02 | 2 | todo |
 | P2-08 | `--detach` driver job | P1-02 | 2 | todo |
 | P2-06 | Web dashboard v1 | P2-05, P2-04 | 3 | todo |
+| P2-10 | Flow includes (split a flow across files) | P0-08 | 1 | todo |
+| P2-11 | Reusable step templates (`use:` / `with:`) | P2-10, P2-03 | 3 | todo |
 | P2-09 | Phase 2 acceptance | all P2 | 4 | todo |
 
 ## Phase 3 — Hermeticity and scale (exit: sandbox default for Questa; quarterly revalidation report)
@@ -107,6 +109,7 @@ flowchart LR
 | D5 | SLURM limits (MaxSubmitJobs, MaxArraySize, default partition/QOS per team) | All from `[slurm]` config; conservative defaults (array ≤ 1000, throttle 200) | P1-02 |
 | D6 | Unprivileged user namespaces on compute nodes | Sandbox backend auto-detects; falls back to Apptainer, then to staging-only with a warning | P3-01 |
 | D7 | NDA domains and NFS exports | Domains are config (`[[domains]]`), one CAS root per domain, created by an admin script | P2-01 |
+| D8 | Paths in a flow fragment that point outside its directory | Allowed only as `//path` (relative to the root flow's directory); `..` escaping the fragment directory is an error | P2-10 |
 
 Agents never resolve an open decision on their own: they implement the default behind a config
 key or interface so it can change, and note it in the task's "Notes" section.

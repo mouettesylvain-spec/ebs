@@ -158,6 +158,12 @@ steps:
 3. The resolved plan (`plan.json`) records every action with its expanded command, params, input digests, toolchain fingerprint and action key. `ebs plan --diff <build>` shows exactly why an action will rerun.
 4. `flow.lock` pins imports to exact release digests. It changes only through `ebs lock update`, reviewed like code.
 
+**Splitting a flow and reusing step definitions.** Three mechanisms, each for one job:
+
+- **Imports and releases** connect teams that work on separate schedules (RTL → verification → DfT). A consumer sees an upstream change only after `ebs lock update`.
+- **Includes** split one project's flow across files so each team owns its own file (`include: { lsu: blocks/lsu/flow.yaml }`). Everything is still one DAG and one build. Fragment steps get dotted ids (`lsu.compile`), and fragment paths resolve from the fragment's directory.
+- **Step templates** write a recipe once with typed arguments (`use: q.questa_lib`, `with: { lib: lsu, srcs: [...] }`) and reuse it for many libraries, with sources from local files or imports. Template libraries can come from another team's release, pinned in `flow.lock` like any import. Templates expand at load time, so they never change an action key.
+
 **Legacy wrapping.** A `make` or `tcl` step treats the whole workdir and its declared globs as inputs and the declared dirs as outputs: coarse, but cached from day one. `ebs discover <step>` runs the step once under strace and proposes the inputs it actually read, so teams can tighten or split the step later.
 
 ## Hashing, action keys and caching
