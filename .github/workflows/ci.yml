@@ -38,6 +38,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras  # blake3 too: mypy and its tests import it
       # mypy checks against Python 3.11 ([tool.mypy] python_version), ruff targets py311.
       - run: make lint
       # Cheap runtime check of the 3.11 floor: install runtime deps only and load the CLI.
@@ -57,6 +58,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras  # blake3 too: mypy and its tests import it
       - run: make test-unit PYTEST_SELECT='unit and not slow and not perf' PYTEST_EXTRA=-x
       - uses: actions/upload-artifact@v4
         if: always()
@@ -93,6 +95,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras  # blake3 too: mypy and its tests import it
       - name: Slow unit tests
         run: uv run --extra dev pytest -m "unit and slow and not perf" -x -q
       - name: Integration tests
