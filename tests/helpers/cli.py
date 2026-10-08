@@ -102,6 +102,7 @@ class Site:
         env = {"COLUMNS": "200", **kwargs.pop("env", {})}
         return self.runner.invoke(app, list(args), obj=self.services, env=env, **kwargs)
 
+
 def write_site(root: Path, *, flow: str = FLOW, config_extra: str = "") -> None:
     proj = root / "proj"
     (proj / "src").mkdir(parents=True)
