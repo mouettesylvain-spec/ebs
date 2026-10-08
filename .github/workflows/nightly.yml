@@ -47,6 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+      - run: uv sync --all-extras
       - run: uv run --extra dev pytest -m grid -q
 
   vendor:
@@ -56,6 +57,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+      - run: uv sync --all-extras
       - run: uv run --extra dev pytest -m vendor -q
 
   # Moved out of the per-PR pipeline to save CI minutes; run before merging perf-sensitive work.
@@ -69,6 +71,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras  # blake3 too: mypy and its tests import it
       - run: make test-perf
 
   hypothesis:
@@ -83,6 +86,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras  # blake3 too: mypy and its tests import it
       - run: uv run --extra dev pytest -m unit -q
 
   mutmut:
@@ -95,6 +99,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras  # blake3 too: mypy and its tests import it
       # Invariant files from docs/design/invariants.md § Mutation check (created by later tasks).
       # TODO(P1-12): mutmut 3.x reads paths_to_mutate from [tool.mutmut]; move it there when enabling.
       - run: uvx mutmut run --paths-to-mutate src/ebs/core/canon.py,src/ebs/core/tree.py,src/ebs/plan/keys.py,src/ebs/sources/statcache.py
