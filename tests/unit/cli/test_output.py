@@ -75,7 +75,8 @@ def test_every_command_has_json(site: Site) -> None:
     for command in (["plan"], ["build"], ["status"], ["logs"], ["rules", "list"]):
         result = site.invoke([*command, "--help"])
         assert result.exit_code == 0, command
-        assert "--json" in result.stdout, command
+        # Typer colors help when FORCE_COLOR/PY_COLORS is set at import; ANSI codes split "--json".
+        assert "--json" in _SGR.sub("", result.stdout), command
 
 
 # R5 (review: logging was bound to CliRunner's stderr, closed after the invocation)

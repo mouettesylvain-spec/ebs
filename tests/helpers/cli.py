@@ -97,8 +97,10 @@ class Site:
         return self.root / "proj"
 
     def invoke(self, args: Sequence[str], **kwargs: Any) -> Result:
-        return self.runner.invoke(app, list(args), obj=self.services, **kwargs)
-
+        # Rich sizes tables from COLUMNS or the real terminal running pytest; a narrow one would
+        # truncate headers ("pen…"), so pin a wide width unless the test sets its own.
+        env = {"COLUMNS": "200", **kwargs.pop("env", {})}
+        return self.runner.invoke(app, list(args), obj=self.services, env=env, **kwargs)
 
 def write_site(root: Path, *, flow: str = FLOW, config_extra: str = "") -> None:
     proj = root / "proj"
