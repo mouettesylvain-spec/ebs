@@ -22,7 +22,7 @@ __all__ = ["_pg_truncate_engine", "pg_migrated", "pg_server", "pg_url"]
 LINT_ACTIONS = {"lint[block=alu]", "lint[block=counter]", "summary"}
 ALU = Path("rtl/alu/alu.sv")
 COMMENT = "// Combinational ALU: add, subtract, and, or."
-UNUSED_DECL = "  logic unused_dbg;\n"
+UNUSED_DECL = "  logic spare_dbg;\n"
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ def test_minimal_rerun_set(site: Site, lint_make: Path) -> None:
     assert rerun.submitted == {"lint[block=alu]", "summary"}
     assert rerun.cached == {"lint[block=counter]"}
     summary = _logs(site, lint_make, "summary")
-    assert "rtl/alu/alu.sv:10: UNUSED: signal 'unused_dbg' is never used" in summary
+    assert "rtl/alu/alu.sv:10: UNUSED: signal 'spare_dbg' is never used" in summary
     assert "1 violation(s)" in summary
 
 
@@ -207,5 +207,7 @@ def write_verilator_toolchain(proj: Path, verilator: Path) -> None:
         "version: 1\ntoolchains:\n  verilator/system:\n"
         f'    version: "{version}"\n'
         f'    install_roots: ["{root}"]\n'
-        f'    env: {{ PATH: "{verilator.parent}:/usr/bin:/bin", VERILATOR_ROOT: "{root}" }}\n'
+        # no VERILATOR_ROOT in env: distro packages keep verilator_bin outside the root, and the
+        # wrapper finds both on its own (setting it breaks Debian/Ubuntu's verilator)
+        f'    env: {{ PATH: "{verilator.parent}:/usr/bin:/bin" }}\n'
     )

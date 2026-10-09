@@ -51,8 +51,11 @@ second run — and ship open-source examples outside contributors can run withou
   fake-lint result would be a cache hit for a Verilator build on another machine.
 - R6: the e2e tests take ~50 s locally (`tests/e2e`, including P0-16's); the < 2 min budget is not
   asserted (only the 120 s per-test timeout). Real Verilator runs in the new nightly `verilator`
-  job (`EBS_E2E_VERILATOR=1`); it was **not executed locally** (no Verilator here), so the first
-  nightly run is its first real check (Makefile's Verilator branch, `tb/tb.sv`, the toolchain file).
+  job (`EBS_E2E_VERILATOR=1`); it was then run locally with Verilator 5.020 (Ubuntu 24.04, the CI
+  runner's version): `EBS_E2E_VERILATOR=1 uv run pytest tests/e2e` gives 11 passed. That first run
+  found two bugs, both fixed: `VERILATOR_ROOT` in the toolchain env breaks distro packages (exit
+  127), and the test signal `unused_dbg` was silently exempt under Verilator's default
+  `--unused-regexp "*unused*"` (renamed `spare_dbg`; fake-lint now honors the same exemption).
 - CI triggers now use `paths:` with negations so quickstart-only PRs still run `test_docs.py`.
 
 ### Review (task-reviewer)
