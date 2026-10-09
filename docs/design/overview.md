@@ -95,6 +95,7 @@ max_log = "2GiB"               # tool log cap; the tail is kept
 kill_grace_s = 30              # SIGTERM -> SIGKILL on timeout
 
 [stat_cache]
+path = "/var/tmp/ebs-<uid>/statcache.sqlite"   # default; must be local disk, never NFS (P0-16)
 racy_window_s = 3
 audit_fraction = 0.01
 untrusted_mounts = []

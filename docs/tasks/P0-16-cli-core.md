@@ -1,6 +1,6 @@
 # P0-16 — CLI: `plan`, `build`, `status`, `logs`
 
-Status: todo · Phase: 0 · Depends on: P0-15 · Parallel-safe with: — · Size: M
+Status: review · Phase: 0 · Depends on: P0-15 · Parallel-safe with: — · Size: M
 
 ## Goal
 The primary user interface for phase 0: explain a plan, run a build, watch it, read logs.
@@ -44,4 +44,29 @@ The primary user interface for phase 0: explain a plan, run a build, watch it, r
 | `tests/e2e/test_cli_local.py::test_plan_build_status_logs` | R1–R4 | e2e |
 
 ## Done when
-- [ ] `make check-all` passes; `ebs --help` output reviewed for clarity (paste it in the MR)
+- [x] `make check-all` passes; `ebs --help` output reviewed for clarity (paste it in the MR)
+
+## Notes
+- CONTRACT CHANGE (R7, human decision 2026-10-05): `default_statcache_path(env)` →
+  `default_statcache_path(uid)` = `/var/tmp/ebs-<uid>/statcache.sqlite`; the old `~/.cache` test
+  was replaced. The CLI uses the default only in a 0700 directory owned by the user (not a
+  symlink), else warns and falls back to an in-memory stat cache. interfaces.md § 12.
+- New CLI contract, interfaces.md § 14: `ebs plan --json` document, `.ebs/builds/<uuid>/build.json`
+  (CLI-owned, next to the driver's `events.jsonl`; `status`/`logs` work without the store),
+  error JSON, `build --json` lines. Status `interrupted` = a `running` build whose driver PID on
+  this host is gone.
+- No driver change: `ebs build` sees events through a MetadataStore proxy (`_Tap`) wrapping
+  `emit`, which is how the UUID is printed before anything runs.
+- Runner change (R4): `_CappedLog` opens `tool.log.cur` unbuffered (and loops on partial raw
+  writes) so `ebs logs -f` sees output as the tool writes it; before, it lagged by up to 8 KiB.
+- Wiring module `cli/_context.py` (`SiteServices`) and `cli/_records.py` were added beyond the
+  listed files; `[rules]` config is now wired (overview.md said "config wiring: P0-16").
+- Typer 0.27 vendors click (`typer._click`): never import `click` in `ebs.cli` (its Context and
+  exceptions are other classes; `click_type=Choice` errors escape as exit 1). Choices are Enums.
+- Follow-ups:
+  - `ebs plan` predicts hits with `cache_get`, which counts a hit and touches `last_access`;
+    a side-effect-free `cache_peek` on MetadataStore would keep hit statistics honest.
+  - `logs -f` is local-executor only; grid live logs come with D2/P1-04. At the `max_log` cap a
+    rotation in the last poll interval hides that interval's tail (see `ebs.cli.logs`).
+  - `tests/unit/plan/test_planner.py::test_refine_idempotent` (perf, 200 ms Hypothesis deadline)
+    failed 2 of 3 runs on this machine under load; untouched by this task.

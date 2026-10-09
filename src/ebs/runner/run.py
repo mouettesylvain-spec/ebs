@@ -170,7 +170,8 @@ class _CappedLog:
         self.path, self.cap = path, cap
         self._cur_path = path.with_name(path.name + ".cur")
         self._prev_path = path.with_name(path.name + ".prev")
-        self._cur = open(self._cur_path, "wb")  # noqa: SIM115 - closed in close()
+        # Unbuffered: `ebs logs -f` reads the live file while the tool runs (P0-16 R4).
+        self._cur = open(self._cur_path, "wb", buffering=0)  # noqa: SIM115 - closed in close()
         self._cur_size = 0
         self._prev_size = 0
         self.total = 0
@@ -185,14 +186,16 @@ class _CappedLog:
                 self._rotate()
                 room = self.cap
             part, data = data[:room], data[room:]
-            self._cur.write(part)
+            view = memoryview(part)
+            while view:  # a raw (unbuffered) write may be partial
+                view = view[self._cur.write(view) or 0 :]
             self._cur_size += len(part)
 
     def _rotate(self) -> None:
         self._cur.close()
         os.replace(self._cur_path, self._prev_path)
         self._prev_size = self._cur_size
-        self._cur = open(self._cur_path, "wb")  # noqa: SIM115
+        self._cur = open(self._cur_path, "wb", buffering=0)  # noqa: SIM115
         self._cur_size = 0
 
     def close(self) -> None:

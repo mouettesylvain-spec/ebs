@@ -321,13 +321,9 @@ def test_invalid_digest_row_is_a_miss(tmp_path: Path) -> None:
         assert cache.lookup_git_blob("ab" * 20) is None
 
 
-def test_default_path(tmp_path: Path) -> None:
-    assert default_statcache_path({"HOME": str(tmp_path)}) == (
-        tmp_path / ".cache" / "ebs" / "statcache.sqlite"
-    )
-    assert default_statcache_path({"XDG_CACHE_HOME": str(tmp_path / "x"), "HOME": "/h"}) == (
-        tmp_path / "x" / "ebs" / "statcache.sqlite"
-    )
+def test_default_path() -> None:
+    # Local disk per user, never ~/.cache (often NFS, where WAL is unsafe): P0-16 R7.
+    assert default_statcache_path(1000) == Path("/var/tmp/ebs-1000/statcache.sqlite")
 
 
 def test_racy_window_validated(tmp_path: Path) -> None:
