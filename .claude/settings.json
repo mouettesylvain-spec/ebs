@@ -19,7 +19,7 @@
       "Bash(git commit -s*)",
       "Bash(git switch -c task/*)",
       "Bash(git checkout -b task/*)",
-      "Bash(git branch*)"
+      "Bash(git branch*)",
       "Bash(git push -u origin *)",
       "Bash(git push origin *)"
     ],
