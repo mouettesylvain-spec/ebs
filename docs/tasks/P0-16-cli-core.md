@@ -1,6 +1,6 @@
 # P0-16 — CLI: `plan`, `build`, `status`, `logs`
 
-Status: review · Phase: 0 · Depends on: P0-15 · Parallel-safe with: — · Size: M
+Status: done · Phase: 0 · Depends on: P0-15 · Parallel-safe with: — · Size: M
 
 ## Goal
 The primary user interface for phase 0: explain a plan, run a build, watch it, read logs.

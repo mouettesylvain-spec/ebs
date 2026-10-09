@@ -1,6 +1,6 @@
 # P0-13 — Runner (local lifecycle)
 
-Status: review · Phase: 0 · Depends on: P0-09, P0-10, P0-12 · Parallel-safe with: P0-06, P0-08 · Size: L
+Status: done · Phase: 0 · Depends on: P0-09, P0-10, P0-12 · Parallel-safe with: P0-06, P0-08 · Size: L
 
 ## Goal
 `ebs-runner` executes one action from a plan in an isolated scratch directory, with only declared

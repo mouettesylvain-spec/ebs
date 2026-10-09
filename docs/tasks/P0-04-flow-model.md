@@ -1,6 +1,6 @@
 # P0-04 — Flow model, YAML loader, JSON Schema
 
-Status: review · Phase: 0 · Depends on: P0-01 · Parallel-safe with: P0-02, P0-11 · Size: M
+Status: done · Phase: 0 · Depends on: P0-01 · Parallel-safe with: P0-02, P0-11 · Size: M
 
 ## Goal
 `flow.yaml` files load into validated, immutable Pydantic models with precise `file:line:col` errors,

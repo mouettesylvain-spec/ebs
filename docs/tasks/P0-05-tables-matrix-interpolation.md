@@ -1,6 +1,6 @@
 # P0-05 — Parameter tables, matrix expansion, interpolation
 
-Status: review · Phase: 0 · Depends on: P0-04 · Parallel-safe with: P0-03, P0-07, P0-10 · Size: M
+Status: done · Phase: 0 · Depends on: P0-04 · Parallel-safe with: P0-03, P0-07, P0-10 · Size: M
 
 ## Goal
 Turn a step with a `matrix` into one concrete instance per table row, with every `${row.*}`,

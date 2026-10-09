@@ -1,6 +1,6 @@
 # P0-02 — Digests and canonical JSON
 
-Status: review · Phase: 0 · Depends on: P0-01 · Parallel-safe with: P0-04, P0-11 · Size: S
+Status: done · Phase: 0 · Depends on: P0-01 · Parallel-safe with: P0-04, P0-11 · Size: S
 
 ## Goal
 The hashing foundation every cache decision rests on: a `Digest` type, streaming file hashing and a

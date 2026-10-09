@@ -1,6 +1,6 @@
 # P0-01 — Repository scaffold and quality gates
 
-Status: review · Phase: 0 · Depends on: — · Parallel-safe with: — · Size: M
+Status: done · Phase: 0 · Depends on: — · Parallel-safe with: — · Size: M
 
 ## Goal
 A clean, installable `ebs` package with every quality gate wired, so all later tasks only add code
