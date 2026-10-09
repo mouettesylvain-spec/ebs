@@ -1,0 +1,40 @@
+# {{ ansible_managed }}
+# EBS settings (P0-11), read after Debian's postgresql.conf through its include_dir 'conf.d'.
+# Mirrors deploy/postgres/conf/conf.d/*.conf.
+
+listen_addresses = '*'
+hba_file = '/etc/postgresql/{{ ebs_postgres_version }}/main/pg_hba.conf'
+
+# Connections and timeouts: ~100 users + CI behind PgBouncer.
+max_connections = {{ ebs_postgres_max_connections }}
+superuser_reserved_connections = 5
+idle_in_transaction_session_timeout = {{ ebs_postgres_idle_in_transaction_session_timeout }}
+shared_buffers = {{ ebs_postgres_shared_buffers }}
+effective_cache_size = {{ ebs_postgres_effective_cache_size }}
+password_encryption = scram-sha-256
+log_connections = on
+log_disconnections = on
+log_min_duration_statement = 1s
+
+# TLS
+ssl = on
+ssl_cert_file = '{{ ebs_postgres_tls_dir }}/server.crt'
+ssl_key_file = '{{ ebs_postgres_tls_dir }}/server.key'
+ssl_ca_file = '{{ ebs_postgres_tls_dir }}/ca.crt'
+ssl_min_protocol_version = 'TLSv1.2'
+
+# Replication
+wal_level = replica
+max_wal_senders = 5
+max_replication_slots = 5
+wal_keep_size = 1GB
+max_slot_wal_keep_size = 20GB
+hot_standby = on
+hot_standby_feedback = on
+wal_log_hints = on
+
+# WAL archiving to pgBackRest (stanza "ebs")
+archive_mode = on
+archive_command = 'pgbackrest --stanza=ebs archive-push %p'
+archive_timeout = 60s
+restore_command = 'pgbackrest --stanza=ebs archive-get %f "%p"'

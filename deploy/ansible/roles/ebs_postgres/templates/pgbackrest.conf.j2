@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+# Mirrors deploy/postgres/conf/pgbackrest.conf. Mode 0600: holds the repository cipher key.
+
+[global]
+repo1-path={{ ebs_pgbackrest_repo_path }}
+repo1-cipher-type=aes-256-cbc
+repo1-cipher-pass={{ ebs_pgbackrest_cipher_pass }}
+repo1-retention-full={{ ebs_pgbackrest_retention_full }}
+repo1-retention-diff={{ ebs_pgbackrest_retention_diff }}
+compress-type=zst
+start-fast=y
+process-max=2
+log-level-console=info
+log-level-file=detail
+
+[ebs]
+pg1-path=/var/lib/postgresql/{{ ebs_postgres_version }}/main
+pg1-socket-path=/var/run/postgresql
+pg1-user=postgres

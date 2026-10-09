@@ -17,5 +17,8 @@ htmlcov/
 junit*.xml
 .ebs/
 
+# Local PostgreSQL deployment secrets and generated certificates (P0-11)
+deploy/postgres/.env
+deploy/postgres/certs/
 # local runs of examples/lint-make/lint/Makefile
 examples/lint-make/lint/reports/

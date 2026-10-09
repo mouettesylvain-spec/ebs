@@ -1,0 +1,65 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Query through PgBouncer as the ebs role (TLS + SCRAM)
+      ansible.builtin.command:
+        argv: [psql, -X, -At, -c,
+               "SELECT current_setting('statement_timeout') || '|' || ssl
+                FROM pg_stat_ssl WHERE pid = pg_backend_pid()",
+               "host=127.0.0.1 port=6432 dbname=ebs user=ebs sslmode=require"]
+      environment:
+        PGPASSWORD: "{{ ebs_postgres_ebs_password }}"
+      register: pooled
+      changed_when: false
+
+    - name: Read server settings
+      ansible.builtin.command:
+        argv: [psql, -X, -At, -d, postgres, -c,
+               "SELECT current_setting('max_connections') || '|' ||
+                       current_setting('idle_in_transaction_session_timeout') || '|' ||
+                       current_setting('archive_mode') || '|' || current_setting('ssl')"]
+      become: true
+      become_user: postgres
+      register: settings
+      changed_when: false
+
+    - name: Read the PgBouncer pool mode
+      ansible.builtin.command:
+        argv: [psql, -X, -At, -c, "SHOW CONFIG",
+               "host=127.0.0.1 port=6432 dbname=pgbouncer user=postgres sslmode=require"]
+      environment:
+        PGPASSWORD: "{{ ebs_postgres_superuser_password }}"
+      register: bouncer
+      changed_when: false
+
+    - name: Check that a plain-text connection is refused
+      ansible.builtin.command:
+        argv: [psql, -X, -At, -c, "SELECT 1",
+               "host=127.0.0.1 port=5432 dbname=ebs user=ebs sslmode=disable"]
+      environment:
+        PGPASSWORD: "{{ ebs_postgres_ebs_password }}"
+      register: plain
+      changed_when: false
+      failed_when: plain.rc == 0
+
+    - name: Check WAL archiving to pgBackRest
+      ansible.builtin.command:
+        argv: [pgbackrest, --stanza=ebs, check]
+      become: true
+      become_user: postgres
+      changed_when: false
+
+    - name: Assert the R2/R6 settings
+      ansible.builtin.assert:
+        that:
+          # bool || text renders as 'true' (psql's bare 't' is only for a boolean column).
+          - pooled.stdout == '30s|true'
+          - settings.stdout == '100|1min|on|on'
+          - "'pool_mode|transaction' in bouncer.stdout"
+          - "'default_pool_size|20' in bouncer.stdout"
+          # The package starts PgBouncer on localhost; the role's config must have been applied
+          # by a restart (a reload does not change listen_addr).
+          - "'listen_addr|*' in bouncer.stdout"
