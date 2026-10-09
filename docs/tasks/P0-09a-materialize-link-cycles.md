@@ -1,6 +1,6 @@
 # P0-09a — Materialize: symlink cycles through missing directories
 
-Status: review · Phase: 0 · Depends on: P0-09 · Parallel-safe with: P0-16, P1-01, P1-08 · Size: S
+Status: done · Phase: 0 · Depends on: P0-09 · Parallel-safe with: P0-16, P1-01, P1-08 · Size: S
 
 ## Goal
 `tests/unit/cas/test_materialize.py::test_resolve_matches_kernel` (P0-09 R7) has a Hypothesis

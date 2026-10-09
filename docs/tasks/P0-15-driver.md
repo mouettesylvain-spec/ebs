@@ -1,6 +1,6 @@
 # P0-15 — Driver / scheduler
 
-Status: review · Phase: 0 · Depends on: P0-08, P0-10, P0-14 · Parallel-safe with: — · Size: L
+Status: done · Phase: 0 · Depends on: P0-08, P0-10, P0-14 · Parallel-safe with: — · Size: L
 
 ## Goal
 Walk the plan, satisfy what the cache already knows, submit only ready cache misses, react to results,

@@ -1,6 +1,6 @@
 # P0-12 — Rule plugin API and `shell`, `make`, `tcl` rules
 
-Status: review · Phase: 0 · Depends on: P0-05 · Parallel-safe with: P0-09 · Size: M
+Status: done · Phase: 0 · Depends on: P0-05 · Parallel-safe with: P0-09 · Size: M
 
 ## Goal
 A plugin interface for step kinds, plus the three generic rules that let teams wrap existing Makefile

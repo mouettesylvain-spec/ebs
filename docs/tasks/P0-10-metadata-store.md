@@ -1,6 +1,6 @@
 # P0-10 — Metadata store: schema, PostgreSQL, in-memory fake, contract suite
 
-Status: review · Phase: 0 · Depends on: P0-02 · Parallel-safe with: P0-03, P0-05, P0-07 · Size: L
+Status: done · Phase: 0 · Depends on: P0-02 · Parallel-safe with: P0-03, P0-05, P0-07 · Size: L
 
 ## Goal
 Persistent shared state (builds, actions, action cache, provenance edges, events) behind one

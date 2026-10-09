@@ -1,6 +1,6 @@
 # P0-11 — PostgreSQL deployment
 
-Status: review · Phase: 0 · Depends on: P0-01 · Parallel-safe with: P0-02, P0-04 · Size: M
+Status: done · Phase: 0 · Depends on: P0-01 · Parallel-safe with: P0-02, P0-04 · Size: M
 
 ## Goal
 A reproducible, documented deployment of PostgreSQL 17 for EBS: primary + streaming hot standby,

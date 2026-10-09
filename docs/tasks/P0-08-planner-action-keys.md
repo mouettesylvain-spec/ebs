@@ -1,6 +1,6 @@
 # P0-08 — Planner, action keys, plan.json, plan diff
 
-Status: review · Phase: 0 · Depends on: P0-05, P0-06, P0-07, P0-12 · Parallel-safe with: P0-14 · Size: L
+Status: done · Phase: 0 · Depends on: P0-05, P0-06, P0-07, P0-12 · Parallel-safe with: P0-14 · Size: L
 
 ## Goal
 The heart of the system: turn a loaded flow into a static DAG of fully explicit actions with
