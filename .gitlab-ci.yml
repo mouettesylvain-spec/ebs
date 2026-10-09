@@ -107,11 +107,11 @@ nightly:hypothesis:
   variables:
     HYPOTHESIS_PROFILE: nightly
   script:
-    - uv run pytest -m unit -q
+    # Thread timeout method: see the hypothesis job in .github/workflows/nightly.yml.
+    - uv run pytest -m "unit and not perf" -q -n auto --timeout=600 --timeout-method=thread
 
 nightly:mutmut:
   extends: .nightly
   script:
-    # Invariant files from docs/design/invariants.md § Mutation check (created by later tasks).
-    # TODO(P1-12): mutmut 3.x reads paths_to_mutate from [tool.mutmut]; move it there when enabling.
-    - uvx mutmut run --paths-to-mutate src/ebs/core/canon.py,src/ebs/core/tree.py,src/ebs/plan/keys.py,src/ebs/sources/statcache.py
+    # Files and tests to run are in [tool.mutmut] (pyproject.toml).
+    - uv run --with mutmut==3.8.0 mutmut run

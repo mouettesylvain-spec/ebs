@@ -107,3 +107,22 @@ fail_under = 85
 show_missing = true
 skip_covered = true
 exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "\\.\\.\\.$"]
+
+# --- mutmut (nightly) -------------------------------------------------------------------------
+# Invariant files from docs/design/invariants.md § Mutation check. mutmut 3.x takes no
+# --paths-to-mutate flag: it copies source_paths into mutants/ and mutates only_mutate there.
+[tool.mutmut]
+source_paths = ["src/ebs"]
+only_mutate = [
+    "src/ebs/core/canon.py",
+    "src/ebs/core/tree.py",
+    "src/ebs/plan/keys.py",
+    "src/ebs/sources/statcache.py",
+]
+also_copy = ["scripts", "schemas"]  # tests import scripts/regen_golden_keys.py and read schemas/
+pytest_add_cli_args_test_selection = [
+    "tests/unit/core",
+    "tests/unit/plan",
+    "tests/unit/sources",
+    "tests/golden",
+]

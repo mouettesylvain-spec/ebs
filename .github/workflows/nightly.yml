@@ -113,6 +113,7 @@ jobs:
     if: inputs.hypothesis
     runs-on: ubuntu-latest
     continue-on-error: true
+    timeout-minutes: 45
     env:
       HYPOTHESIS_PROFILE: nightly
     steps:
@@ -122,12 +123,21 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --all-extras  # blake3 too: mypy and its tests import it
-      - run: uv run --extra dev pytest -m unit -q
+      # The nightly profile runs 25x the examples of the per-PR one (5000 vs 200), so a serial
+      # run takes the better part of an hour with no output: spread it over the cores (-n auto)
+      # and print the slowest tests. The per-test timeout is raised from 120 s to fit 5000
+      # examples; the thread method kills the stuck xdist worker (the test fails, the run goes
+      # on) instead of raising pytest.fail(), which Hypothesis catches and replays as a failure.
+      # perf is left out: wall-clock budgets on busy xdist workers are noise (see the perf job).
+      - run: >-
+          uv run --extra dev pytest -m "unit and not perf" -q -n auto
+          --timeout=600 --timeout-method=thread --durations=20
 
   mutmut:
     if: inputs.mutmut
     runs-on: ubuntu-latest
     continue-on-error: true
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -135,6 +145,8 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --all-extras  # blake3 too: mypy and its tests import it
-      # Invariant files from docs/design/invariants.md § Mutation check (created by later tasks).
-      # TODO(P1-12): mutmut 3.x reads paths_to_mutate from [tool.mutmut]; move it there when enabling.
-      - run: uvx mutmut run --paths-to-mutate src/ebs/core/canon.py,src/ebs/core/tree.py,src/ebs/plan/keys.py,src/ebs/sources/statcache.py
+      # Files and tests to run are in [tool.mutmut] (pyproject.toml): mutmut 3.x has no
+      # --paths-to-mutate flag. Not uvx: mutmut runs pytest in-process, so it needs the project env.
+      - run: uv run --extra dev --with mutmut==3.8.0 mutmut run
+      - if: always()
+        run: uv run --extra dev --with mutmut==3.8.0 mutmut results
