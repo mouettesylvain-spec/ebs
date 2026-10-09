@@ -1,0 +1,113 @@
+---
+# Every step checks the current state first, so a second run reports changed=0 (R5).
+
+- name: Check which roles already log in with the configured password
+  ansible.builtin.command:
+    argv: [psql, -X, -At, -c, "SELECT 1",
+           "host=127.0.0.1 port=5432 dbname=postgres user={{ item.name }} sslmode=require"]
+  environment:
+    PGPASSWORD: "{{ item.password }}"
+    PGCONNECT_TIMEOUT: "5"
+  loop:
+    - { name: postgres, password: "{{ ebs_postgres_superuser_password }}" }
+    - { name: ebs, password: "{{ ebs_postgres_ebs_password }}" }
+    - { name: replicator, password: "{{ ebs_postgres_replication_password }}" }
+  loop_control:
+    label: "{{ item.name }}"
+  register: ebs_postgres_login
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Create roles or set their passwords
+  ansible.builtin.command:
+    argv: [psql, -X, -v, ON_ERROR_STOP=1, -d, postgres,
+           -v, "role={{ item.item.name }}", -v, "password={{ item.item.password }}",
+           -v, "attrs={{ ebs_postgres_role_attrs[item.item.name] }}"]
+    stdin: |
+      SELECT format('%s ROLE %I %s PASSWORD %L',
+                    CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role')
+                         THEN 'ALTER' ELSE 'CREATE' END,
+                    :'role', :'attrs', :'password') \gexec
+  become: true
+  become_user: postgres
+  loop: "{{ ebs_postgres_login.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.rc != 0
+  changed_when: true
+  no_log: true
+  vars:
+    ebs_postgres_role_attrs:
+      postgres: SUPERUSER LOGIN
+      ebs: LOGIN
+      replicator: LOGIN REPLICATION
+
+- name: Read the ebs role settings
+  ansible.builtin.command:
+    argv: [psql, -X, -At, -d, postgres, -c,
+           "SELECT coalesce(array_to_string(s.setconfig, ','), '') FROM pg_roles r
+            LEFT JOIN pg_db_role_setting s ON s.setrole = r.oid AND s.setdatabase = 0
+            WHERE r.rolname = 'ebs'"]
+  become: true
+  become_user: postgres
+  register: ebs_postgres_role_settings
+  changed_when: false
+
+- name: Set the ebs role timeouts
+  ansible.builtin.command:
+    argv: [psql, -X, -v, ON_ERROR_STOP=1, -d, postgres, -c, "{{ item.sql }}"]
+  become: true
+  become_user: postgres
+  loop:
+    - setting: "statement_timeout={{ ebs_postgres_ebs_statement_timeout }}"
+      sql: "ALTER ROLE ebs SET statement_timeout = '{{ ebs_postgres_ebs_statement_timeout }}'"
+    - setting: "idle_in_transaction_session_timeout={{ ebs_postgres_idle_in_transaction_session_timeout }}"
+      sql: >-
+        ALTER ROLE ebs SET idle_in_transaction_session_timeout =
+        '{{ ebs_postgres_idle_in_transaction_session_timeout }}'
+  loop_control:
+    label: "{{ item.setting }}"
+  when: item.setting not in ebs_postgres_role_settings.stdout.split(',')
+  changed_when: true
+
+- name: Check for the ebs database
+  ansible.builtin.command:
+    argv: [psql, -X, -At, -d, postgres, -c, "SELECT 1 FROM pg_database WHERE datname = 'ebs'"]
+  become: true
+  become_user: postgres
+  register: ebs_postgres_db
+  changed_when: false
+
+- name: Create the ebs database
+  ansible.builtin.command:
+    argv: [createdb, --owner=ebs, ebs]
+  become: true
+  become_user: postgres
+  when: ebs_postgres_db.stdout != '1'
+  changed_when: true
+
+- name: Check for the standby replication slot
+  ansible.builtin.command:
+    argv: [psql, -X, -At, -d, postgres, -c,
+           "SELECT 1 FROM pg_replication_slots WHERE slot_name = '{{ ebs_postgres_slot_name }}'"]
+  become: true
+  become_user: postgres
+  register: ebs_postgres_slot
+  changed_when: false
+
+- name: Create the standby replication slot
+  ansible.builtin.command:
+    argv: [psql, -X, -v, ON_ERROR_STOP=1, -d, postgres, -c,
+           "SELECT pg_create_physical_replication_slot('{{ ebs_postgres_slot_name }}')"]
+  become: true
+  become_user: postgres
+  when: ebs_postgres_slot.stdout != '1'
+  changed_when: true
+
+- name: Create the pgBackRest stanza
+  ansible.builtin.command:
+    argv: [pgbackrest, --stanza=ebs, stanza-create]
+    creates: "{{ ebs_pgbackrest_repo_path }}/backup/ebs/backup.info"
+  become: true
+  become_user: postgres

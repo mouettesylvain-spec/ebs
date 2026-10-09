@@ -1,0 +1,49 @@
+---
+# procps: pgbouncer.service reloads with /bin/kill, absent on minimal hosts.
+- name: Install apt prerequisites
+  ansible.builtin.apt:
+    name: [ca-certificates, gnupg, openssl, acl, procps, postgresql-common]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the PGDG key directory
+  ansible.builtin.file:
+    path: /usr/share/postgresql-common/pgdg
+    state: directory
+    mode: "0755"
+  when: ebs_postgres_manage_repo
+
+- name: Download the PGDG signing key
+  ansible.builtin.get_url:
+    url: "{{ ebs_postgres_pgdg_key_url }}"
+    dest: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+    mode: "0644"
+  when: ebs_postgres_manage_repo
+
+- name: Add the PGDG apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc]
+      https://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main
+    filename: pgdg
+    state: present
+  when: ebs_postgres_manage_repo
+
+# Must be set before the server package creates the "main" cluster. createcluster.conf exists
+# in every postgresql-common version (createcluster.d/ does not, e.g. Debian 12's).
+- name: Enable data checksums for new clusters
+  ansible.builtin.lineinfile:
+    path: /etc/postgresql-common/createcluster.conf
+    regexp: '^#?\s*initdb_options\s*='
+    line: "initdb_options = '--data-checksums --auth-local=peer --auth-host=scram-sha-256'"
+
+- name: Install PostgreSQL, PgBouncer and pgBackRest
+  ansible.builtin.apt:
+    name:
+      - "postgresql-{{ ebs_postgres_version }}"
+      - pgbouncer
+      - pgbackrest
+    state: present
+    update_cache: true
+    cache_valid_time: 3600

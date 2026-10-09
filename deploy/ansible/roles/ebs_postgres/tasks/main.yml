@@ -1,0 +1,44 @@
+---
+- name: Check that every secret is supplied
+  ansible.builtin.assert:
+    that:
+      - ebs_postgres_superuser_password | length > 0
+      - ebs_postgres_ebs_password | length > 0
+      - ebs_postgres_replication_password | length > 0
+      - ebs_pgbackrest_cipher_pass | length > 0
+      - ebs_postgres_replication_role in ['primary', 'standby']
+      - ebs_postgres_replication_role == 'primary' or ebs_postgres_primary_host | length > 0
+    fail_msg: >-
+      Set ebs_postgres_superuser_password, ebs_postgres_ebs_password,
+      ebs_postgres_replication_password and ebs_pgbackrest_cipher_pass (from Ansible Vault), and
+      ebs_postgres_primary_host on a standby.
+    quiet: true
+
+- name: Install packages
+  ansible.builtin.import_tasks: install.yml
+
+- name: Install TLS material
+  ansible.builtin.import_tasks: tls.yml
+
+- name: Configure PostgreSQL, PgBouncer and pgBackRest
+  ansible.builtin.import_tasks: config.yml
+
+- name: Clone the standby from the primary
+  ansible.builtin.import_tasks: standby.yml
+  when: ebs_postgres_replication_role == 'standby'
+
+- name: Start the services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - "postgresql@{{ ebs_postgres_version }}-main"
+    - pgbouncer
+
+- name: Apply pending restarts and reloads before touching the database
+  ansible.builtin.meta: flush_handlers
+
+- name: Create roles, database, slot and backup stanza
+  ansible.builtin.import_tasks: primary.yml
+  when: ebs_postgres_replication_role == 'primary'

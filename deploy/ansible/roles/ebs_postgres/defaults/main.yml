@@ -1,0 +1,52 @@
+---
+# EBS metadata database on a Debian/Ubuntu host: PostgreSQL + PgBouncer + pgBackRest (P0-11).
+# Mirrors deploy/postgres/ (compose); keep the two in sync.
+
+ebs_postgres_version: 17
+# primary: initdb, roles, database, slot, stanza. standby: pg_basebackup from ebs_postgres_primary_host.
+ebs_postgres_replication_role: primary
+ebs_postgres_primary_host: ""
+ebs_postgres_slot_name: standby1
+
+# Install the PostgreSQL Global Development Group apt repository (postgresql, pgbouncer, pgbackrest).
+ebs_postgres_manage_repo: true
+ebs_postgres_pgdg_key_url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+
+# Networks allowed to connect (hostssl + scram-sha-256). "samenet" = the host's own subnets.
+ebs_postgres_allowed_networks:
+  - samenet
+
+# Sizing for ~100 users + CI behind PgBouncer.
+ebs_postgres_max_connections: 100
+ebs_postgres_idle_in_transaction_session_timeout: "60s"
+ebs_postgres_ebs_statement_timeout: "30s"
+ebs_postgres_shared_buffers: "1GB"
+ebs_postgres_effective_cache_size: "3GB"
+
+ebs_pgbouncer_port: 6432
+ebs_pgbouncer_pool_mode: transaction
+ebs_pgbouncer_default_pool_size: 20
+ebs_pgbouncer_reserve_pool_size: 5
+ebs_pgbouncer_max_db_connections: 80
+ebs_pgbouncer_max_client_conn: 1000
+
+# TLS: paths on the controller to a site certificate; empty = generate a self-signed CA + cert
+# on the host (fine for a lab; use a site CA in production).
+ebs_postgres_tls_dir: /etc/postgresql/ebs-tls
+ebs_postgres_tls_ca_src: ""
+ebs_postgres_tls_cert_src: ""
+ebs_postgres_tls_key_src: ""
+ebs_postgres_tls_names:
+  - "{{ inventory_hostname }}"
+  - localhost
+
+ebs_pgbackrest_repo_path: /var/lib/pgbackrest
+ebs_pgbackrest_retention_full: 2
+ebs_pgbackrest_retention_diff: 6
+
+# Secrets: no defaults. Supply them from Ansible Vault (or another secret store); the role fails
+# early when one is missing.
+ebs_postgres_superuser_password: ""
+ebs_postgres_ebs_password: ""
+ebs_postgres_replication_password: ""
+ebs_pgbackrest_cipher_pass: ""

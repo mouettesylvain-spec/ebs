@@ -1,0 +1,6 @@
+---
+# Test-only: the molecule docker driver's create/destroy playbooks use community.docker.
+# The role itself needs only ansible.builtin.
+collections:
+  - name: community.docker
+    version: ">=3.10.0"
