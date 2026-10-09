@@ -1,6 +1,6 @@
 # P0-17 — Phase 0 end-to-end and examples
 
-Status: todo · Phase: 0 · Depends on: P0-16 · Size: M
+Status: review · Phase: 0 · Depends on: P0-16 · Size: M
 
 ## Goal
 Prove the phase 0 exit criterion — an existing lint Makefile wrapped as-is gets a 100 % cache hit on the
@@ -36,4 +36,43 @@ second run — and ship open-source examples outside contributors can run withou
 | `tests/e2e/test_docs.py::test_quickstart_blocks` | R5 | e2e |
 
 ## Done when
-- [ ] all e2e tests pass in CI; phase 0 exit criterion demonstrated in the MR description with output
+- [x] all e2e tests pass locally (`make check`, `make test-integration`); CI run pending on the PR
+- [ ] phase 0 exit criterion demonstrated in the MR description with output (human, when opening the MR)
+
+## Notes
+
+### What was built (2026-10-09)
+- `examples/lint-make`: an unchanged-style `lint/Makefile` run per row of `blocks.csv`
+  (`kind: make`), `tools/fake-lint` (bash + awk: MODNAME, UNUSED, TAB, LONGLINE on comment-stripped
+  code, normalized report), `tools/summarize`. `examples/verilator-sim`: `compile` (model dir
+  `deterministic: false`), `sim` over `tests.csv`, `report`.
+- Real Verilator is a separate `flow.verilator.yaml` per example declaring a `verilator/system`
+  **toolchain**, not Makefile auto-detection: the tool's identity must be in the action key, or a
+  fake-lint result would be a cache hit for a Verilator build on another machine.
+- R6: the e2e tests take ~50 s locally (`tests/e2e`, including P0-16's); the < 2 min budget is not
+  asserted (only the 120 s per-test timeout). Real Verilator runs in the new nightly `verilator`
+  job (`EBS_E2E_VERILATOR=1`); it was then run locally with Verilator 5.020 (Ubuntu 24.04, the CI
+  runner's version): `EBS_E2E_VERILATOR=1 uv run pytest tests/e2e` gives 11 passed. That first run
+  found two bugs, both fixed: `VERILATOR_ROOT` in the toolchain env breaks distro packages (exit
+  127), and the test signal `unused_dbg` was silently exempt under Verilator's default
+  `--unused-regexp "*unused*"` (renamed `spare_dbg`; fake-lint now honors the same exemption).
+- CI triggers now use `paths:` with negations so quickstart-only PRs still run `test_docs.py`.
+
+### Review (task-reviewer)
+No blockers. Fixed: a missing/crashing Verilator no longer yields an empty "0 violation(s)"
+report (`|| true` removed) and the nightly test asserts a Verilator-only finding; R4 also edits a
+file only the downstream step reads, so it catches a leak whatever order the lints stage in
+(this exposed that `lint` declared `tools/*`, rerunning on summary-tool edits: now
+`tools/fake-lint`); `paths-ignore` + `!` replaced by the documented `paths` form; the Makefile's
+report is `.PHONY` so a stale local report is never trusted; nightly job no longer
+`continue-on-error`. Accepted: the quickstart's `sed -i` edits need GNU sed (said in the doc).
+
+### Follow-ups
+- No CLI to migrate the metadata DB: the quickstart uses
+  `python -c 'from ebs.meta import migrations; migrations.upgrade(...)'`. Add `ebs admin db upgrade`
+  (P0-11 or P1-06).
+- `verilator/system` fingerprints only `VERILATOR_ROOT`; the binary is identified by its version
+  string. Proper registration is P1-07.
+- Fixed in a separate commit on this branch: `test_planner.py::test_refine_idempotent` (perf tier,
+  P0-08) failed ~1 in 7 runs because its 200 ms Hypothesis deadline also timed plan setup I/O
+  (~80 ms, spikes to ~470 ms); setup now runs once outside the timed examples.

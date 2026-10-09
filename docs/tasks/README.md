@@ -28,7 +28,7 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P0-14 | Executor API + local executor | P0-13 | 6 | done |
 | P0-15 | Driver / scheduler | P0-08, P0-10, P0-14 | 7 | done |
 | P0-16 | CLI: `plan`, `build`, `status`, `logs` | P0-15 | 8 | done |
-| P0-17 | Phase 0 end-to-end + examples | P0-16 | 9 | todo |
+| P0-17 | Phase 0 end-to-end + examples | P0-16 | 9 | review |
 
 ## Phase 1 — Grid + Questa (exit: full CPU regression on SLURM, minimal recompiles, no orphan scratch)
 
