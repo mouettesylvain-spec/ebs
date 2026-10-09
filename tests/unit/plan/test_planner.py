@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from ebs.cas.fs import FsCAS
@@ -476,25 +476,29 @@ def _all_produced() -> dict[tuple[str, str], Digest]:
     return {(CORE, "worklib"): hash_bytes(b"c"), (ALU, "worklib"): hash_bytes(b"a")}
 
 
-# R7 (perf: Hypothesis' 200 ms deadline per example is a wall-clock budget)
+# R7 (perf: Hypothesis' 200 ms deadline per example is a wall-clock budget for `refine`)
 @pytest.mark.perf
-@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], max_examples=50)
-@given(
-    subset=st.sets(st.sampled_from(sorted(_all_produced()))),
-    more=st.sets(st.sampled_from(sorted(_all_produced()))),
-)
-def test_refine_idempotent(
-    cas: FsCAS, tmp_path: Path, subset: set[tuple[str, str]], more: set[tuple[str, str]]
-) -> None:
+def test_refine_idempotent(cas: FsCAS, tmp_path: Path) -> None:
+    # Planning writes and snapshots sources (fsync, SQLite): ~80 ms, with spikes past 400 ms on
+    # slow disks. It is done once here so the deadline times `refine` (~1 ms), not setup I/O.
     plan = _deterministic_arch(cas, tmp_path)
     p, _ = planner(cas, RTL)
     everything = _all_produced()
-    first = {k: everything[k] for k in subset}
-    second = {k: everything[k] for k in subset | more}
-    once = p.refine(plan, first)
-    assert p.refine(once, first) == once
-    assert p.refine(once, second) == p.refine(plan, second)
-    assert p.refine(p.refine(plan, everything), {}) == p.refine(plan, everything)
+
+    @settings(max_examples=50)
+    @given(
+        subset=st.sets(st.sampled_from(sorted(everything))),
+        more=st.sets(st.sampled_from(sorted(everything))),
+    )
+    def check(subset: set[tuple[str, str]], more: set[tuple[str, str]]) -> None:
+        first = {k: everything[k] for k in subset}
+        second = {k: everything[k] for k in subset | more}
+        once = p.refine(plan, first)
+        assert p.refine(once, first) == once
+        assert p.refine(once, second) == p.refine(plan, second)
+        assert p.refine(p.refine(plan, everything), {}) == p.refine(plan, everything)
+
+    check()
 
 
 def test_refine_rejects_unknown_producers(cas: FsCAS, tmp_path: Path) -> None:
