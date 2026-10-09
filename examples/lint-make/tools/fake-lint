@@ -4,6 +4,7 @@
 # Rules, checked on the code with comments removed:
 #   MODNAME     a module whose name differs from its file name
 #   UNUSED      a `logic`/`wire` declared and never referenced in the same file
+#               (names containing `unused` are exempt, as with Verilator's --unused-regexp)
 #   TAB         a tab character in code
 #   LONGLINE    a line longer than 100 characters
 # Output is normalized: paths relative to the flow, sorted by file and line, no dates, so
@@ -29,7 +30,7 @@ function strip(line,   out, p1, p2) {
 function report(line, rule, msg) { printf "%s:%d: %s: %s\n", file, line, rule, msg }
 function finish(   name) {
   for (name in decl_line)
-    if (uses[name] == 1) report(decl_line[name], "UNUSED", "signal \047" name "\047 is never used")
+    if (uses[name] == 1 && name !~ /unused/) report(decl_line[name], "UNUSED", "signal \047" name "\047 is never used")
   split("", decl_line); split("", uses)
 }
 FNR == 1 {

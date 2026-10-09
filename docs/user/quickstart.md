@@ -113,7 +113,7 @@ Add a signal nobody uses. The `counter` block is untouched and stays cached; the
 differs, so `summary` reruns:
 
 ```console
-$ sed -i 's|^  always_comb begin$|  logic unused_dbg;\n  always_comb begin|' rtl/alu/alu.sv
+$ sed -i 's|^  always_comb begin$|  logic spare_dbg;\n  always_comb begin|' rtl/alu/alu.sv
 $ ebs build --cache write
 cache_hit lint[block=counter] …
 submitted lint[block=alu] …
@@ -121,7 +121,7 @@ submitted summary …
 build …: build passed (cached=1, done=2)
 $ ebs logs summary
 alu: 1 violation(s)
-  rtl/alu/alu.sv:10: UNUSED: signal 'unused_dbg' is never used
+  rtl/alu/alu.sv:10: UNUSED: signal 'spare_dbg' is never used
 $ ebs status
 build … (id …): passed, 3 actions
 ```
@@ -163,7 +163,7 @@ toolchains:
   verilator/system:
     version: "5.020"                                  # verilator --version
     install_roots: ["/usr/share/verilator"]           # verilator --getenv VERILATOR_ROOT
-    env: { PATH: "/usr/bin:/bin", VERILATOR_ROOT: "/usr/share/verilator" }
+    env: { PATH: "/usr/bin:/bin" }                    # not VERILATOR_ROOT: see below
 ```
 
 ```sh
@@ -171,6 +171,9 @@ ebs build --cache write -f flow.verilator.yaml
 ```
 
 `verilator-sim` builds a C++ model (`verilator --binary`), so it also needs a C++ compiler.
+Do not set `VERILATOR_ROOT` in `env` for a distro package: Debian and Ubuntu install
+`verilator_bin` in `/usr/bin`, outside the root, and the `verilator` wrapper then fails with
+exit code 127.
 
 ## What next
 
