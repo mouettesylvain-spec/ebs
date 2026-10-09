@@ -14,13 +14,13 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P0-01 | Repository scaffold and quality gates | — | 1 | done |
 | P0-02 | Digests and canonical JSON | P0-01 | 2 | done |
 | P0-04 | Flow model, YAML loader, JSON Schema | P0-01 | 2 | done |
-| P0-11 | PostgreSQL deployment (compose, backups, pooling) | P0-01 | 2 | review |
+| P0-11 | PostgreSQL deployment (compose, backups, pooling) | P0-01 | 2 | done |
 | P0-03 | Tree manifests | P0-02 | 3 | done |
 | P0-05 | Tables, matrix expansion, interpolation | P0-04 | 3 | done |
 | P0-07 | Toolchain fingerprint and env capture | P0-02 | 3 | done |
 | P0-10 | Metadata store (schema, PG, in-memory, contract suite) | P0-02 | 3 | done |
 | P0-09 | CAS filesystem backend | P0-03 | 4 | done |
-| P0-09a | Materialize: symlink cycles through missing directories | P0-09 | 4 | review |
+| P0-09a | Materialize: symlink cycles through missing directories | P0-09 | 4 | done |
 | P0-12 | Rule plugin API + `shell`, `make`, `tcl` rules | P0-05 | 4 | done |
 | P0-06 | Source snapshot and stat cache | P0-03, P0-09 | 5 | done |
 | P0-13 | Runner (local lifecycle) | P0-09, P0-10, P0-12 | 5 | done |
@@ -28,7 +28,7 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P0-14 | Executor API + local executor | P0-13 | 6 | done |
 | P0-15 | Driver / scheduler | P0-08, P0-10, P0-14 | 7 | done |
 | P0-16 | CLI: `plan`, `build`, `status`, `logs` | P0-15 | 8 | done |
-| P0-17 | Phase 0 end-to-end + examples | P0-16 | 9 | review |
+| P0-17 | Phase 0 end-to-end + examples | P0-16 | 9 | done |
 
 ## Phase 1 — Grid + Questa (exit: full CPU regression on SLURM, minimal recompiles, no orphan scratch)
 

@@ -1,6 +1,6 @@
 # P0-14 — Executor API and local executor
 
-Status: review · Phase: 0 · Depends on: P0-13 · Parallel-safe with: P0-08 · Size: S
+Status: done · Phase: 0 · Depends on: P0-13 · Parallel-safe with: P0-08 · Size: S
 
 ## Goal
 The executor abstraction the driver talks to, and a local implementation that runs `ebs-runner`

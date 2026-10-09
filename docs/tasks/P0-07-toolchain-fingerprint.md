@@ -1,6 +1,6 @@
 # P0-07 — Toolchain fingerprint and environment capture
 
-Status: review · Phase: 0 · Depends on: P0-02 · Parallel-safe with: P0-03, P0-05, P0-10 · Size: S
+Status: done · Phase: 0 · Depends on: P0-02 · Parallel-safe with: P0-03, P0-05, P0-10 · Size: S
 
 ## Goal
 Compute an immutable toolchain id from an install tree and a captured environment, so tool

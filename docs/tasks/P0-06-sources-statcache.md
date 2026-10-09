@@ -1,6 +1,6 @@
 # P0-06 — Source snapshot and stat cache
 
-Status: review · Phase: 0 · Depends on: P0-03, P0-09 · Parallel-safe with: P0-13 · Size: L
+Status: done · Phase: 0 · Depends on: P0-03, P0-09 · Parallel-safe with: P0-13 · Size: L
 
 ## Goal
 Resolve declared source globs to files, give each a content id quickly (git blob ids, stat cache)
