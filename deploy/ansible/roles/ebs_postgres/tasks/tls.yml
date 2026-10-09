@@ -1,0 +1,78 @@
+---
+- name: Create the TLS directory
+  ansible.builtin.file:
+    path: "{{ ebs_postgres_tls_dir }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0700"
+
+- name: Copy the site certificates
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ ebs_postgres_tls_dir }}/{{ item.dest }}"
+    owner: postgres
+    group: postgres
+    mode: "0600"
+  loop:
+    - { src: "{{ ebs_postgres_tls_ca_src }}", dest: ca.crt }
+    - { src: "{{ ebs_postgres_tls_cert_src }}", dest: server.crt }
+    - { src: "{{ ebs_postgres_tls_key_src }}", dest: server.key }
+  loop_control:
+    label: "{{ item.dest }}"
+  when: ebs_postgres_tls_cert_src | length > 0
+  notify: [Restart postgresql, Reload pgbouncer]
+
+- name: Generate a self-signed CA
+  ansible.builtin.command:
+    argv: [openssl, req, -x509, -new, -nodes, -newkey, ec, -pkeyopt, "ec_paramgen_curve:prime256v1",
+           -keyout, "{{ ebs_postgres_tls_dir }}/ca.key", -out, "{{ ebs_postgres_tls_dir }}/ca.crt",
+           -days, "825", -subj, "/CN=EBS PostgreSQL self-signed CA",
+           -addext, "basicConstraints=critical,CA:TRUE"]
+    creates: "{{ ebs_postgres_tls_dir }}/ca.crt"
+  become: true
+  become_user: postgres
+  when: ebs_postgres_tls_cert_src | length == 0
+
+- name: Generate the server key and signing request
+  ansible.builtin.command:
+    argv: [openssl, req, -new, -nodes, -newkey, ec, -pkeyopt, "ec_paramgen_curve:prime256v1",
+           -keyout, "{{ ebs_postgres_tls_dir }}/server.key", -out, "{{ ebs_postgres_tls_dir }}/server.csr",
+           -subj, "/CN={{ ebs_postgres_tls_names[0] }}"]
+    creates: "{{ ebs_postgres_tls_dir }}/server.key"
+  become: true
+  become_user: postgres
+  when: ebs_postgres_tls_cert_src | length == 0
+
+- name: Write the server certificate extensions
+  ansible.builtin.copy:
+    dest: "{{ ebs_postgres_tls_dir }}/server.ext"
+    content: |
+      basicConstraints=CA:FALSE
+      extendedKeyUsage=serverAuth
+      subjectAltName={{ ebs_postgres_tls_names | map('regex_replace', '^', 'DNS:') | join(',') }},IP:127.0.0.1
+    owner: postgres
+    group: postgres
+    mode: "0600"
+  when: ebs_postgres_tls_cert_src | length == 0
+
+- name: Sign the server certificate
+  ansible.builtin.command:
+    argv: [openssl, x509, -req, -in, "{{ ebs_postgres_tls_dir }}/server.csr",
+           -CA, "{{ ebs_postgres_tls_dir }}/ca.crt", -CAkey, "{{ ebs_postgres_tls_dir }}/ca.key",
+           -CAcreateserial, -days, "825", -extfile, "{{ ebs_postgres_tls_dir }}/server.ext",
+           -out, "{{ ebs_postgres_tls_dir }}/server.crt"]
+    creates: "{{ ebs_postgres_tls_dir }}/server.crt"
+  become: true
+  become_user: postgres
+  when: ebs_postgres_tls_cert_src | length == 0
+  notify: [Restart postgresql, Reload pgbouncer]
+
+- name: Restrict the self-signed key files
+  ansible.builtin.file:
+    path: "{{ ebs_postgres_tls_dir }}/{{ item }}"
+    owner: postgres
+    group: postgres
+    mode: "0600"
+  loop: [ca.key, ca.crt, server.key, server.crt]
+  when: ebs_postgres_tls_cert_src | length == 0

@@ -16,3 +16,7 @@ coverage.xml
 htmlcov/
 junit*.xml
 .ebs/
+
+# Local PostgreSQL deployment secrets and generated certificates (P0-11)
+deploy/postgres/.env
+deploy/postgres/certs/

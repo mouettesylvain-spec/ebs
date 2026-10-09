@@ -1,0 +1,54 @@
+---
+- name: Configure PostgreSQL
+  ansible.builtin.template:
+    src: postgresql.conf.j2
+    dest: "/etc/postgresql/{{ ebs_postgres_version }}/main/conf.d/50-ebs.conf"
+    owner: postgres
+    group: postgres
+    mode: "0644"
+  notify: Restart postgresql
+
+- name: Configure client authentication
+  ansible.builtin.template:
+    src: pg_hba.conf.j2
+    dest: "/etc/postgresql/{{ ebs_postgres_version }}/main/pg_hba.conf"
+    owner: postgres
+    group: postgres
+    mode: "0640"
+  notify: Reload postgresql
+
+- name: Configure pgBackRest
+  ansible.builtin.template:
+    src: pgbackrest.conf.j2
+    dest: /etc/pgbackrest.conf
+    owner: postgres
+    group: postgres
+    mode: "0600"
+  no_log: true
+
+- name: Create the pgBackRest repository
+  ansible.builtin.file:
+    path: "{{ ebs_pgbackrest_repo_path }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0750"
+
+- name: Configure PgBouncer
+  ansible.builtin.template:
+    src: pgbouncer.ini.j2
+    dest: /etc/pgbouncer/pgbouncer.ini
+    owner: postgres
+    group: postgres
+    mode: "0640"
+  notify: Restart pgbouncer
+
+- name: Write the PgBouncer userlist
+  ansible.builtin.template:
+    src: userlist.txt.j2
+    dest: /etc/pgbouncer/userlist.txt
+    owner: postgres
+    group: postgres
+    mode: "0600"
+  no_log: true
+  notify: Reload pgbouncer

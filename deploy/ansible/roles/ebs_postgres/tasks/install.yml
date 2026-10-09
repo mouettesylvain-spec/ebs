@@ -1,0 +1,47 @@
+---
+- name: Install apt prerequisites
+  ansible.builtin.apt:
+    name: [ca-certificates, gnupg, openssl, acl, postgresql-common]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the PGDG key directory
+  ansible.builtin.file:
+    path: /usr/share/postgresql-common/pgdg
+    state: directory
+    mode: "0755"
+  when: ebs_postgres_manage_repo
+
+- name: Download the PGDG signing key
+  ansible.builtin.get_url:
+    url: "{{ ebs_postgres_pgdg_key_url }}"
+    dest: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+    mode: "0644"
+  when: ebs_postgres_manage_repo
+
+- name: Add the PGDG apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc]
+      https://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main
+    filename: pgdg
+    state: present
+  when: ebs_postgres_manage_repo
+
+# Must exist before the server package creates the "main" cluster.
+- name: Enable data checksums for new clusters
+  ansible.builtin.template:
+    src: createcluster.conf.j2
+    dest: /etc/postgresql-common/createcluster.d/50-ebs.conf
+    mode: "0644"
+
+- name: Install PostgreSQL, PgBouncer and pgBackRest
+  ansible.builtin.apt:
+    name:
+      - "postgresql-{{ ebs_postgres_version }}"
+      - pgbouncer
+      - pgbackrest
+    state: present
+    update_cache: true
+    cache_valid_time: 3600

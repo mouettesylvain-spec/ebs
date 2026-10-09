@@ -1,0 +1,21 @@
+---
+- name: Restart postgresql
+  ansible.builtin.systemd_service:
+    name: "postgresql@{{ ebs_postgres_version }}-main"
+    state: restarted
+
+- name: Reload postgresql
+  ansible.builtin.systemd_service:
+    name: "postgresql@{{ ebs_postgres_version }}-main"
+    state: reloaded
+
+# listen_addr / listen_port / unix_socket_dir are only read at start, not on SIGHUP.
+- name: Restart pgbouncer
+  ansible.builtin.systemd_service:
+    name: pgbouncer
+    state: restarted
+
+- name: Reload pgbouncer
+  ansible.builtin.systemd_service:
+    name: pgbouncer
+    state: reloaded
