@@ -1,6 +1,6 @@
 # P0-17 — Phase 0 end-to-end and examples
 
-Status: review · Phase: 0 · Depends on: P0-16 · Size: M
+Status: done · Phase: 0 · Depends on: P0-16 · Size: M
 
 ## Goal
 Prove the phase 0 exit criterion — an existing lint Makefile wrapped as-is gets a 100 % cache hit on the

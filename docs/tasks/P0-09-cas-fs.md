@@ -1,6 +1,6 @@
 # P0-09 — CAS filesystem backend
 
-Status: review · Phase: 0 · Depends on: P0-03 · Parallel-safe with: P0-12 · Size: M
+Status: done · Phase: 0 · Depends on: P0-03 · Parallel-safe with: P0-12 · Size: M
 
 ## Goal
 A content-addressed store on NFS that is safe under concurrent writers, never exposes partial objects,
