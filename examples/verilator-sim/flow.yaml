@@ -1,0 +1,31 @@
+# Compile once, simulate a regression table (one action per test and seed), aggregate.
+# Runs anywhere: the compiler is tools/fake-verilator. flow.verilator.yaml uses real Verilator.
+version: 1
+project: verilator-sim
+domain: examples
+
+steps:
+  compile:
+    kind: shell
+    inputs: { rtl: "rtl/*.sv", tb: "tb/*.sv", tools: "tools/fake-verilator" }
+    script: >-
+      bash tools/fake-verilator --binary --top-module tb --Mdir model -o Vtb rtl/counter.sv tb/tb.sv
+    # a simulation model embeds build details, so its bytes change on every build: downstream
+    # keys use this action's key instead of the bytes, and stay stable
+    outputs: { model: { dir: model, deterministic: false } }
+
+  sim:
+    kind: shell
+    matrix: { table: tests.csv }                # seeds are table values, never generated
+    script: |
+      mkdir -p results
+      ${steps.compile.outputs.model}/Vtb +test=${row.test} +seed=${row.seed} > sim.log
+      cat sim.log
+      grep -E '^(PASS|FAIL) ' sim.log > results/${row.test}-${row.seed}.txt
+    outputs: { result: "results/${row.test}-${row.seed}.txt" }
+
+  report:
+    kind: shell
+    inputs: { tool: tools/report }
+    command: ["bash", "tools/report", "${steps.sim.outputs.result[*]}"]
+    outputs: { report: report.txt }

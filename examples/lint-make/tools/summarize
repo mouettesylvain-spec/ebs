@@ -1,0 +1,19 @@
+#!/bin/bash
+# summarize: merge per-block lint reports into one summary.
+# usage: summarize OUT REPORT...
+set -euo pipefail
+out=$1
+shift
+total=0
+{
+  echo "lint summary"
+  for report in "$@"; do
+    block=$(basename "$report" .rpt)
+    count=$(tail -n 1 "$report" | cut -d' ' -f1)
+    total=$((total + count))
+    echo "$block: $count violation(s)"
+    sed -e '1d' -e '$d' -e 's/^/  /' "$report"
+  done
+  echo "$total violation(s)"
+} > "$out"
+cat "$out"

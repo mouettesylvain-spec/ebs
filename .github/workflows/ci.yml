@@ -10,10 +10,11 @@ name: ci
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore: ["docs/**", "**/*.md", ".claude/**"]  # keep in sync with push below
+    # keep in sync with push below; docs/user is re-included: tests/e2e/test_docs.py runs it
+    paths: ["**", "!docs/**", "!**/*.md", "!.claude/**", "docs/user/**"]
   push:
     branches: [main]
-    paths-ignore: ["docs/**", "**/*.md", ".claude/**"]
+    paths: ["**", "!docs/**", "!**/*.md", "!.claude/**", "docs/user/**"]
 
 permissions:
   contents: read

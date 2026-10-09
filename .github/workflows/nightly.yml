@@ -27,6 +27,10 @@ on:
         description: "Run mutmut on the invariant files"
         type: boolean
         default: true
+      verilator:
+        description: "Run examples/ with real Verilator (P0-17)"
+        type: boolean
+        default: true
   # TODO(P1-12): enable the schedule.
   # schedule:
   #   - cron: "17 2 * * *"
@@ -59,6 +63,37 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv sync --all-extras
       - run: uv run --extra dev pytest -m vendor -q
+
+  # examples/ with real Verilator instead of the fake tools the per-PR e2e job uses (P0-17 R6).
+  verilator:
+    if: inputs.verilator
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: ebs_test
+          POSTGRES_USER: ebs
+          POSTGRES_PASSWORD: ebs
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ebs -d ebs_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      EBS_TEST_PG_URL: postgresql+psycopg://ebs:ebs@localhost:5432/ebs_test
+      EBS_E2E_VERILATOR: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends verilator
+      - run: uv sync --all-extras
+      - run: uv run --extra dev pytest tests/e2e/test_phase0_exit.py -k real_verilator -q
 
   # Moved out of the per-PR pipeline to save CI minutes; run before merging perf-sensitive work.
   perf:

@@ -1,0 +1,35 @@
+# flow.yaml with real Verilator (needs a C++ compiler for --binary). Verilator is a toolchain,
+# so its version and install tree are part of the compile key (and, through the model, of every
+# sim key). Needs .ebs/toolchains.yaml describing `verilator/system` (docs/user/quickstart.md).
+version: 1
+project: verilator-sim
+domain: examples
+
+toolchains:
+  verilator: { module: verilator/system }
+
+steps:
+  compile:
+    kind: shell
+    toolchain: verilator
+    inputs: { rtl: "rtl/*.sv", tb: "tb/*.sv" }
+    script: >-
+      verilator --binary --top-module tb --Mdir model -o Vtb rtl/counter.sv tb/tb.sv
+    outputs: { model: { dir: model, deterministic: false } }
+    resources: { cpus: 2 }
+
+  sim:
+    kind: shell
+    matrix: { table: tests.csv }
+    script: |
+      mkdir -p results
+      ${steps.compile.outputs.model}/Vtb +test=${row.test} +seed=${row.seed} > sim.log
+      cat sim.log
+      grep -E '^(PASS|FAIL) ' sim.log > results/${row.test}-${row.seed}.txt
+    outputs: { result: "results/${row.test}-${row.seed}.txt" }
+
+  report:
+    kind: shell
+    inputs: { tool: tools/report }
+    command: ["bash", "tools/report", "${steps.sim.outputs.result[*]}"]
+    outputs: { report: report.txt }
