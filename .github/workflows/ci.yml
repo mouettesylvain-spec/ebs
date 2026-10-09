@@ -1,69 +1,79 @@
-# GitHub Actions port of .gitlab-ci.yml (pipeline from docs/design/testing.md § CI pipeline).
-# lint -> unit (3.11, 3.12, 3.13) -> integration (Postgres) -> e2e.
-# Nightly jobs live in nightly.yml.
+# CI pipeline (docs/design/testing.md § CI pipeline), tuned for a small Actions budget:
+#   lint (ruff, mypy for 3.11, import-linter, 3.11 import smoke)
+#     -> unit (py3.13, "unit and not slow", -x, coverage gate)
+#     -> full (slow unit + integration with Postgres + e2e), only on ready PRs and main.
+# perf, grid, vendor, the long Hypothesis run and mutmut live in nightly.yml.
+# Jobs are billed rounded up to the minute, so tiers are merged into as few jobs as possible.
 
 name: ci
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore: ["docs/**", "**/*.md", ".claude/**"]  # keep in sync with push below
   push:
     branches: [main]
+    paths-ignore: ["docs/**", "**/*.md", ".claude/**"]
 
 permissions:
   contents: read
 
-# GitLab `interruptible: true`: a newer pipeline on the same ref cancels the running one.
+# A newer push to the same PR or branch cancels the run it supersedes.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
-  UV_CACHE_DIR: .uv-cache
   UV_FROZEN: "1"
-  UV_LINK_MODE: copy
+  UV_PYTHON: "3.13"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
   lint:
     runs-on: ubuntu-latest
-    container: ghcr.io/astral-sh/uv:python3.12-bookworm
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: astral-sh/setup-uv@v6
         with:
-          path: .uv-cache
-          key: uv-${{ hashFiles('uv.lock') }}
-      - run: uv sync --all-extras
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras  # blake3 too: mypy and its tests import it
+      # mypy checks against Python 3.11 ([tool.mypy] python_version), ruff targets py311.
       - run: make lint
+      # Cheap runtime check of the 3.11 floor: install runtime deps only and load the CLI.
+      - name: Python 3.11 import smoke test
+        env:
+          UV_PYTHON: "3.11"
+          UV_PROJECT_ENVIRONMENT: .venv-py311
+        run: uv run --no-dev ebs --help
 
   unit:
     needs: lint
     runs-on: ubuntu-latest
-    container: ghcr.io/astral-sh/uv:python${{ matrix.python-version }}-bookworm
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: astral-sh/setup-uv@v6
         with:
-          path: .uv-cache
-          key: uv-${{ hashFiles('uv.lock') }}
-      - run: uv sync --all-extras
-      - run: make test-unit
-      - run: make test-perf
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras  # blake3 too: mypy and its tests import it
+      - run: make test-unit PYTEST_SELECT='unit and not slow and not perf' PYTEST_EXTRA=-x
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: coverage-py${{ matrix.python-version }}
+          name: coverage
           path: coverage.json
           if-no-files-found: ignore
+          retention-days: 7
 
-  integration:
+  # Draft PRs stop after unit tests; marking a PR ready for review (or merging to main) runs this.
+  full:
     needs: unit
+    if: github.event_name == 'push' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
-    container: ghcr.io/astral-sh/uv:python3.12-bookworm
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:17
@@ -71,43 +81,31 @@ jobs:
           POSTGRES_DB: ebs_test
           POSTGRES_USER: ebs
           POSTGRES_PASSWORD: ebs
+        ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U ebs -d ebs_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
-      EBS_TEST_PG_URL: postgresql+psycopg://ebs:ebs@postgres:5432/ebs_test
+      EBS_TEST_PG_URL: postgresql+psycopg://ebs:ebs@localhost:5432/ebs_test
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: astral-sh/setup-uv@v6
         with:
-          path: .uv-cache
-          key: uv-${{ hashFiles('uv.lock') }}
-      - run: uv sync --all-extras
-      - run: uv run pytest -m integration -q --ignore=tests/e2e --junitxml=junit-integration.xml
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras  # blake3 too: mypy and its tests import it
+      - name: Slow unit tests
+        run: uv run --extra dev pytest -m "unit and slow and not perf" -x -q
+      - name: Integration tests
+        run: uv run --extra dev pytest -m integration -x -q --ignore=tests/e2e --junitxml=junit-integration.xml
+      - name: End-to-end tests
+        run: uv run --extra dev pytest tests/e2e -x -q --junitxml=junit-e2e.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: junit-integration
-          path: junit-integration.xml
+          name: junit
+          path: junit-*.xml
           if-no-files-found: ignore
-
-  e2e:
-    needs: integration
-    runs-on: ubuntu-latest
-    container: ghcr.io/astral-sh/uv:python3.12-bookworm
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: .uv-cache
-          key: uv-${{ hashFiles('uv.lock') }}
-      - run: uv sync --all-extras
-      - run: uv run pytest tests/e2e -q --junitxml=junit-e2e.xml
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: junit-e2e
-          path: junit-e2e.xml
-          if-no-files-found: ignore
+          retention-days: 7

@@ -1,6 +1,6 @@
-# GitHub Actions port of the nightly stage of .gitlab-ci.yml.
-# Manual-only (GitLab: `when: manual` on scheduled pipelines) until P1-12 provides a real SLURM
-# partition and licensed nodes; then add `schedule:` and point grid/vendor at those runners.
+# Nightly-tier jobs: perf budgets, grid, vendor, the long Hypothesis run and mutmut.
+# Manual-only until P1-12 provides a real SLURM partition and licensed nodes; then add
+# `schedule:` and point grid/vendor at those runners.
 
 name: nightly
 
@@ -15,6 +15,10 @@ on:
         description: "Run vendor tests (needs a self-hosted runner labelled eda-licensed)"
         type: boolean
         default: false
+      perf:
+        description: "Run the wall-clock budget tests (perf marker)"
+        type: boolean
+        default: true
       hypothesis:
         description: "Run the long Hypothesis profile"
         type: boolean
@@ -31,60 +35,71 @@ permissions:
   contents: read
 
 env:
-  UV_CACHE_DIR: .uv-cache
   UV_FROZEN: "1"
-  UV_LINK_MODE: copy
+  UV_PYTHON: "3.13"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
   grid:
     if: inputs.grid
     runs-on: [self-hosted, slurm]
-    container: ghcr.io/astral-sh/uv:python3.12-bookworm
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
       - run: uv sync --all-extras
-      - run: uv run pytest -m grid -q
+      - run: uv run --extra dev pytest -m grid -q
 
   vendor:
     if: inputs.vendor
     runs-on: [self-hosted, eda-licensed]
-    container: ghcr.io/astral-sh/uv:python3.12-bookworm
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
       - run: uv sync --all-extras
-      - run: uv run pytest -m vendor -q
+      - run: uv run --extra dev pytest -m vendor -q
+
+  # Moved out of the per-PR pipeline to save CI minutes; run before merging perf-sensitive work.
+  perf:
+    if: inputs.perf
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras  # blake3 too: mypy and its tests import it
+      - run: make test-perf
 
   hypothesis:
     if: inputs.hypothesis
     runs-on: ubuntu-latest
-    container: ghcr.io/astral-sh/uv:python3.12-bookworm
     continue-on-error: true
     env:
       HYPOTHESIS_PROFILE: nightly
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: astral-sh/setup-uv@v6
         with:
-          path: .uv-cache
-          key: uv-${{ hashFiles('uv.lock') }}
-      - run: uv sync --all-extras
-      - run: uv run pytest -m unit -q
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras  # blake3 too: mypy and its tests import it
+      - run: uv run --extra dev pytest -m unit -q
 
   mutmut:
     if: inputs.mutmut
     runs-on: ubuntu-latest
-    container: ghcr.io/astral-sh/uv:python3.12-bookworm
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: astral-sh/setup-uv@v6
         with:
-          path: .uv-cache
-          key: uv-${{ hashFiles('uv.lock') }}
-      - run: uv sync --all-extras
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras  # blake3 too: mypy and its tests import it
       # Invariant files from docs/design/invariants.md § Mutation check (created by later tasks).
       # TODO(P1-12): mutmut 3.x reads paths_to_mutate from [tool.mutmut]; move it there when enabling.
       - run: uvx mutmut run --paths-to-mutate src/ebs/core/canon.py,src/ebs/core/tree.py,src/ebs/plan/keys.py,src/ebs/sources/statcache.py
