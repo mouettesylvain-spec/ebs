@@ -1,0 +1,61 @@
+#!/bin/bash
+# fake-lint: a tiny stand-in for a SystemVerilog linter, so the example runs without any EDA tool.
+# usage: fake-lint FILE.sv...
+# Rules, checked on the code with comments removed:
+#   MODNAME     a module whose name differs from its file name
+#   UNUSED      a `logic`/`wire` declared and never referenced in the same file
+#   TAB         a tab character in code
+#   LONGLINE    a line longer than 100 characters
+# Output is normalized: paths relative to the flow, sorted by file and line, no dates, so
+# a comment-only edit that keeps line numbers produces byte-identical reports.
+set -euo pipefail
+
+violations=$(awk '
+function strip(line,   out, p1, p2) {
+  out = ""
+  while (line != "") {
+    if (in_comment) {
+      p1 = index(line, "*/")
+      if (p1 == 0) return out
+      line = substr(line, p1 + 2); in_comment = 0; continue
+    }
+    p1 = index(line, "/*"); p2 = index(line, "//")
+    if (p2 && (!p1 || p2 < p1)) return out substr(line, 1, p2 - 1)
+    if (!p1) return out line
+    out = out substr(line, 1, p1 - 1) " "; line = substr(line, p1 + 2); in_comment = 1
+  }
+  return out
+}
+function report(line, rule, msg) { printf "%s:%d: %s: %s\n", file, line, rule, msg }
+function finish(   name) {
+  for (name in decl_line)
+    if (uses[name] == 1) report(decl_line[name], "UNUSED", "signal \047" name "\047 is never used")
+  split("", decl_line); split("", uses)
+}
+FNR == 1 {
+  if (NR > 1) finish()
+  file = FILENAME; sub(/^(\.\.\/)+/, "", file)
+  base = FILENAME; sub(/^.*\//, "", base); sub(/\.sv$/, "", base)
+  in_comment = 0
+}
+{
+  if (length($0) > 100) report(FNR, "LONGLINE", length($0) " characters (max 100)")
+  code = strip($0)
+  if (index(code, "\t")) report(FNR, "TAB", "tab character in code")
+  if (match(code, /^[ \t]*module[ \t]+[A-Za-z_][A-Za-z0-9_]*/)) {
+    name = substr(code, RSTART, RLENGTH); sub(/^[ \t]*module[ \t]+/, "", name)
+    if (name != base) report(FNR, "MODNAME", "module \047" name "\047 in file " base ".sv")
+  }
+  if (match(code, /^[ \t]*(logic|wire)([ \t]*\[[^]]*\])?[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*;/)) {
+    name = substr(code, RSTART, RLENGTH); sub(/[ \t]*;$/, "", name); sub(/^.*[ \t\]]/, "", name)
+    decl_line[name] = FNR
+  }
+  n = split(code, tokens, /[^A-Za-z0-9_$]+/)
+  for (i = 1; i <= n; i++) if (tokens[i] != "") uses[tokens[i]]++
+}
+END { if (NR > 0) finish() }
+' "$@" | LC_ALL=C sort -t: -k1,1 -k2,2n)
+
+echo "lint report (fake-lint 1)"
+if [ -n "$violations" ]; then printf '%s\n' "$violations"; fi
+echo "$(printf '%s' "$violations" | grep -c . || true) violation(s)"

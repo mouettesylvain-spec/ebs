@@ -1,0 +1,42 @@
+#!/bin/bash
+# fake-verilator: a stand-in for `verilator --binary`, so the example runs without Verilator.
+# usage: fake-verilator --binary --top-module tb --Mdir DIR -o Vtb FILE.sv...
+# Writes DIR/Vtb, a script that models the counter testbench in tb/tb.sv (same output format),
+# and DIR/build.stamp with the build time: like a real model, the bytes differ on every build,
+# which is why the flow marks this output `deterministic: false`.
+set -euo pipefail
+mdir=obj_dir exe=Vtop
+sources=()
+while [ $# -gt 0 ]; do
+  case $1 in
+    --Mdir) mdir=$2; shift ;;
+    -o) exe=$2; shift ;;
+    --binary) ;;
+    --top-module) shift ;;
+    -*) echo "fake-verilator: unsupported option $1" >&2; exit 2 ;;
+    *) sources+=("$1") ;;
+  esac
+  shift
+done
+[ ${#sources[@]} -gt 0 ] || { echo "fake-verilator: no source files" >&2; exit 2; }
+mkdir -p "$mdir/src"
+cp "${sources[@]}" "$mdir/src/"
+date +%s%N > "$mdir/build.stamp"
+cat > "$mdir/$exe" <<'SIM'
+#!/bin/bash
+test=smoke seed=1
+for arg; do
+  case $arg in
+    +test=*) test=${arg#+test=} ;;
+    +seed=*) seed=${arg#+seed=} ;;
+  esac
+done
+RANDOM=$seed
+enables=0
+for ((cycle = 0; cycle < 200; cycle++)); do
+  if [ "$test" = smoke ] || ((RANDOM % 2)); then enables=$((enables + 1)); fi
+done
+echo "PASS test=$test seed=$seed enables=$enables"
+SIM
+chmod +x "$mdir/$exe"
+echo "fake-verilator: built $mdir/$exe from ${#sources[@]} file(s)"

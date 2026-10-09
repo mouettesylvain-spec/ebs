@@ -16,3 +16,6 @@ coverage.xml
 htmlcov/
 junit*.xml
 .ebs/
+
+# local runs of examples/lint-make/lint/Makefile
+examples/lint-make/lint/reports/
