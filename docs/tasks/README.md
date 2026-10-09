@@ -14,7 +14,7 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P0-01 | Repository scaffold and quality gates | — | 1 | done |
 | P0-02 | Digests and canonical JSON | P0-01 | 2 | done |
 | P0-04 | Flow model, YAML loader, JSON Schema | P0-01 | 2 | done |
-| P0-11 | PostgreSQL deployment (compose, backups, pooling) | P0-01 | 2 | in-progress |
+| P0-11 | PostgreSQL deployment (compose, backups, pooling) | P0-01 | 2 | review |
 | P0-03 | Tree manifests | P0-02 | 3 | done |
 | P0-05 | Tables, matrix expansion, interpolation | P0-04 | 3 | done |
 | P0-07 | Toolchain fingerprint and env capture | P0-02 | 3 | done |

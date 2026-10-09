@@ -4,7 +4,8 @@
 # Needs: pip install "molecule>=24" "molecule-plugins[docker]" ansible-core docker
 dependency:
   name: galaxy
-  enabled: false
+  options:
+    requirements-file: ${MOLECULE_SCENARIO_DIRECTORY}/requirements.yml
 driver:
   name: docker
 platforms:
@@ -22,6 +23,8 @@ platforms:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
 provisioner:
   name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/..
   inventory:
     host_vars:
       ebs-postgres-molecule:

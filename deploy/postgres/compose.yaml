@@ -9,10 +9,10 @@
 
 name: ebs-postgres
 
+# Only `primary` builds the image; the others reuse it (three builds of one tag race and fail).
 x-image: &image
   image: localhost/ebs-postgres:17
-  build:
-    context: docker
+  pull_policy: never
   restart: unless-stopped
   shm_size: 512m
 
@@ -26,6 +26,8 @@ x-server-healthcheck: &server-healthcheck
 services:
   primary:
     <<: *image
+    build:
+      context: docker
     hostname: primary
     command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
     environment:

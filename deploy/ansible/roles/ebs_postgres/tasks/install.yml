@@ -1,7 +1,8 @@
 ---
+# procps: pgbouncer.service reloads with /bin/kill, absent on minimal hosts.
 - name: Install apt prerequisites
   ansible.builtin.apt:
-    name: [ca-certificates, gnupg, openssl, acl, postgresql-common]
+    name: [ca-certificates, gnupg, openssl, acl, procps, postgresql-common]
     state: present
     update_cache: true
     cache_valid_time: 3600
@@ -29,12 +30,13 @@
     state: present
   when: ebs_postgres_manage_repo
 
-# Must exist before the server package creates the "main" cluster.
+# Must be set before the server package creates the "main" cluster. createcluster.conf exists
+# in every postgresql-common version (createcluster.d/ does not, e.g. Debian 12's).
 - name: Enable data checksums for new clusters
-  ansible.builtin.template:
-    src: createcluster.conf.j2
-    dest: /etc/postgresql-common/createcluster.d/50-ebs.conf
-    mode: "0644"
+  ansible.builtin.lineinfile:
+    path: /etc/postgresql-common/createcluster.conf
+    regexp: '^#?\s*initdb_options\s*='
+    line: "initdb_options = '--data-checksums --auth-local=peer --auth-host=scram-sha-256'"
 
 - name: Install PostgreSQL, PgBouncer and pgBackRest
   ansible.builtin.apt:
