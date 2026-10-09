@@ -55,7 +55,8 @@
     - name: Assert the R2/R6 settings
       ansible.builtin.assert:
         that:
-          - pooled.stdout == '30s|t'
+          # bool || text renders as 'true' (psql's bare 't' is only for a boolean column).
+          - pooled.stdout == '30s|true'
           - settings.stdout == '100|1min|on|on'
           - "'pool_mode|transaction' in bouncer.stdout"
           - "'default_pool_size|20' in bouncer.stdout"

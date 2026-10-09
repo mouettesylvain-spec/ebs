@@ -1,6 +1,6 @@
 # P0-11 — PostgreSQL deployment
 
-Status: in-progress · Phase: 0 · Depends on: P0-01 · Parallel-safe with: P0-02, P0-04 · Size: M
+Status: review · Phase: 0 · Depends on: P0-01 · Parallel-safe with: P0-02, P0-04 · Size: M
 
 ## Goal
 A reproducible, documented deployment of PostgreSQL 17 for EBS: primary + streaming hot standby,
@@ -44,10 +44,39 @@ Schema/migrations (P0-10). HA automation (Patroni) — documented as a later opt
 
 ## Done when
 - [x] unit config tests pass in `make check` (13 tests in tests/unit/deploy/test_configs.py)
-- [ ] deploy-smoke scripts pass locally (paste output): **not run yet**. The dev machine had no
-  Docker/Podman. Run the `deploy-smoke` workflow (Actions → deploy-smoke → Run workflow) or
-  `tests/deploy/test_compose.sh && tests/deploy/test_backup_restore.sh` on a Docker host, and
-  `molecule test` in the role dir. Then set Status to `review`.
+- [x] deploy-smoke scripts pass locally (Docker 29.1.3, Compose 2.40.3, WSL2 Ubuntu 24.04,
+  2026-10-10):
+  ```
+  tests/deploy/test_compose.sh
+    ok: pgbouncer pool_mode = transaction
+    ok: ebs role statement_timeout (R6) = 30s
+    ok: max_connections (R6) = 100
+    ok: idle_in_transaction_session_timeout (R6) = 1min
+    ok: server-side TLS = t
+    ok: non-TLS connection to primary:5432 refused
+    ok: non-TLS connection to 127.0.0.1:6432 refused
+    ok: pg_stat_replication shows standby1:streaming
+    ok: standby in recovery = t
+    ok: row replicated to the standby
+    ok: standby promoted = f
+    ebs-entrypoint: pgbouncer now points at standby (reloaded)
+    ok: write through pgbouncer to the new primary
+    ok: rows after failover = 1,2
+    ok: pgbouncer backend is the new primary = f
+    == PASS test_compose.sh
+  tests/deploy/test_backup_restore.sh
+    full backup 20261009-215829F, cipher aes-256-cbc, status ok
+    ok: rows before restore = 9
+    target time: 2026-10-09 21:58:35.344666+00
+    restore backup set 20261009-215829F ... restore command end: completed successfully
+    ok: rows after point-in-time restore = 1,2,3,4,5,6
+    WAL segment 000000020000000000000005 successfully archived (new timeline)
+    == PASS test_backup_restore.sh
+  molecule test (deploy/ansible/roles/ebs_postgres)
+    converge:    ok=34 changed=25 failed=0
+    idempotence: ok=26 changed=0  failed=0
+    verify:      ok=6  changed=0  failed=0
+  ```
 
 ## Notes
 - **`env.example` instead of `.env.example` (R2).** The project's `.claude/settings.json` denies
@@ -72,6 +101,17 @@ Schema/migrations (P0-10). HA automation (Patroni) — documented as a later opt
   - `pg_promote` failover keeps all rows.
 
   Not checked: TLS, `pg_hba` hostssl lines, PgBouncer and pgBackRest at runtime.
+- **Fixes found by the first real Docker runs:**
+  - Three compose services built the same image tag in parallel and failed ("already
+    exists"). Now only `primary` builds; the others use `pull_policy: never`.
+  - Molecule's docker driver needs the `community.docker` collection (added in
+    `molecule/default/requirements.yml`, test-only). Recent molecule versions no longer add the
+    role's parent to the roles path, so it is set in `provisioner.env`.
+  - Debian 12's `postgresql-common` has no `createcluster.d/`, so the role sets
+    `initdb_options` in `createcluster.conf` instead.
+  - `pgbouncer.service` reloads with `/bin/kill`, so the role installs `procps`.
+  - `verify.yml` expected `30s|t`, but `bool || text` renders `true`. This was a mistake in the
+    test's expected value, not in the setting.
 - **Follow-ups:**
   - In the Ansible role each host has its own local pgBackRest repo, so after promoting a
     standby host you must run `stanza-create` by hand (documented in the README). Add
