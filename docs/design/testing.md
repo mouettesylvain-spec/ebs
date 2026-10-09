@@ -66,8 +66,14 @@ network, real `$HOME`, `/tmp` outside `tmp_path`, or wall-clock time (use `ebs.c
   (checked per package by `scripts/coverage_gate.py`).
 - New code in a task must not reduce a package's coverage.
 
-## CI pipeline (GitLab CI, `.gitlab-ci.yml`; GitHub Actions port in `.github/workflows/`)
+## CI pipeline (GitHub Actions, `.github/workflows/`)
 
-`lint` (ruff, mypy, import-linter) → `unit` (py3.11, py3.12, py3.13) → `integration` (Postgres
-service) → `e2e` (examples with local + fake SLURM) → nightly: `grid`, `vendor`, Hypothesis
-long run, mutmut on the invariant files (invariants.md).
+Tuned for a small CI budget. Runs on pull requests and pushes to `main` only; docs-only changes
+(`docs/**`, `*.md`, `.claude/**`) are skipped and a newer push cancels the superseded run.
+
+`lint` (ruff, mypy against 3.11, import-linter, 3.11 import smoke test) → `unit` (py3.13,
+`unit and not slow`, `-x`, coverage gates) → `full`, on ready-for-review PRs and `main` only:
+slow unit tests, `integration` (Postgres service), `e2e` (examples with local + fake SLURM).
+`nightly.yml` (manual until P1-12): `perf` budgets, `grid`, `vendor`, Hypothesis long run,
+mutmut on the invariant files (invariants.md). `.gitlab-ci.yml` is the legacy GitLab pipeline
+and is no longer maintained.
