@@ -1,6 +1,6 @@
 # P0-11 — PostgreSQL deployment
 
-Status: todo · Phase: 0 · Depends on: P0-01 · Parallel-safe with: P0-02, P0-04 · Size: M
+Status: in-progress · Phase: 0 · Depends on: P0-01 · Parallel-safe with: P0-02, P0-04 · Size: M
 
 ## Goal
 A reproducible, documented deployment of PostgreSQL 17 for EBS: primary + streaming hot standby,
@@ -43,4 +43,38 @@ Schema/migrations (P0-10). HA automation (Patroni) — documented as a later opt
 | `tests/unit/deploy/test_configs.py`: parse conf files and assert R2/R6 settings (no Docker needed) | R2, R6 | unit |
 
 ## Done when
-- [ ] unit config tests pass in `make check`; deploy-smoke scripts pass locally (paste output)
+- [x] unit config tests pass in `make check` (13 tests in tests/unit/deploy/test_configs.py)
+- [ ] deploy-smoke scripts pass locally (paste output): **not run yet**. The dev machine had no
+  Docker/Podman. Run the `deploy-smoke` workflow (Actions → deploy-smoke → Run workflow) or
+  `tests/deploy/test_compose.sh && tests/deploy/test_backup_restore.sh` on a Docker host, and
+  `molecule test` in the role dir. Then set Status to `review`.
+
+## Notes
+- **`env.example` instead of `.env.example` (R2).** The project's `.claude/settings.json` denies
+  `Read(./.env.*)`, which also matches `deploy/postgres/.env.example`, so the agent could not
+  write that file. The committed template is `deploy/postgres/env.example`. The real
+  `deploy/postgres/.env` and `deploy/postgres/certs/` are git-ignored, and the unit tests
+  enforce both. Rename it if the deny rule is narrowed to the repo root.
+- **CI:** decision D3 made GitHub Actions the CI, so "manual CI job `deploy-smoke`" is
+  `.github/workflows/deploy-smoke.yml` (`workflow_dispatch`, with three jobs: compose,
+  backup-restore, molecule).
+- **No new Python dependencies.** The unit tests use stdlib `configparser` and `ruamel.yaml`.
+  Ansible, molecule and Docker are deploy-time tools that the workflow runs through `uvx`.
+- **Image:** one image, `postgres:17-bookworm` plus pgbackrest and pgbouncer from PGDG, runs all
+  three services. No third-party images.
+- **Checked without Docker:** shellcheck, ansible-lint (production profile), ansible-playbook
+  `--syntax-check`, actionlint. A local harness with a real PostgreSQL 16 binary (from the
+  `pgserver` wheel, built without OpenSSL) showed that:
+  - every setting in conf/ parses;
+  - the init SQL gives role `ebs` statement_timeout `30s`, idle-in-transaction `1min` and a
+    SCRAM password;
+  - `pg_basebackup -R --slot=standby1` shows `standby1:streaming`;
+  - `pg_promote` failover keeps all rows.
+
+  Not checked: TLS, `pg_hba` hostssl lines, PgBouncer and pgBackRest at runtime.
+- **Follow-ups:**
+  - In the Ansible role each host has its own local pgBackRest repo, so after promoting a
+    standby host you must run `stanza-create` by hand (documented in the README). Add
+    `repo1-host`/S3 variables for a shared repo.
+  - Molecule does not cover the standby path of the role (`tasks/standby.yml`).
+  - Patroni/automatic failover stays out of scope (README § Failover).

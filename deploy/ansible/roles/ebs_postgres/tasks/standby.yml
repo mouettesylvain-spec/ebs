@@ -1,0 +1,45 @@
+---
+# Replace the package's empty "main" cluster with a clone of the primary, once.
+- name: Check whether this host is already a standby
+  ansible.builtin.stat:
+    path: "/var/lib/postgresql/{{ ebs_postgres_version }}/main/standby.signal"
+  register: ebs_postgres_standby_signal
+
+- name: Write the replication password file
+  ansible.builtin.copy:
+    dest: /var/lib/postgresql/.pgpass
+    # pgpass escapes '\' and ':' with a backslash (block scalar: no YAML-level escaping).
+    content: |
+      *:*:replication:replicator:{{ ebs_postgres_replication_password | replace('\\', '\\\\') | replace(':', '\\:') }}
+    owner: postgres
+    group: postgres
+    mode: "0600"
+  no_log: true
+
+- name: Clone the primary
+  when: not ebs_postgres_standby_signal.stat.exists
+  block:
+    - name: Stop the empty cluster
+      ansible.builtin.systemd_service:
+        name: "postgresql@{{ ebs_postgres_version }}-main"
+        state: stopped
+
+    - name: Remove the empty cluster's data
+      ansible.builtin.file:
+        path: "/var/lib/postgresql/{{ ebs_postgres_version }}/main"
+        state: absent
+
+    - name: Run pg_basebackup
+      ansible.builtin.command:
+        argv:
+          - "/usr/lib/postgresql/{{ ebs_postgres_version }}/bin/pg_basebackup"
+          - "--dbname=host={{ ebs_postgres_primary_host }} port=5432 user=replicator sslmode=require application_name={{ ebs_postgres_slot_name }}"
+          - "--pgdata=/var/lib/postgresql/{{ ebs_postgres_version }}/main"
+          - --wal-method=stream
+          - "--slot={{ ebs_postgres_slot_name }}"
+          - --write-recovery-conf
+          - --checkpoint=fast
+          - --no-password
+        creates: "/var/lib/postgresql/{{ ebs_postgres_version }}/main/standby.signal"
+      become: true
+      become_user: postgres

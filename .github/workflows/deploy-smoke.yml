@@ -1,0 +1,47 @@
+# deploy-smoke (P0-11): exercise the PostgreSQL deployment in deploy/ with real containers.
+# Manual only: it builds images and takes several minutes. Run it on changes under deploy/.
+#   compose        tests/deploy/test_compose.sh        (primary + standby + PgBouncer, failover)
+#   backup-restore tests/deploy/test_backup_restore.sh (pgBackRest full backup + PITR)
+#   molecule       `molecule test` for the ebs_postgres Ansible role (idempotence)
+
+name: deploy-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      molecule:
+        description: "Also run molecule for the Ansible role"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - run: tests/deploy/test_compose.sh
+
+  backup-restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - run: tests/deploy/test_backup_restore.sh
+
+  molecule:
+    if: inputs.molecule
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: molecule test
+        working-directory: deploy/ansible/roles/ebs_postgres
+        run: >-
+          uvx --python 3.12 --from "molecule>=24" --with "molecule-plugins[docker]"
+          --with "ansible-core>=2.15" --with docker
+          molecule test

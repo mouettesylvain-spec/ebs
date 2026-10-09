@@ -1,0 +1,99 @@
+# EBS metadata database: PostgreSQL 17 primary + streaming hot standby, PgBouncer (transaction
+# pooling) and pgBackRest (repository in the pgbackrest-repo volume). See README.md.
+#
+#   cp env.example .env && $EDITOR .env       # set every password
+#   scripts/gen-certs.sh certs                # self-signed TLS (or copy your site certs there)
+#   docker compose up -d --build              # or: podman compose up -d --build
+#
+# Secrets come only from .env (git-ignored); every ${VAR:?} below must be set there.
+
+name: ebs-postgres
+
+x-image: &image
+  image: localhost/ebs-postgres:17
+  build:
+    context: docker
+  restart: unless-stopped
+  shm_size: 512m
+
+x-server-healthcheck: &server-healthcheck
+  test: ["CMD", "pg_isready", "-q", "-h", "127.0.0.1", "-p", "5432", "-U", "postgres"]
+  interval: 5s
+  timeout: 5s
+  retries: 30
+  start_period: 30s
+
+services:
+  primary:
+    <<: *image
+    hostname: primary
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    environment:
+      EBS_PG_ROLE: primary
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      EBS_PASSWORD: ${EBS_PASSWORD:?set EBS_PASSWORD in .env}
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:?set REPLICATION_PASSWORD in .env}
+      PGBACKREST_REPO1_CIPHER_PASS: ${PGBACKREST_REPO1_CIPHER_PASS:?set PGBACKREST_REPO1_CIPHER_PASS in .env}
+      POSTGRES_INITDB_ARGS: --data-checksums
+    volumes:
+      - pg-primary:/var/lib/postgresql/data
+      - ./conf/initdb:/docker-entrypoint-initdb.d:ro
+      - pgbackrest-repo:/var/lib/pgbackrest
+      - ./conf/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./conf/conf.d:/etc/postgresql/conf.d:ro
+      - ./conf/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./conf/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+      - ${EBS_PG_CERT_DIR:-./certs}:/certs:ro
+    healthcheck: *server-healthcheck
+
+  standby:
+    <<: *image
+    hostname: standby
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    environment:
+      EBS_PG_ROLE: standby
+      EBS_PG_PRIMARY_HOST: primary
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:?set REPLICATION_PASSWORD in .env}
+      PGBACKREST_REPO1_CIPHER_PASS: ${PGBACKREST_REPO1_CIPHER_PASS:?set PGBACKREST_REPO1_CIPHER_PASS in .env}
+    volumes:
+      - pg-standby:/var/lib/postgresql/data
+      - pgbackrest-repo:/var/lib/pgbackrest
+      - ./conf/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./conf/conf.d:/etc/postgresql/conf.d:ro
+      - ./conf/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./conf/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+      - ${EBS_PG_CERT_DIR:-./certs}:/certs:ro
+    healthcheck: *server-healthcheck
+    depends_on:
+      primary:
+        condition: service_healthy
+
+  pgbouncer:
+    <<: *image
+    hostname: pgbouncer
+    environment:
+      EBS_PG_ROLE: pgbouncer
+      # After a failover, set this to `standby` in .env so a restart keeps the new primary.
+      EBS_PG_PRIMARY_HOST: ${EBS_PG_PRIMARY_HOST:-primary}
+      EBS_PASSWORD: ${EBS_PASSWORD:?set EBS_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - ./conf/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ${EBS_PG_CERT_DIR:-./certs}:/certs:ro
+    tmpfs:
+      - /run/pgbouncer
+    ports:
+      - "127.0.0.1:${EBS_PGBOUNCER_PORT:-6432}:6432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-q", "-h", "127.0.0.1", "-p", "6432", "-d", "ebs", "-U", "ebs"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      primary:
+        condition: service_healthy
+
+volumes:
+  pg-primary:
+  pg-standby:
+  pgbackrest-repo:

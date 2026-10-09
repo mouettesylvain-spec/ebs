@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+# Every network connection must use TLS and SCRAM-SHA-256 (P0-11 R2).
+# TYPE      DATABASE     USER        ADDRESS        METHOD
+local       all          postgres                   peer
+local       all          all                        scram-sha-256
+hostnossl   all          all         0.0.0.0/0      reject
+hostnossl   all          all         ::/0           reject
+{% for net in ebs_postgres_allowed_networks %}
+hostssl     replication  replicator  {{ net }}      scram-sha-256
+hostssl     all          all         {{ net }}      scram-sha-256
+{% endfor %}
