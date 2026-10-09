@@ -1,0 +1,28 @@
+# flow.yaml with real Verilator. The linter is a toolchain, so its version and install tree are
+# part of every lint action key: results of the fake linter are never reused for Verilator.
+# Needs .ebs/toolchains.yaml describing `verilator/system` (docs/user/quickstart.md).
+version: 1
+project: lint-make
+domain: examples
+
+toolchains:
+  verilator: { module: verilator/system }
+
+steps:
+  lint:
+    kind: make
+    toolchain: verilator
+    workdir: lint
+    target: lint
+    matrix: { table: blocks.csv }
+    inputs:
+      rtl: "rtl/${row.block}/*.sv"
+    params: { BLOCK: "${row.block}", LINTER: verilator }
+    outputs:
+      report: "lint/reports/${row.block}.rpt"
+
+  summary:
+    kind: shell
+    inputs: { tool: tools/summarize }
+    command: ["bash", "tools/summarize", "summary.txt", "${steps.lint.outputs.report[*]}"]
+    outputs: { summary: summary.txt }

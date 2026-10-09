@@ -1,0 +1,12 @@
+#!/bin/bash
+# report: aggregate simulation results into report.txt.
+# usage: report RESULT...
+set -euo pipefail
+results=$(cat "$@" | LC_ALL=C sort)
+passed=$(printf '%s\n' "$results" | grep -c '^PASS ' || true)
+failed=$(printf '%s\n' "$results" | grep -c '^FAIL ' || true)
+{
+  printf '%s\n' "$results"
+  echo "$passed passed, $failed failed"
+} > report.txt
+cat report.txt
