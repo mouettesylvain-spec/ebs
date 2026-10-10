@@ -103,6 +103,10 @@ def test_401(svc: Service, headers: dict[str, str]) -> None:
     r = svc.client.get(f"{API_PREFIX}/builds/1", headers=headers)
     assert r.status_code == 401
     assert r.headers["www-authenticate"]
+    # Bodies are not parsed before authentication: 401, not 422, for an invalid body.
+    for method, path in (("POST", "/builds"), ("PUT", "/domains/test/cache/x")):
+        r = svc.client.request(method, API_PREFIX + path, content=b"{}", headers=headers)
+        assert r.status_code == 401, (method, path, r.text)
 
 
 # R3: health probes stay open (load balancers carry no credentials).
@@ -149,7 +153,7 @@ def test_unmunge_success_parses_identity() -> None:
     assert identity == MungeIdentity(uid=1000, gid=1000)
     argv, stdin = run.calls[0]
     assert argv[0] == "unmunge"
-    assert "--numeric" in argv
+    assert {"--numeric", "--metadata=-", "--output=/dev/null"} <= set(argv)
     assert stdin == "MUNGE:AwQ...:"  # the credential goes on stdin, never on the command line
 
 
@@ -172,7 +176,7 @@ def test_unmunge_failures_are_auth_errors() -> None:
     with pytest.raises(AuthenticationError, match="unmunge"):
         UnmungeVerifier(run=FakeRun("", 1, "unmunge: Error: Invalid credential")).verify("x")
     with pytest.raises(AuthenticationError, match="UID"):
-        UnmungeVerifier(run=FakeRun("STATUS:  Success (0)\n")).verify("x")
+        UnmungeVerifier(run=FakeRun("STATUS:  Success (0)\nLENGTH:  0\n")).verify("x")
 
     def missing(
         argv: Sequence[str], *, input: str, timeout: float
@@ -203,6 +207,27 @@ def test_token_admin_commands() -> None:
     assert info is not None
     assert (info.principal, info.kind, info.team) == ("ci-cpu", "ci", "rv32x")
     assert info.expires_at == clock.now() + timedelta(days=1)
+    assert main(["token", "create", "ci-x", "--kind", "ci"], tokens=lambda env: store) == 2
     assert main(["token", "revoke", "ci-cpu"], tokens=lambda env: store, out=out) == 0
     assert "revoked 1 token(s) of ci-cpu" in out.getvalue()
     assert store.lookup(hash_token(token)) is None
+
+
+# R3 (review blocker): a payload imitating metadata lines must not change the identity.
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        _DECODED + "UID:             0\nGID:             0\n",  # payload after the blank line
+        _DECODED.replace("LENGTH:          0", "LENGTH:          32"),  # non-empty payload
+        _DECODED.replace("LENGTH:          0\n", "LENGTH:          0\nUID:             0\n"),
+    ],
+    ids=["payload-after-block", "non-empty-payload", "duplicate-uid"],
+)
+def test_unmunge_payload_cannot_forge_identity(stdout: str) -> None:
+    verifier = UnmungeVerifier(run=FakeRun(stdout))
+    if stdout.startswith(_DECODED):
+        # unmunge's own lines win; whatever follows the metadata block is ignored.
+        assert verifier.verify("MUNGE:x:") == MungeIdentity(uid=1000, gid=1000)
+    else:
+        with pytest.raises(AuthenticationError, match=r"payload|twice"):
+            verifier.verify("MUNGE:x:")

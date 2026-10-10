@@ -26,7 +26,8 @@ from ebs.meta.service.auth import BuildOwner, Principal
 from ebs.meta.service.deps import ServiceDeps, body, current_principal, get_deps, json_body
 from ebs.meta.service.routes import no_content, ok
 
-router = APIRouter(prefix="/builds", tags=["builds"])
+# Authenticate before any body is read or validated (401, never 422, without credentials).
+router = APIRouter(prefix="/builds", tags=["builds"], dependencies=[Depends(current_principal)])
 
 Deps = Annotated[ServiceDeps, Depends(get_deps)]
 Caller = Annotated[Principal, Depends(current_principal)]

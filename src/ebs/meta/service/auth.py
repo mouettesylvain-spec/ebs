@@ -156,15 +156,39 @@ def _run(argv: Sequence[str], *, input: str, timeout: float) -> subprocess.Compl
     )
 
 
-_FIELD: Final = re.compile(r"^([A-Z_]+):\s*(.*?)\s*$", re.MULTILINE)
+_FIELD: Final = re.compile(r"^([A-Z_]+):\s*(.*?)\s*$")
 _NUMBER: Final = re.compile(r"(\d+)\)?$")
 
 
+def _metadata(stdout: str) -> dict[str, str]:
+    """The `KEY: value` lines of unmunge's metadata block, which ends at the first blank line.
+
+    Only that block is trusted: anything after it would be the credential's payload, chosen by
+    the caller. A repeated key means the output is not what unmunge prints, so it is refused.
+    """
+    fields: dict[str, str] = {}
+    for line in stdout.splitlines():
+        if not line.strip():
+            break
+        match = _FIELD.match(line)
+        if match is None:
+            continue
+        key, value = match.groups()
+        if key in fields:
+            raise AuthenticationError(f"MUNGE credential refused: unmunge printed {key} twice")
+        fields[key] = value
+    return fields
+
+
 class UnmungeVerifier:
-    """Decode a credential with `unmunge --numeric` (munged keeps the replay cache)."""
+    """Decode a credential with `unmunge` (munged keeps the replay cache).
+
+    The payload is discarded (`--output=/dev/null`) and must be empty (`LENGTH: 0`): clients run
+    `munge --no-input`, and a payload could otherwise imitate the metadata lines.
+    """
 
     def __init__(self, unmunge: str = "unmunge", *, run: _Run = _run, timeout_s: float = 5.0):
-        self._argv = [unmunge, "--numeric"]
+        self._argv = [unmunge, "--numeric", "--metadata=-", "--output=/dev/null"]
         self._run = run
         self._timeout_s = timeout_s
 
@@ -176,11 +200,15 @@ class UnmungeVerifier:
             raise AuthenticationError(
                 f"MUNGE credential could not be checked: {self._argv[0]!r} failed to run"
             ) from exc
-        fields = dict(_FIELD.findall(done.stdout))
+        fields = _metadata(done.stdout)
         status = fields.get("STATUS", "")
         if done.returncode != 0 or not status.startswith("Success"):
             reason = status.split(" (")[0] if status else done.stderr.strip() or "unknown error"
             raise AuthenticationError(f"MUNGE credential refused by unmunge: {reason}")
+        if fields.get("LENGTH") != "0":
+            raise AuthenticationError(
+                "MUNGE credential refused: it must carry no payload (create it with `munge -n`)"
+            )
         try:
             uid = int(_parse_number(fields["UID"]))
             gid = int(_parse_number(fields["GID"]))

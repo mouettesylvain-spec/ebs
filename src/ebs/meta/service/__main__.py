@@ -20,7 +20,7 @@ from typing import Protocol, TextIO
 
 from ebs.config import config_paths, load_config
 from ebs.core.clock import Clock, SystemClock
-from ebs.core.errors import EbsError
+from ebs.core.errors import ConfigError, EbsError
 from ebs.meta.service.tokens import TokenKind
 
 __all__ = ["main"]
@@ -87,6 +87,8 @@ def main(
                 port=args.port, proxy_headers=True,
             )  # fmt: skip
             return 0
+        if args.token_command == "create" and args.kind == "ci" and not args.team:
+            raise ConfigError("a ci token needs --team: the project whose builds it writes")
         store = tokens(env)
         if args.token_command == "create":
             expires = None

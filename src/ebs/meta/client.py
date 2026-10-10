@@ -210,6 +210,10 @@ def _credentials(cfg: HttpMetadataConfig, environ: Mapping[str, str]) -> Credent
 
 
 def _q(segment: str) -> str:
+    """One path segment, fully quoted; `.` and `..` are escaped too, or URL normalization would
+    remove them (action ids may be dots)."""
+    if segment and set(segment) == {"."}:
+        return "%2E" * len(segment)
     return quote(segment, safe="")
 
 
