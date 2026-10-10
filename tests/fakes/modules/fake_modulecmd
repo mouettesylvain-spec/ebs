@@ -7,6 +7,7 @@
 #
 # Modulefiles (found on $MODULEPATH as <dir>/<name>/<version>) use a tiny line format:
 #   setenv NAME VALUE         prepend-path NAME VALUE         fail MESSAGE
+#   noload                    (succeeds without recording the module in LOADEDMODULES)
 # A literal `$HOME` in VALUE is replaced by the caller's HOME, as `$env(HOME)` would be.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
@@ -53,6 +54,7 @@ purge)
 load)
     for module in "$@"; do
         file=
+        record=1
         IFS=: read -r -a dirs <<< "${MODULEPATH:-}"
         for dir in "${dirs[@]}"; do
             if [ -n "$dir" ] && [ -f "$dir/$module" ]; then
@@ -70,11 +72,12 @@ load)
                 emit "$name" "$value${current:+:$current}"
                 ;;
             fail) fail "$name $value" ;;
+            noload) record= ;;
             '' | '#'*) ;;
             *) fail "bad modulefile line in $file: $cmd" ;;
             esac
         done < "$file"
-        emit LOADEDMODULES "${LOADEDMODULES:+$LOADEDMODULES:}$module"
+        [ -z "$record" ] || emit LOADEDMODULES "${LOADEDMODULES:+$LOADEDMODULES:}$module"
         emit _LMFILES_ "${_LMFILES_:+$_LMFILES_:}$file"
         if [ "$flavour" = lmod ]; then
             emit _ModuleTable001_ "$(printf '%s' "$module" | base64)"

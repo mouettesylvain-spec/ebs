@@ -36,7 +36,7 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | --- | --- | --- | --- | --- |
 | P1-01 | SLURM CLI adapter + FakeSlurm | P0-01 | 1 (can start during P0) | todo |
 | P1-06 | Metadata HTTP service + client | P0-10 | 1 (can start during P0) | todo |
-| P1-07 | Toolchain registration via modulefiles | P0-07, P0-10 | 1 | in-progress |
+| P1-07 | Toolchain registration via modulefiles | P0-07, P0-10 | 1 | review |
 | P1-08 | Questa rule pack + fake Questa tools | P0-12 | 1 | todo |
 | P1-11 | `ebs seeds gen` | P0-05 | 1 | todo |
 | P1-13 | `ebs outputs` and `ebs fetch` | P0-16 | 1 | todo |

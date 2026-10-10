@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 
 from ebs.core.errors import ExitCode
 from ebs.toolchain.registry import RegistryToolchainResolver
@@ -96,3 +97,25 @@ def test_errors(site: Site) -> None:
 def test_planning_uses_registry_without_toolchains_yaml(site: Site) -> None:
     resolver = site.services.toolchains(site.proj)
     assert isinstance(resolver, RegistryToolchainResolver)
+
+
+# R6
+def test_register_rejects_user_name(site: Site) -> None:
+    mods = _modules(site)
+    top = questa_like(mods)
+    mods.modulefile("questa/2025.2", f"setenv QUESTA_HOME {top}", "setenv OWNER /scratch/alice")
+    result = site.invoke(["toolchain", "register", "questa/2025.2"])
+    assert result.exit_code == ExitCode.USAGE
+    assert "alice" in result.stderr
+    assert site.services.memory_store.list_toolchains() == []
+
+
+# R4: a toolchain that cannot be fingerprinted fails the nightly check too
+def test_check_error_exit_code(site: Site) -> None:
+    mods = _modules(site)
+    top = questa_like(mods)
+    site.invoke(["toolchain", "register", "questa/2025.2"])
+    shutil.rmtree(top)
+    result = site.invoke(["toolchain", "check", "--json"])
+    assert result.exit_code == ExitCode.ACTIONS_FAILED
+    assert json.loads(result.stdout)["results"][0]["status"] == "error"

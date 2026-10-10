@@ -249,3 +249,92 @@ def test_user_name_inside_other_words_is_fine(envmodules: ModuleSite, value: str
     top = questa_like(envmodules)
     envmodules.modulefile("questa/2025.2", f"setenv QUESTA_HOME {top}", f"setenv OTHER {value}")
     assert snap(envmodules, user="alice").env["OTHER"] == value
+
+
+# R1: license settings are site facts (runner passthrough), never in the id or the roots
+def test_license_variables_not_recorded(envmodules: ModuleSite) -> None:
+    top = questa_like(envmodules)
+    lic = envmodules.tool("licenses", files={"site.dat": "x"})
+    envmodules.modulefile(
+        "questa/2025.2",
+        f"setenv QUESTA_HOME {top}",
+        f"setenv LM_LICENSE_FILE {lic}/site.dat",
+        "setenv MGLS_LICENSE_FILE 1717@lic.example.invalid",
+    )
+    s = snap(envmodules)
+    assert "LM_LICENSE_FILE" not in s.env
+    assert "MGLS_LICENSE_FILE" not in s.env
+    assert s.install_roots == (top,)
+
+
+# R6: a service account's name inside the install tree is not a per-user dependency
+def test_service_account_name_inside_install_root(envmodules: ModuleSite) -> None:
+    top = envmodules.tool("eda/questa")
+    envmodules.modulefile("questa/2025.2", f"setenv QUESTA_HOME {top}")
+    s = snap(envmodules, user="eda")
+    assert s.env["QUESTA_HOME"] == str(top)
+    assert len(s.warnings) == 1
+    assert "eda" in s.warnings[0]
+
+
+# R1: the module name is an argument, never shell code
+@pytest.mark.parametrize("module", ["$(touch pwned)/1", "a;touch pwned/1", "`touch pwned`/1"])
+def test_module_name_is_never_shell_code(
+    envmodules: ModuleSite, module: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ToolchainError, match="module"):
+        snap(envmodules, module)
+    assert not (tmp_path / "pwned").exists()
+    assert [c for c in envmodules.calls() if c.startswith("load")] == []
+
+
+# R6: HOME is replaced only where a path starts with it, and in both spellings
+@pytest.mark.parametrize("value", ["/data/home/al/x", "/home/alfred/x", "x/home/al"])
+def test_home_only_replaced_at_path_start(envmodules: ModuleSite, value: str) -> None:
+    top = questa_like(envmodules)
+    envmodules.modulefile("questa/2025.2", f"setenv QUESTA_HOME {top}", f"setenv X {value}")
+    assert snap(envmodules, user="zz", home="/home/al").env["X"] == value
+
+
+# R6
+def test_symlinked_home_normalized(envmodules: ModuleSite, tmp_path: Path) -> None:
+    real = tmp_path / "realhome" / "u1"
+    real.mkdir(parents=True)
+    link = tmp_path / "h"
+    link.symlink_to(real)
+    top = questa_like(envmodules)
+    envmodules.modulefile(
+        "questa/2025.2", f"setenv QUESTA_HOME {top}", f"setenv RC {real}/rc:{link}/b"
+    )
+    assert snap(envmodules, user="zz", home=str(link)).env["RC"] == "$HOME/rc:$HOME/b"
+
+
+# R6: only paths inside an install root are exempt from the user-name check
+def test_user_path_next_to_root_rejected(envmodules: ModuleSite) -> None:
+    top = questa_like(envmodules)
+    envmodules.modulefile(
+        "questa/2025.2", f"setenv QUESTA_HOME {top}", f"setenv OWNER {top.parent}/alice"
+    )
+    with pytest.raises(ToolchainError, match="OWNER"):
+        snap(envmodules, user="alice")
+
+
+# R1
+def test_module_missing_from_loadedmodules(site: ModuleSite) -> None:
+    top = questa_like(site)
+    site.modulefile("ghost/1.0", f"setenv QUESTA_HOME {top}", "noload")
+    with pytest.raises(ToolchainError, match="not in LOADEDMODULES"):
+        snap(site, "ghost/1.0")
+
+
+# R5
+def test_envmodules_4_supported(envmodules: ModuleSite) -> None:
+    envmodules.set_version("4.8.0")
+    assert detect_module_system(envmodules.environ()).version == "4.8.0"
+
+
+# R5
+def test_missing_lmod_cmd_falls_back(envmodules: ModuleSite) -> None:
+    environ = {**envmodules.environ(), "LMOD_CMD": "/nonexistent/lmod"}
+    assert detect_module_system(environ).flavour == "envmodules"

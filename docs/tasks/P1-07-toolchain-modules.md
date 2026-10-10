@@ -1,6 +1,6 @@
 # P1-07 — Toolchain registration via modulefiles
 
-Status: in-progress · Phase: 1 · Depends on: P0-07, P0-10 · Size: M
+Status: review · Phase: 1 · Depends on: P0-07, P0-10 · Size: M
 
 ## Goal
 `ebs toolchain register questa/2025.2` snapshots a module (env, install roots, fingerprint) into an
@@ -41,4 +41,28 @@ immutable registered toolchain that flows reference by module name.
 | `tests/vendor/test_register_questa.py` (real module on grid) | R1 | vendor |
 
 ## Done when
-- [ ] `make check-all` passes
+- [x] `make check-all` passes (integration run against a local PostgreSQL 16 via `EBS_TEST_PG_URL`)
+
+## Notes
+- CONTRACT CHANGE: `MetadataStore` gains `register_toolchain`, `get_toolchain`,
+  `current_toolchain`, `list_toolchains`, `toolchain_manifest`, `touch_toolchain` (models
+  `ToolchainCreate`, `ToolchainRecord`, `RegisterOutcome`); migration `0004` adds
+  `toolchains.last_used_at` (R4 "used in the last N days") and `toolchain_manifests` (zlib
+  fingerprint lines, R2's changed-file list). New `ebs.toolchain.fingerprint.fingerprint_entries`.
+- Stores do not recompute toolchain ids: the runner imports the meta store and import-linter
+  forbids it from importing `ebs.toolchain`. The registry computes ids on write and re-checks
+  them on every read (`to_toolchain`).
+- The stored env is the diff against the same clean shell without the load. A modulefile that
+  *unsets* a baseline variable cannot be represented (debug log). License variables
+  (`DEFAULT_PASSTHROUGH_ENV`) are dropped: they are site facts the runner passes through.
+- Registering a superseded id again (reverted install) reinstates it as current; status
+  `reinstated`.
+- `check` covers current toolchains whose `last_used_at`, else `registered_at`, is within
+  `--days`; it exits 1 on drift or an unreadable tree.
+- Module names must carry an explicit version (`name/version`): a default version can change
+  under the same name.
+- Follow-ups: `check` re-fingerprints install trees only; it could also re-capture the module
+  env to catch modulefile edits (needs the module system on the checking host). Site-specific
+  Lmod settings (`LMOD_*` config variables) are not passed into the capture shell yet; add a
+  `[toolchain].capture_env` passthrough list if a site needs them. `register` uses the default
+  passthrough list rather than the site's `[runner].passthrough_env`.

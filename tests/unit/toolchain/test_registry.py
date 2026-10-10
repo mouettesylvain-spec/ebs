@@ -350,3 +350,90 @@ def test_corrupt_manifest() -> None:
         decode_manifest(b"not zlib")
     with pytest.raises(ToolchainError, match="corrupt"):
         decode_manifest(zlib.compress(b'["/a","p"]\n'))
+
+
+# R4: one unusable manifest does not stop the nightly check of the others
+def test_check_survives_corrupt_manifest(e: Env) -> None:
+    reg = e.register()
+    e.store._toolchain_manifests[str(reg.toolchain.id)] = b"garbage"
+    e.write("bin/vsim", "patched", mode=0o755)
+    (result,) = check(e.store, days=30, now=e.clock.now())
+    assert result.status == "drift"
+    assert result.manifest_missing
+    assert result.changes == ()
+
+
+# R2: a corrupt predecessor manifest still registers, with an unknown file list
+def test_register_survives_corrupt_manifest(e: Env) -> None:
+    old = e.register()
+    e.store._toolchain_manifests[str(old.toolchain.id)] = b"garbage"
+    e.write("bin/vsim", "patched", mode=0o755)
+    new = e.register()
+    assert new.status == "registered"
+    assert new.manifest_missing
+    warning = format_drift(new)
+    assert warning is not None
+    assert "changed files unknown" in warning
+
+
+# R4: "used" means last_used_at, even for an old registration
+def test_check_includes_recently_used_old_registration(e: Env) -> None:
+    reg = e.register()
+    e.clock.advance(timedelta(days=40).total_seconds())
+    RegistryToolchainResolver(e.store).resolve("questa", MODULE)
+    e.clock.advance(timedelta(days=10).total_seconds())
+    e.write("bin/vsim", "patched", mode=0o755)
+    (result,) = check(e.store, days=30, now=e.clock.now())
+    assert (result.record.id, result.status) == (reg.toolchain.id, "drift")
+    e.clock.advance(timedelta(days=20).total_seconds())  # last use exactly 30 days ago
+    assert len(check(e.store, days=30, now=e.clock.now())) == 1
+    e.clock.advance(1)
+    assert check(e.store, days=30, now=e.clock.now()) == []
+
+
+# R4: superseded snapshots are not reported as drift
+def test_check_ignores_superseded(e: Env) -> None:
+    e.register()
+    e.write("bin/vsim", "v2", mode=0o755)
+    b = e.register()
+    (result,) = check(e.store, days=30, now=e.clock.now())
+    assert (result.record.id, result.status) == (b.toolchain.id, "ok")
+
+
+# R3: one resolver (one plan) keeps one id per module
+def test_resolver_fixed_per_instance(e: Env) -> None:
+    first = e.register()
+    resolver = RegistryToolchainResolver(e.store)
+    assert resolver.resolve("questa", MODULE).id == first.toolchain.id
+    e.write("bin/vsim", "v2", mode=0o755)
+    e.register()
+    assert resolver.resolve("questa", MODULE).id == first.toolchain.id
+
+
+# R3
+def test_get_rejects_tampered_old_row(e: Env) -> None:
+    old = e.register()
+    e.write("bin/vsim", "v2", mode=0o755)
+    e.register()
+    key = str(old.toolchain.id)
+    e.store._toolchains[key] = e.store._toolchains[key].model_copy(update={"env": {"A": "b"}})
+    with pytest.raises(ToolchainError, match="does not match"):
+        RegistryToolchainResolver(e.store).get(old.toolchain.id, name="questa")
+
+
+# R2: removed variables count as env drift
+def test_env_drift_reports_removed_variables(e: Env) -> None:
+    e.register(e.env(QUESTA_MODE="batch"))
+    new = e.register()
+    assert new.env_changes == ("QUESTA_MODE",)
+
+
+# R2: exactly 20 changes are all listed, with no "more" line
+def test_drift_warning_exactly_20(e: Env) -> None:
+    e.register()
+    for i in range(DRIFT_LIST_LIMIT):
+        e.write(f"lib/new{i:02}.so", "x")
+    warning = format_drift(e.register())
+    assert warning is not None
+    assert sum(line.strip().startswith("added: ") for line in warning.splitlines()) == 20
+    assert "more" not in warning

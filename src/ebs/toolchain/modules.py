@@ -14,6 +14,7 @@ same way, and a value naming the registering user is refused.
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 from collections.abc import Mapping, Sequence
@@ -25,6 +26,7 @@ from typing import Final, Literal
 
 from ebs.core.errors import ToolchainError
 from ebs.core.log import get_logger
+from ebs.runner.config import DEFAULT_PASSTHROUGH_ENV
 from ebs.toolchain.env import (
     DEFAULT_LANG,
     DEFAULT_PATH,
@@ -86,6 +88,7 @@ class ModuleSnapshot:
     env: Mapping[str, str] = field(hash=False)  # the env diff, read-only and sorted
     install_roots: tuple[Path, ...]
     system: ModuleSystem
+    warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "env", MappingProxyType(dict(sorted(self.env.items()))))
@@ -171,11 +174,14 @@ def snapshot_module(
     extra_roots: Sequence[Path] = (),
     timeout_s: float = 120.0,
     runner: EnvRunner = run_subprocess,
+    site_env: Sequence[str] = DEFAULT_PASSTHROUGH_ENV,
 ) -> ModuleSnapshot:
     """Capture `module purge; module load MODULE` and derive the install roots (R1, R5, R6).
 
     `environ` is the caller's environment: only MODULEPATH (required) is taken from it, plus
-    HOME to normalize; `user` is the registering user, whose name must not appear in the env.
+    HOME to normalize; `user` is the registering user, whose name must not appear in the env
+    outside the install roots. Variables matching `site_env` (license servers: the runner passes
+    the caller's through, never part of a key) are dropped from the snapshot.
     """
     check_module_name(module)
     for root in extra_roots:
@@ -202,7 +208,10 @@ def snapshot_module(
     if dropped:
         _log.debug("module unset variables; not recorded", module=module, names=dropped)
     env = {k: v for k, v in loaded.items() if baseline.get(k) != v}
-    env = _user_independent(env, module=module, user=user, home=environ.get("HOME"))
+    site = sorted(k for k in env if any(fnmatch.fnmatchcase(k, p) for p in site_env))
+    if site:
+        _log.debug("site variables set by module; not recorded", module=module, names=site)
+    env = _normalize_home({k: v for k, v in env.items() if k not in site}, home=environ.get("HOME"))
     if module not in env.get("LOADEDMODULES", "").split(":"):
         raise ToolchainError(
             f"`module load {module}` succeeded but {module} is not in LOADEDMODULES "
@@ -214,38 +223,63 @@ def snapshot_module(
             f"module {module} sets no variable pointing at an install directory; name the "
             "tool's installation directories with --root /path (repeatable)"
         )
+    warnings = _check_user(env, module=module, user=user, roots=roots)
+    for warning in warnings:
+        _log.warning("toolchain env names the registering user", detail=warning)
     return ModuleSnapshot(
         module=module,
         version=module.rpartition("/")[2],
         env=env,
         install_roots=roots,
         system=system,
+        warnings=warnings,
     )
 
 
-def _user_independent(
-    env: Mapping[str, str], *, module: str, user: str, home: str | None
-) -> dict[str, str]:
+def _normalize_home(env: Mapping[str, str], *, home: str | None) -> dict[str, str]:
+    """Replace the registering user's real HOME (at a path boundary) with `$HOME`."""
     homes = {home, os.path.realpath(home)} if home and home != "/" else set()
     patterns = [
-        re.compile(re.escape(h.rstrip("/")) + r"(?![^/:])")
+        re.compile(r"(?<![^:])" + re.escape(h.rstrip("/")) + r"(?![^/:])")
         for h in sorted(homes, key=len, reverse=True)
     ]
-    user_re = (
-        re.compile(rf"(?<![A-Za-z0-9._-]){re.escape(user)}(?![A-Za-z0-9._-])") if user else None
-    )
     out: dict[str, str] = {}
     for name, value in env.items():
         for pattern in patterns:
             value = pattern.sub(lambda _: HOME_PLACEHOLDER, value)
-        if user_re is not None and user_re.search(value):
+        out[name] = value
+    return out
+
+
+def _check_user(
+    env: Mapping[str, str], *, module: str, user: str, roots: Sequence[Path]
+) -> tuple[str, ...]:
+    """Refuse a value naming the registering user (as a whole word) outside the install roots.
+
+    Inside an install root the name is part of where the tool is installed (a service account
+    `eda` owning `/tools/eda/...`), which is the same for every user: only a warning.
+    """
+    if not user:
+        return ()
+    user_re = re.compile(rf"(?<![A-Za-z0-9._-]){re.escape(user)}(?![A-Za-z0-9._-])")
+    warnings: list[str] = []
+    for name, value in env.items():
+        for part in value.split(":"):
+            if not user_re.search(part):
+                continue
+            path = Path(os.path.normpath(part)) if part.startswith("/") else None
+            if path is not None and any(path.is_relative_to(r) for r in roots):
+                warnings.append(
+                    f"{name} names user {user!r} inside install root {part!r}; fine if that is "
+                    "where the tool is installed for everyone"
+                )
+                continue
             raise ToolchainError(
                 f"module {module} sets {name}={value!r}, which names the registering user "
                 f"{user!r}; a toolchain must not depend on who registers it. Fix the modulefile "
                 "or register as a service account"
             )
-        out[name] = value
-    return out
+    return tuple(warnings)
 
 
 def derive_install_roots(

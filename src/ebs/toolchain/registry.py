@@ -91,6 +91,7 @@ class CheckResult:
     changes: tuple[FileChange, ...] = ()
     changes_total: int = 0
     error: str | None = None
+    manifest_missing: bool = False  # drift, but no usable stored manifest: files unknown
 
 
 def encode_manifest(entries: Sequence[FingerprintEntry]) -> bytes:
@@ -160,7 +161,6 @@ def register(
         env=env,
         fingerprint=fingerprint_entries(entries),
     )
-    previous = store.current_toolchain(module)
     outcome = store.register_toolchain(
         ToolchainCreate(
             id=tc.id,
@@ -177,10 +177,18 @@ def register(
     status: Literal["registered", "unchanged", "reinstated"] = (
         "registered" if outcome.inserted else "reinstated" if outcome.superseded else "unchanged"
     )
+    # The predecessor comes from the store's own transaction, so concurrent registrations of
+    # the module cannot make the drift report compare against the wrong one.
+    previous = None
+    if outcome.superseded:
+        previous = store.get_toolchain(outcome.superseded[-1])
     reg = Registration(
-        tc, status, None if previous is None else previous.id, tuple(outcome.superseded)
+        tc,
+        status,
+        tc.id if status == "unchanged" else None if previous is None else previous.id,
+        tuple(outcome.superseded),
     )
-    if previous is not None and previous.id != tc.id:
+    if previous is not None:
         reg = _with_drift(store, reg, previous, entries)
         _log.warning(
             "toolchain drift",
@@ -203,11 +211,25 @@ def _with_drift(
     env_changes = tuple(
         sorted(k for k in previous.env.keys() | env.keys() if previous.env.get(k) != env.get(k))
     )
-    old = store.toolchain_manifest(previous.id)
+    old = _stored_manifest(store, previous.id)
     if old is None:
         return _replace(reg, env_changes=env_changes, manifest_missing=True)
-    changes, total = diff_manifests(decode_manifest(old), {(e.root, e.path): e for e in entries})
+    changes, total = diff_manifests(old, {(e.root, e.path): e for e in entries})
     return _replace(reg, changes=changes, changes_total=total, env_changes=env_changes)
+
+
+def _stored_manifest(
+    store: MetadataStore, toolchain_id: Digest
+) -> dict[ManifestKey, FingerprintEntry] | None:
+    """The decoded manifest, or None if absent or corrupt (a drift list is best effort)."""
+    data = store.toolchain_manifest(toolchain_id)
+    if data is None:
+        return None
+    try:
+        return decode_manifest(data)
+    except ToolchainError as exc:
+        _log.warning("unusable toolchain manifest", toolchain=str(toolchain_id), error=str(exc))
+        return None
 
 
 def _replace(reg: Registration, **fields: object) -> Registration:
@@ -258,7 +280,7 @@ def format_check(result: CheckResult) -> list[str]:
         f"(registered {rec.fingerprint}); run `ebs toolchain register {rec.module}` to snapshot it"
     ]
     return lines + _change_lines(
-        result.changes, result.changes_total, missing=result.changes_total == 0
+        result.changes, result.changes_total, missing=result.manifest_missing
     )
 
 
@@ -289,13 +311,11 @@ def check(
         if fingerprint == record.fingerprint:
             results.append(CheckResult(record, "ok", fingerprint))
             continue
-        old = store.toolchain_manifest(record.id)
-        changes: tuple[FileChange, ...] = ()
-        total = 0
-        if old is not None:
-            changes, total = diff_manifests(
-                decode_manifest(old), {(e.root, e.path): e for e in entries}
-            )
+        old = _stored_manifest(store, record.id)
+        if old is None:
+            results.append(CheckResult(record, "drift", fingerprint, manifest_missing=True))
+            continue
+        changes, total = diff_manifests(old, {(e.root, e.path): e for e in entries})
         results.append(CheckResult(record, "drift", fingerprint, changes, total))
     return results
 
