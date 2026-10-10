@@ -1,6 +1,6 @@
 # P1-01 — SLURM CLI adapter and FakeSlurm
 
-Status: todo · Phase: 1 · Depends on: P0-01 · Parallel-safe with: everything in P0 · Size: L
+Status: review · Phase: 1 · Depends on: P0-01 · Parallel-safe with: everything in P0 · Size: L
 
 ## Goal
 A typed, tested wrapper over `sbatch`, `squeue --json`, `sacct --json`, `scancel`, `scontrol`, and a
@@ -49,4 +49,20 @@ FakeSlurm good enough that every executor behaviour can be tested on a laptop.
 | `tests/grid/test_slurm_real.py` | R6 | grid |
 
 ## Done when
-- [ ] `make check-all` passes; fixture capture script `scripts/capture_slurm_fixtures.py` documented
+- [ ] `make check-all` passes (P1-01 session: `make check` green; integration ran with 30 passed incl. all FakeSlurm tests, but the Postgres tests were skipped: no Docker/PG in that container); fixture capture script `scripts/capture_slurm_fixtures.py` documented
+
+## Notes
+- The 26.05 fixtures are hand-written from the documented JSON shape (data_parser v0.0.44): no
+  cluster was reachable. `tests/fixtures/slurm/26.05/README.md` says so; replace them with
+  `scripts/capture_slurm_fixtures.py` output on the first grid run (P1-12 at the latest) and
+  re-check `test_parse_fixtures`. Also confirm there that `--export=NONE` + `--export-file` gives
+  the job exactly the file's variables (the grid test asserts it).
+- Interpretations: "max 5" = 5 retries (6 attempts), backoff 1/2/4/8/16 s capped at 30 s.
+  `query` uses `squeue --states=all` so recently ended jobs need no sacct call. Unknown SLURM
+  states map to `infra_failed("other")` with a warning. `--no-requeue` is the default.
+- Follow-up for P1-02: a transient `sbatch` failure (socket timeout) is retried, and the
+  controller may have accepted the first request, so a job can be submitted twice. P1-02 should
+  reconcile by its unique job name (R4 naming) before or after a retried submit, and cancel the
+  extra job.
+- No new dependencies. D5 (SLURM limits) is not touched here; the adapter takes whatever
+  throttle/partition/QOS the executor passes.

@@ -1,0 +1,632 @@
+{
+  "errors": [],
+  "jobs": [
+    {
+      "account": "a1",
+      "accrue_time": {
+        "infinite": false,
+        "number": 1790000000,
+        "set": true
+      },
+      "admin_comment": "",
+      "allocating_node": "n000",
+      "array_job_id": {
+        "infinite": false,
+        "number": 0,
+        "set": true
+      },
+      "array_max_tasks": {
+        "infinite": false,
+        "number": 0,
+        "set": true
+      },
+      "array_task_id": {
+        "infinite": false,
+        "number": 0,
+        "set": false
+      },
+      "array_task_string": "",
+      "association_id": 11,
+      "batch_features": "",
+      "batch_flag": true,
+      "batch_host": "n001",
+      "command": "/work/u1/build/job.sh",
+      "comment": "",
+      "constraints": "os-img1",
+      "cpus": {
+        "infinite": false,
+        "number": 1,
+        "set": true
+      },
+      "cpus_per_task": {
+        "infinite": false,
+        "number": 1,
+        "set": true
+      },
+      "current_working_directory": "/work/u1/build",
+      "derived_exit_code": {
+        "return_code": {
+          "infinite": false,
+          "number": 0,
+          "set": true
+        },
+        "signal": {
+          "id": {
+            "infinite": false,
+            "number": 0,
+            "set": false
+          },
+          "name": ""
+        },
+        "status": [
+          "SUCCESS"
+        ]
+      },
+      "eligible_time": {
+        "infinite": false,
+        "number": 1790000000,
+        "set": true
+      },
+      "end_time": {
+        "infinite": false,
+        "number": 1790000600,
+        "set": true
+      },
+      "exit_code": {
+        "return_code": {
+          "infinite": false,
+          "number": 0,
+          "set": true
+        },
+        "signal": {
+          "id": {
+            "infinite": false,
+            "number": 0,
+            "set": false
+          },
+          "name": ""
+        },
+        "status": [
+          "SUCCESS"
+        ]
+      },
+      "flags": [],
+      "group_id": 1001,
+      "group_name": "g1",
+      "job_id": 1020,
+      "job_state": [
+        "COMPLETED"
+      ],
+      "last_sched_evaluation": {
+        "infinite": false,
+        "number": 1790000001,
+        "set": true
+      },
+      "licenses": "",
+      "memory_per_node": {
+        "infinite": false,
+        "number": 4096,
+        "set": true
+      },
+      "name": "ebs-sim",
+      "node_count": {
+        "infinite": false,
+        "number": 1,
+        "set": true
+      },
+      "nodes": "n001",
+      "partition": "p1",
+      "priority": {
+        "infinite": false,
+        "number": 4294901000,
+        "set": true
+      },
+      "qos": "q1",
+      "requeue": false,
+      "restart_cnt": 0,
+      "standard_error": "/work/u1/build/job.err",
+      "standard_input": "/dev/null",
+      "standard_output": "/work/u1/build/job.out",
+      "start_time": {
+        "infinite": false,
+        "number": 1790000005,
+        "set": true
+      },
+      "state_description": "",
+      "state_reason": "None",
+      "submit_time": {
+        "infinite": false,
+        "number": 1790000000,
+        "set": true
+      },
+      "time_limit": {
+        "infinite": false,
+        "number": 30,
+        "set": true
+      },
+      "tres_req_str": "cpu=1,mem=4G,node=1,billing=1",
+      "user_id": 1001,
+      "user_name": "u1"
+    },
+    {
+      "account": "a1",
+      "accrue_time": {
+        "infinite": false,
+        "number": 1790000000,
+        "set": true
+      },
+      "admin_comment": "",
+      "allocating_node": "n000",
+      "array_job_id": {
+        "infinite": false,
+        "number": 0,
+        "set": true
+      },
+      "array_max_tasks": {
+        "infinite": false,
+        "number": 0,
+        "set": true
+      },
+      "array_task_id": {
+        "infinite": false,
+        "number": 0,
+        "set": false
+      },
+      "array_task_string": "",
+      "association_id": 11,
+      "batch_features": "",
+      "batch_flag": true,
+      "batch_host": "n001",
+      "command": "/work/u1/build/job.sh",
+      "comment": "",
+      "constraints": "os-img1",
+      "cpus": {
+        "infinite": false,
+        "number": 1,
+        "set": true
+      },
+      "cpus_per_task": {
+        "infinite": false,
+        "number": 1,
+        "set": true
+      },
+      "current_working_directory": "/work/u1/build",
+      "derived_exit_code": {
+        "return_code": {
+          "infinite": false,
+          "number": 0,
+          "set": true
+        },
+        "signal": {
+          "id": {
+            "infinite": false,
+            "number": 0,
+            "set": false
+          },
+          "name": ""
+        },
+        "status": [
+          "SUCCESS"
+        ]
+      },
+      "eligible_time": {
+        "infinite": false,
+        "number": 1790000000,
+        "set": true
+      },
+      "end_time": {
+        "infinite": false,
+        "number": 1790000600,
+        "set": true
+      },
+      "exit_code": {
+        "return_code": {
+          "infinite": false,
+          "number": 75,
+          "set": true
+        },
+        "signal": {
+          "id": {
+            "infinite": false,
+            "number": 0,
+            "set": false
+          },
+          "name": ""
+        },
+        "status": [
+          "ERROR"
+        ]
+      },
+      "flags": [],
+      "group_id": 1001,
+      "group_name": "g1",
+      "job_id": 1021,
+      "job_state": [
+        "FAILED"
+      ],
+      "last_sched_evaluation": {
+        "infinite": false,
+        "number": 1790000001,
+        "set": true
+      },
+      "licenses": "",
+      "memory_per_node": {
+        "infinite": false,
+        "number": 4096,
+        "set": true
+      },
+      "name": "ebs-sim",
+      "node_count": {
+        "infinite": false,
+        "number": 1,
+        "set": true
+      },
+      "nodes": "n001",
+      "partition": "p1",
+      "priority": {
+        "infinite": false,
+        "number": 4294901000,
+        "set": true
+      },
+      "qos": "q1",
+      "requeue": false,
+      "restart_cnt": 0,
+      "standard_error": "/work/u1/build/job.err",
+      "standard_input": "/dev/null",
+      "standard_output": "/work/u1/build/job.out",
+      "start_time": {
+        "infinite": false,
+        "number": 1790000005,
+        "set": true
+      },
+      "state_description": "",
+      "state_reason": "None",
+      "submit_time": {
+        "infinite": false,
+        "number": 1790000000,
+        "set": true
+      },
+      "time_limit": {
+        "infinite": false,
+        "number": 30,
+        "set": true
+      },
+      "tres_req_str": "cpu=1,mem=4G,node=1,billing=1",
+      "user_id": 1001,
+      "user_name": "u1"
+    },
+    {
+      "account": "a1",
+      "accrue_time": {
+        "infinite": false,
+        "number": 1790000000,
+        "set": true
+      },
+      "admin_comment": "",
+      "allocating_node": "n000",
+      "array_job_id": {
+        "infinite": false,
+        "number": 0,
+        "set": true
+      },
+      "array_max_tasks": {
+        "infinite": false,
+        "number": 0,
+        "set": true
+      },
+      "array_task_id": {
+        "infinite": false,
+        "number": 0,
+        "set": false
+      },
+      "array_task_string": "",
+      "association_id": 11,
+      "batch_features": "",
+      "batch_flag": true,
+      "batch_host": "n002",
+      "command": "/work/u1/build/job.sh",
+      "comment": "",
+      "constraints": "os-img1",
+      "cpus": {
+        "infinite": false,
+        "number": 1,
+        "set": true
+      },
+      "cpus_per_task": {
+        "infinite": false,
+        "number": 1,
+        "set": true
+      },
+      "current_working_directory": "/work/u1/build",
+      "derived_exit_code": {
+        "return_code": {
+          "infinite": false,
+          "number": 0,
+          "set": true
+        },
+        "signal": {
+          "id": {
+            "infinite": false,
+            "number": 0,
+            "set": false
+          },
+          "name": ""
+        },
+        "status": [
+          "SUCCESS"
+        ]
+      },
+      "eligible_time": {
+        "infinite": false,
+        "number": 1790000000,
+        "set": true
+      },
+      "end_time": {
+        "infinite": false,
+        "number": 1790000600,
+        "set": true
+      },
+      "exit_code": {
+        "return_code": {
+          "infinite": false,
+          "number": 0,
+          "set": true
+        },
+        "signal": {
+          "id": {
+            "infinite": false,
+            "number": 0,
+            "set": false
+          },
+          "name": ""
+        },
+        "status": [
+          "SUCCESS"
+        ]
+      },
+      "flags": [],
+      "group_id": 1001,
+      "group_name": "g1",
+      "job_id": 1022,
+      "job_state": [
+        "OUT_OF_MEMORY"
+      ],
+      "last_sched_evaluation": {
+        "infinite": false,
+        "number": 1790000001,
+        "set": true
+      },
+      "licenses": "",
+      "memory_per_node": {
+        "infinite": false,
+        "number": 4096,
+        "set": true
+      },
+      "name": "ebs-sim",
+      "node_count": {
+        "infinite": false,
+        "number": 1,
+        "set": true
+      },
+      "nodes": "n002",
+      "partition": "p1",
+      "priority": {
+        "infinite": false,
+        "number": 4294901000,
+        "set": true
+      },
+      "qos": "q1",
+      "requeue": false,
+      "restart_cnt": 0,
+      "standard_error": "/work/u1/build/job.err",
+      "standard_input": "/dev/null",
+      "standard_output": "/work/u1/build/job.out",
+      "start_time": {
+        "infinite": false,
+        "number": 1790000005,
+        "set": true
+      },
+      "state_description": "",
+      "state_reason": "None",
+      "submit_time": {
+        "infinite": false,
+        "number": 1790000000,
+        "set": true
+      },
+      "time_limit": {
+        "infinite": false,
+        "number": 30,
+        "set": true
+      },
+      "tres_req_str": "cpu=1,mem=4G,node=1,billing=1",
+      "user_id": 1001,
+      "user_name": "u1"
+    },
+    {
+      "account": "a1",
+      "accrue_time": {
+        "infinite": false,
+        "number": 1790000000,
+        "set": true
+      },
+      "admin_comment": "",
+      "allocating_node": "n000",
+      "array_job_id": {
+        "infinite": false,
+        "number": 0,
+        "set": true
+      },
+      "array_max_tasks": {
+        "infinite": false,
+        "number": 0,
+        "set": true
+      },
+      "array_task_id": {
+        "infinite": false,
+        "number": 0,
+        "set": false
+      },
+      "array_task_string": "",
+      "association_id": 11,
+      "batch_features": "",
+      "batch_flag": true,
+      "batch_host": "n002",
+      "command": "/work/u1/build/job.sh",
+      "comment": "",
+      "constraints": "os-img1",
+      "cpus": {
+        "infinite": false,
+        "number": 1,
+        "set": true
+      },
+      "cpus_per_task": {
+        "infinite": false,
+        "number": 1,
+        "set": true
+      },
+      "current_working_directory": "/work/u1/build",
+      "derived_exit_code": {
+        "return_code": {
+          "infinite": false,
+          "number": 0,
+          "set": true
+        },
+        "signal": {
+          "id": {
+            "infinite": false,
+            "number": 0,
+            "set": false
+          },
+          "name": ""
+        },
+        "status": [
+          "SUCCESS"
+        ]
+      },
+      "eligible_time": {
+        "infinite": false,
+        "number": 1790000000,
+        "set": true
+      },
+      "end_time": {
+        "infinite": false,
+        "number": 1790000600,
+        "set": true
+      },
+      "exit_code": {
+        "return_code": {
+          "infinite": false,
+          "number": 0,
+          "set": true
+        },
+        "signal": {
+          "id": {
+            "infinite": false,
+            "number": 15,
+            "set": true
+          },
+          "name": "TERM"
+        },
+        "status": [
+          "SIGNALED"
+        ]
+      },
+      "flags": [],
+      "group_id": 1001,
+      "group_name": "g1",
+      "job_id": 1023,
+      "job_state": [
+        "CANCELLED"
+      ],
+      "last_sched_evaluation": {
+        "infinite": false,
+        "number": 1790000001,
+        "set": true
+      },
+      "licenses": "",
+      "memory_per_node": {
+        "infinite": false,
+        "number": 4096,
+        "set": true
+      },
+      "name": "ebs-sim",
+      "node_count": {
+        "infinite": false,
+        "number": 1,
+        "set": true
+      },
+      "nodes": "n002",
+      "partition": "p1",
+      "priority": {
+        "infinite": false,
+        "number": 4294901000,
+        "set": true
+      },
+      "qos": "q1",
+      "requeue": false,
+      "restart_cnt": 0,
+      "standard_error": "/work/u1/build/job.err",
+      "standard_input": "/dev/null",
+      "standard_output": "/work/u1/build/job.out",
+      "start_time": {
+        "infinite": false,
+        "number": 1790000005,
+        "set": true
+      },
+      "state_description": "",
+      "state_reason": "None",
+      "submit_time": {
+        "infinite": false,
+        "number": 1790000000,
+        "set": true
+      },
+      "time_limit": {
+        "infinite": false,
+        "number": 30,
+        "set": true
+      },
+      "tres_req_str": "cpu=1,mem=4G,node=1,billing=1",
+      "user_id": 1001,
+      "user_name": "u1"
+    }
+  ],
+  "last_backfill": {
+    "infinite": false,
+    "number": 1790000002,
+    "set": true
+  },
+  "last_update": {
+    "infinite": false,
+    "number": 1790000003,
+    "set": true
+  },
+  "meta": {
+    "client": {
+      "group": "g1",
+      "source": "/dev/pts/0",
+      "user": "u1"
+    },
+    "command": [
+      "squeue",
+      "--json",
+      "--states=all",
+      "--jobs=1020,1021,1022,1023"
+    ],
+    "plugin": {
+      "accounting_storage": "accounting_storage/slurmdbd",
+      "data_parser": "data_parser/v0.0.44",
+      "name": "",
+      "type": ""
+    },
+    "slurm": {
+      "cluster": "c1",
+      "release": "26.05.0",
+      "version": {
+        "major": "26",
+        "micro": "0",
+        "minor": "05"
+      }
+    }
+  },
+  "warnings": []
+}

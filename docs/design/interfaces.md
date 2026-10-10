@@ -491,6 +491,40 @@ reason from the runner's infra line on stderr (default `other`); `76` ⇒
 scratch) and drops queued work; the job reports `cancelled` from then on, whatever the runner's
 exit code. All executors pass `tests/contract/test_executor.py`.
 
+SLURM adapter (P1-01, `ebs.exec.slurm`; used by the SLURM executor, P1-02):
+
+```python
+SlurmCli(runner: CommandRunner | None = None, clock: Clock | None = None, bin_dir: Path | None = None,
+         max_retries: int = 5, timeout_s: float = 60.0)
+    .submit(script: Path, opts: SbatchOptions) -> JobId          # sbatch --parsable
+    .query(job_ids: Iterable[JobId | ArrayTaskId]) -> dict[JobId | ArrayTaskId, SlurmJobInfo]
+    .cancel(job_ids, *, signal: str | None = None) -> None       # one scancel; ended jobs are no error
+    .version() -> str                                            # scontrol --version
+SbatchOptions(job_name, partition=, account=, qos=, cpus_per_task=, mem_mb=, time_limit_s=,
+              licenses={name[@server]: n}, constraint=, array=ArraySpec(indices, throttle=),
+              output=, error=, workdir=, export_file=, requeue=False)   # frozen, validated
+write_env_file(path, env)                 # NUL-separated NAME=value for --export-file
+states.job_status(info: SlurmJobInfo, *, infra_reason: InfraReason | None = None) -> JobStatus
+```
+
+- argv is always a list; options are single `--name=value` elements; `--export=NONE` always
+  (the job's environment is the env file only); `--no-requeue` unless `requeue=True` (the driver
+  retries, a SLURM requeue would run the action twice).
+- `query` makes one `squeue --json --states=all --jobs=<base ids>` call and one
+  `sacct --json --jobs=…` call for the references squeue no longer knows; jobs unknown to both
+  are absent from the result. Array tasks still pending are one SLURM record (`2-9%2`); the
+  adapter answers each task from it. Unknown JSON fields are ignored; a missing required one
+  (`job_id`, `job_state`, sacct `state.current`) is an `ExecutorError` naming the SLURM release.
+- Transient failures (socket timeout, controller/slurmdbd unreachable, our own command timeout)
+  are retried up to `max_retries` times with backoff 1, 2, 4, 8, 16 s (cap 30 s); any other
+  non-zero exit raises `ExecutorError` with SLURM's message at once.
+- State mapping: PENDING/REQUEUED ⇒ `pending` with reason `Licenses`⇒licenses,
+  `Resources`/`ReqNodeNotAvail…`⇒resources, `Priority`⇒priority, else other; RUNNING-like states
+  and any state flagged COMPLETING (epilog still cleaning) ⇒ `running`; OUT_OF_MEMORY⇒oom,
+  TIMEOUT/DEADLINE⇒timeout, NODE_FAIL/BOOT_FAIL⇒node_fail, PREEMPTED⇒preempted (all
+  `infra_failed`); CANCELLED ⇒ `cancelled`; COMPLETED/FAILED ⇒ `status_for_exit(runner exit code)`
+  (negative when a signal ended it); an unknown state ⇒ `infra_failed("other")` with a warning.
+
 `LocalExecutor(log_dir=, runner_argv=("ebs-runner",), max_parallel=None, env=None)` (P0-14) runs
 runner subprocesses on this machine: at most `max_parallel` slots (default `os.cpu_count()`), an
 action taking `resources.cpus` slots (default 1; more than `max_parallel` is capped, so it runs
