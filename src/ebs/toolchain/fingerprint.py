@@ -101,15 +101,20 @@ def fingerprint_roots(
     roots: Sequence[Path], *, content_hash: ContentHashPredicate = default_content_hash
 ) -> Digest:
     """Digest of `scan_roots(roots)`; changes when any recorded attribute changes."""
+    entries = scan_roots(roots, content_hash=content_hash)
+    digest = fingerprint_entries(entries)
+    _log.debug("toolchain fingerprint", roots=[str(r) for r in roots], entries=len(entries))
+    return digest
+
+
+def fingerprint_entries(entries: Sequence[FingerprintEntry]) -> Digest:
+    """The fingerprint of entries as `scan_roots` returns them (sorted by (root, path))."""
     hasher = StreamingHasher()
     header = json.dumps(["ebs-toolchain-fingerprint", FINGERPRINT_VERSION])
     hasher.update(header.encode() + b"\n")
-    entries = scan_roots(roots, content_hash=content_hash)
     for entry in entries:
         hasher.update(entry.line())
-    digest = hasher.finish()[0]
-    _log.debug("toolchain fingerprint", roots=[str(r) for r in roots], entries=len(entries))
-    return digest
+    return hasher.finish()[0]
 
 
 def _check_root(root: Path) -> str:

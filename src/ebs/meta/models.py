@@ -33,6 +33,7 @@ __all__ = [
     "events",
     "metadata",
     "provenance_edges",
+    "toolchain_manifests",
     "toolchains",
 ]
 
@@ -200,10 +201,23 @@ toolchains = sa.Table(  # written by `ebs toolchain register` (P1-07)
     sa.Column("registered_at", _TS, nullable=False),
     sa.Column("registered_by", sa.Text, nullable=False),
     sa.Column("superseded_by", sa.Text, sa.ForeignKey("toolchains.id"), nullable=True),
+    sa.Column("last_used_at", _TS, nullable=True),  # P1-07: `ebs toolchain check --days`
     _digest_check("id"),
     _digest_check("fingerprint"),
     sa.CheckConstraint("jsonb_typeof(env) = 'object'", name="env_object"),
     sa.CheckConstraint("jsonb_typeof(install_roots) = 'array'", name="install_roots_array"),
+)
+
+toolchain_manifests = sa.Table(  # P1-07: fingerprint entries, for drift reports
+    "toolchain_manifests",
+    metadata,
+    sa.Column(
+        "toolchain_id",
+        sa.Text,
+        sa.ForeignKey("toolchains.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    sa.Column("entries", sa.LargeBinary, nullable=False),  # zlib-compressed JSON lines
 )
 
 events = sa.Table(

@@ -56,9 +56,12 @@ __all__ = [
     "MetadataStore",
     "OutputResult",
     "PendingReason",
+    "RegisterOutcome",
     "ResourceUsage",
     "ResultManifest",
     "RunnerInfo",
+    "ToolchainCreate",
+    "ToolchainRecord",
     "check_domain",
     "check_transition",
 ]
@@ -331,6 +334,56 @@ class Event(BaseModel):
     data: dict[str, object]
 
 
+_EnvName = Annotated[StrictStr, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
+
+
+def _install_root(value: str) -> str:
+    if not value.startswith("/") or "\x00" in value:
+        raise ValueError(f"invalid install root {value!r}: expected an absolute path")
+    return value
+
+
+_InstallRoot = Annotated[StrictStr, Field(max_length=4096), AfterValidator(_install_root)]
+
+
+class ToolchainCreate(BaseModel):
+    """A toolchain snapshot to register (P1-07; data-model.md `toolchains`).
+
+    `id` must equal `ebs.toolchain.model.toolchain_id(module, version, fingerprint, env)`: the
+    registry computes it, and checks it again on every read (stores cannot, see `_common`).
+    `name` is the module without its version (`questa` for `questa/2025.2`).
+    """
+
+    model_config = _FROZEN
+
+    id: DigestField
+    name: _Name
+    module: _Name
+    version: _Name
+    fingerprint: DigestField
+    env: dict[_EnvName, StrictStr]
+    install_roots: Annotated[list[_InstallRoot], Field(min_length=1)]
+    registered_by: _Name
+
+
+class ToolchainRecord(ToolchainCreate):
+    """A registered toolchain. Only `superseded_by` and `last_used_at` ever change."""
+
+    registered_at: AwareDatetime
+    superseded_by: DigestField | None
+    last_used_at: AwareDatetime | None
+
+
+class RegisterOutcome(BaseModel):
+    """What `register_toolchain` did: whether it inserted the row, and which rows of the same
+    module it marked as superseded by this one."""
+
+    model_config = _FROZEN
+
+    inserted: StrictBool
+    superseded: tuple[DigestField, ...]
+
+
 class MetadataStore(Protocol):
     """Shared build state. Every method is one short transaction; errors raise MetadataError.
 
@@ -399,3 +452,35 @@ class MetadataStore(Protocol):
 
     # events
     def emit(self, event: Event) -> None: ...
+
+    # toolchain registry (P1-07)
+    def register_toolchain(self, spec: ToolchainCreate, manifest: bytes) -> RegisterOutcome:
+        """Register an immutable toolchain snapshot with its fingerprint manifest, atomically.
+
+        A new id is inserted. An id already registered is left as it is (its manifest too). In
+        both cases this id becomes the module's current toolchain: every other non-superseded
+        row of the module gets `superseded_by = spec.id`, and a superseded row registered again
+        (a reverted install) has its `superseded_by` cleared. Concurrent registrations of one
+        module are serialized, so a module has at most one current toolchain.
+        """
+        ...
+
+    def get_toolchain(self, toolchain_id: Digest) -> ToolchainRecord | None: ...
+
+    def current_toolchain(self, module: str) -> ToolchainRecord | None:
+        """The module's non-superseded toolchain (latest registered if ever several), or None."""
+        ...
+
+    def list_toolchains(
+        self, *, module: str | None = None, current_only: bool = False
+    ) -> list[ToolchainRecord]:
+        """Toolchains ordered by (module, registered_at, id)."""
+        ...
+
+    def toolchain_manifest(self, toolchain_id: Digest) -> bytes | None:
+        """The manifest stored by `register_toolchain` (opaque bytes), or None."""
+        ...
+
+    def touch_toolchain(self, toolchain_id: Digest) -> None:
+        """Mark a toolchain as used now (at most once per hour); unknown ids are ignored."""
+        ...
