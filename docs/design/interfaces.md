@@ -808,3 +808,8 @@ stored log. Limits at the size cap: `ebs.cli.logs` docstring. `--json`: `{"actio
 "uuid", "state", "log"}`; `-f` with `--json` is a usage error.
 
 **`ebs rules list --json`**: `{"v": 1, "rules": [{"kind", "version", "impl"}]}`, sorted by kind.
+
+**`ebs seeds gen TABLE --json`**: `{"v": 1, "table": "<TABLE as given>", "appended": n,
+"filled": n}`. Options `--per-test N`, `--replace`, `--column` (default `seed`),
+`--test-column` (default `test`), `--base-seed` (default 0); algorithm and formatting rules:
+`ebs.flow.seeds` docstring (task P1-11).

@@ -9,7 +9,7 @@ from typing import TextIO, cast
 import typer
 
 from ebs import __version__
-from ebs.cli import build, logs, plan, rules, status
+from ebs.cli import build, logs, plan, rules, seeds, status
 from ebs.cli._context import SiteServices
 from ebs.cli._output import DEBUG_KEY
 from ebs.core.log import configure_logging
@@ -69,3 +69,4 @@ app.command("build")(build.build_command)
 app.command("status")(status.status_command)
 app.command("logs")(logs.logs_command)
 app.add_typer(rules.app, name="rules")
+app.add_typer(seeds.app, name="seeds")
