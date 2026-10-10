@@ -213,6 +213,7 @@ DIGEST_COLUMNS = {
     ("provenance_edges", "content_digest"),
     ("toolchains", "id"),
     ("toolchains", "fingerprint"),
+    ("api_tokens", "hash"),  # P1-06: SHA-256 of a bearer token
 }
 
 

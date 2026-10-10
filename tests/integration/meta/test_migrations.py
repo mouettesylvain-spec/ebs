@@ -25,6 +25,7 @@ P0_TABLES = {
     "provenance_edges",
     "toolchains",
     "events",
+    "api_tokens",  # P1-06 (revision 0004)
 }
 GOOD = "sha256:" + "a" * 64
 

@@ -1,0 +1,33 @@
+# Example systemd unit for the EBS metadata service without containers (P1-06).
+#   install -m 644 ebs-meta.service /etc/systemd/system/
+#   install -d -m 750 -o root -g ebs-meta /etc/ebs && install -m 640 -g ebs-meta config.toml /etc/ebs/
+#   systemctl daemon-reload && systemctl enable --now ebs-meta
+# /opt/ebs is a virtualenv with `pip install ebs`; munged must run on this host with the cluster key.
+
+[Unit]
+Description=EBS metadata service
+Documentation=https://github.com/mouettesylvain-spec/ebs/blob/main/deploy/meta/README.md
+After=network-online.target munge.service
+Wants=network-online.target munge.service
+
+[Service]
+Type=exec
+User=ebs-meta
+Group=ebs-meta
+Environment=EBS_CONFIG=/etc/ebs/config.toml
+ExecStart=/opt/ebs/bin/uvicorn --factory ebs.meta.service.app:app_from_config \
+    --host 127.0.0.1 --port 8080 --proxy-headers --workers 4
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

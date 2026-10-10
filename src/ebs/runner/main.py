@@ -456,9 +456,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _open_store(section: Mapping[str, object]) -> MetadataStore:
-    from ebs.meta.pg import PgMetadataStore  # only when posting: keeps plain runs light
+    """The HTTP client for an http(s) URL (cluster), PostgreSQL directly for development (R7)."""
+    from ebs.meta.factory import open_metadata_store  # only when posting: keeps plain runs light
 
-    return PgMetadataStore.from_config(section)
+    return open_metadata_store(section)
 
 
 def _domain(given: str | None, store: MetadataStore | None, build: int | None) -> str:

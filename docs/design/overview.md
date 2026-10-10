@@ -84,7 +84,18 @@ copy_threshold = "256MiB"     # inputs above this are bind/symlinked read-only
 root = "/debug"
 
 [metadata]
-url = "postgresql+psycopg://…"     # P0 direct mode; P1+: "https://ebs-meta.example/api"
+url = "https://ebs-meta.example"   # P1-06: the metadata service root (routes under /api/v1);
+                                   # "postgresql+psycopg://…" opens the database directly (dev)
+# auth = "munge"                   # HTTP only: "munge" (default) or "token"
+# token_file = "~/.config/ebs/meta-token"   # mode 600; or $EBS_META_TOKEN
+# ca_file = "/etc/pki/tls/certs/site-ca.pem"
+# timeout_s = 10                   # per request
+# retries = 4
+
+[meta_service]                     # service host only (P1-06)
+munge = true                       # accept X-EBS-Munge, verified with `unmunge`
+unmunge = "unmunge"
+bearer = true                      # accept bearer tokens (api_tokens)
 
 [scratch]
 dir = "${TMPDIR}/ebs"

@@ -1,0 +1,44 @@
+# EBS metadata service (P1-06) next to the PostgreSQL stack of deploy/postgres. See README.md.
+#
+#   cp ../postgres/env.example ../postgres/.env && $EDITOR ../postgres/.env
+#   cp config.toml.example config.toml && chmod 600 config.toml && $EDITOR config.toml
+#   docker compose up -d --build              # or: podman compose up -d --build
+#
+# The service listens on 127.0.0.1:8080; put the site's TLS reverse proxy in front of it
+# (clients use https://ebs-meta.example as [metadata].url).
+
+name: ebs-meta
+
+include:
+  - path: ../postgres/compose.yaml
+    env_file: ../postgres/.env
+
+services:
+  meta:
+    image: localhost/ebs-meta:latest
+    pull_policy: never
+    build:
+      context: ../..
+      dockerfile: deploy/meta/Containerfile
+    restart: unless-stopped
+    environment:
+      EBS_CONFIG: /etc/ebs/config.toml
+    volumes:
+      - ./config.toml:/etc/ebs/config.toml:ro
+      # unmunge talks to the host's munged; the service host shares the cluster's MUNGE key.
+      - /run/munge:/run/munge:ro
+    ports:
+      - "127.0.0.1:${EBS_META_PORT:-8080}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=4).status != 200)"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    depends_on:
+      pgbouncer:
+        condition: service_healthy

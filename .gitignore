@@ -22,3 +22,6 @@ deploy/postgres/.env
 deploy/postgres/certs/
 # local runs of examples/lint-make/lint/Makefile
 examples/lint-make/lint/reports/
+
+# Metadata service config with the database password (P1-06)
+deploy/meta/config.toml

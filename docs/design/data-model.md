@@ -66,6 +66,10 @@ pins(domain FK, build_id FK, pinned_by, reason, created_at, PRIMARY KEY(domain, 
 gc_runs(id, domain, started_at, finished_at, marked bigint, swept_rows bigint,
         swept_bytes bigint, dry_run bool, report jsonb)
 tombstones(domain, digest, deleted_rows_at, blob_delete_after)   -- implements the grace period (I15)
+api_tokens(id bigserial PK, principal text, kind text check in ('user','ci','service'),
+           team text null, hash text UNIQUE check digest,   -- sha256 of the token, never the token
+           created_at, expires_at null, revoked_at null)
+           index (principal)                               -- P1-06, revision 0004
 ```
 
 ## Phase 2
@@ -81,8 +85,6 @@ channels(domain FK, name text, channel text, release_id FK, updated_at, updated_
 channel_history(id, domain, name, channel, release_id, moved_at, moved_by, gate_build_id null)
 release_imports(consumer_build_id FK, release_id FK, alias text)   -- used-by queries
 exports(id, release_id FK, to_domain FK, exported_at, exported_by)  -- audited cross-domain copy
-api_tokens(id, principal text, kind text check in ('user','ci','service'), hash text,
-           created_at, expires_at, revoked_at)
 ```
 
 ## Phase 3
