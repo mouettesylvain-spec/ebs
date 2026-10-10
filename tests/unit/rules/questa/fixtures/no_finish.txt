@@ -1,0 +1,4 @@
+# Loading work.tb_top(fast)
+# UVM_INFO @ 0: reporter [RNTST] Running test hang_test...
+# End time: 10:05:00 on Jan 01,2026, Elapsed time: 0:05:00
+# Errors: 0, Warnings: 0

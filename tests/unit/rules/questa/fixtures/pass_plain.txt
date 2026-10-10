@@ -1,0 +1,6 @@
+# Loading work.tb_top(fast)
+# counter test: 16 cycles, all values matched
+# ** Note: $finish    : tb/tb_top.sv(40)
+#    Time: 170 ns  Iteration: 0  Instance: /tb_top
+# End time: 10:00:01 on Jan 01,2026, Elapsed time: 0:00:01
+# Errors: 0, Warnings: 0

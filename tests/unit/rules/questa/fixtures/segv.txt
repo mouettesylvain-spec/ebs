@@ -1,0 +1,5 @@
+# Loading work.tb_top(fast)
+# UVM_INFO @ 0: reporter [RNTST] Running test stress_test...
+# ** Fatal: (SIGSEGV) Bad handle or reference.
+#    Time: 7300 ns  Iteration: 2  Process: /tb_top/drv/#ALWAYS#12 File: tb/drv.sv
+# Fatal error in Module tb_top at tb/tb_top.sv line 19
