@@ -843,3 +843,8 @@ output, `<action_id>.<name> -> <dest>`. `--json`: `{"v": 1, "uuid", "build", "fe
 [{"action_id", "name", "digest", "dest"}]}` (`dest` as printed: `DIR` as given).
 
 **`ebs rules list --json`**: `{"v": 1, "rules": [{"kind", "version", "impl"}]}`, sorted by kind.
+
+**`ebs seeds gen TABLE --json`**: `{"v": 1, "table": "<TABLE as given>", "appended": n,
+"filled": n}`. Options `--per-test N`, `--replace`, `--column` (default `seed`),
+`--test-column` (default `test`), `--base-seed` (default 0); algorithm and formatting rules:
+`ebs.flow.seeds` docstring (task P1-11).
