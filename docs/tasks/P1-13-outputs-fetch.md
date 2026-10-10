@@ -1,6 +1,6 @@
 # P1-13 — `ebs outputs` and `ebs fetch`
 
-Status: todo · Phase: 1 · Depends on: P0-16 · Parallel-safe with: every P1 task except P1-10 (both add a CLI command; trivial merge in `cli/main.py`) · Size: S
+Status: review · Phase: 1 · Depends on: P0-16 · Parallel-safe with: every P1 task except P1-10 (both add a CLI command; trivial merge in `cli/main.py`) · Size: S
 
 ## Goal
 A user can list what a build produced and copy any output out of the CAS into a directory they
@@ -96,10 +96,10 @@ Use the in-memory metadata store and a tmp-dir `FsCAS`, with a `SiteServices` su
 Typer context object, as `tests/unit/cli/test_logs.py` does.
 
 ## Done when
-- [ ] `make check` passes (paste the summary line)
-- [ ] every R has a test; reviewer subagent reports no correctness gaps
-- [ ] interfaces.md § 14 updated; quickstart example passes `tests/e2e/test_docs.py`
-- [ ] Status set to `review` here and in docs/tasks/README.md
+- [x] `make check` passes (paste the summary line)
+- [x] every R has a test; reviewer subagent reports no correctness gaps
+- [x] interfaces.md § 14 updated; quickstart example passes `tests/e2e/test_docs.py`
+- [x] Status set to `review` here and in docs/tasks/README.md
 
 ## Notes
 - Raised by a user running `examples/lint-make`: after `ebs build` the per-block reports are only
@@ -109,3 +109,12 @@ Typer context object, as `tests/unit/cli/test_logs.py` does.
   manifest per build), so no driver change is needed.
 - Default `copy` keeps fetched files independent of the CAS; `hardlink`/`symlink` are for large
   trees and are the user's explicit choice.
+- Implementation notes (P1-13): an output the plan does not declare (`path: null`) is fetched to
+  its output name. Destinations that nest (a file output at `x/y` and a tree at `x`) count as a
+  collision, like equal ones. A non-directory in the way below `DIR` is reported before anything
+  is written. `-o` also has the long form `--output-dir`. `ebs-out/` is added to `.gitignore`.
+  Shared fixture: `tests/helpers/outputs.py`.
+- Follow-up for P1-09: `fetch` does not `touch` `last_access`; if GC must not evict objects that
+  were just fetched, record that there.
+- Follow-up: `ebs outputs` does not accept step names as ACTION arguments (the spec says
+  `match_action`; `--step` covers it). `fetch` does, and the two could be aligned later.
