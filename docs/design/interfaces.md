@@ -734,7 +734,7 @@ class StaticToolchainResolver:  # reads .ebs/toolchains.yaml (P0); P1-07 adds th
 
 ## 14. CLI — `ebs.cli` (P0-16)
 
-Commands: `ebs plan`, `build`, `status`, `logs`, `rules list`; global `--debug` (tracebacks,
+Commands: `ebs plan`, `build`, `status`, `logs`, `outputs`, `fetch` (P1-13), `rules list`; global `--debug` (tracebacks,
 debug logs). Exit codes: § 11. Every command has `--json`; `NO_COLOR` disables colors. The
 working directory holds `.ebs/` (config lookup, `builds/`, executor logs); `-f` names the flow
 (default `./flow.yaml`). `ebs.cli._context.SiteServices` builds the CAS, metadata store,
@@ -806,5 +806,40 @@ old one to its end (rotation; or a retry, marked by a separator line), and stops
 action is final or the build has ended; an action that wrote nothing while followed gets its
 stored log. Limits at the size cap: `ebs.cli.logs` docstring. `--json`: `{"action_id", "build",
 "uuid", "state", "log"}`; `-f` with `--json` is a usage error.
+
+**`ebs outputs` / `ebs fetch`** (P1-13; `ebs.cli.outputs`):
+
+```
+ebs outputs [ACTION…] [--build B] [--step S] [--json]
+ebs fetch   ACTION[.OUTPUT]… [--build B] [-o|--output-dir DIR] [--flat] [--mode copy|hardlink|symlink] [--force] [--json]
+```
+
+Both need `[metadata].url` and only read (no cache, store, build record or CAS writes; no
+`last_access` touch). `outputs` lists one row per output of every action of the build with a
+result (`get_result`: done, cached and test-failed actions), in plan order then by output name;
+ACTION arguments (`match_action`: id or unique prefix) and `--step` filter. The declared
+logical `path` comes from the build's `final_plan` (else `plan`) in the CAS, matched by output
+name; an output the plan does not declare has `path: null` (`-` in the table). `--json` (v1):
+
+```json
+{"v": 1, "uuid": "…", "build": 7, "domain": "…",
+ "outputs": [{"action_id": "…", "step": "…", "state": "done|cached|failed",
+              "name": "report", "path": "lint/reports/alu.rpt|null", "type": "file|tree",
+              "size": 123, "digest": "sha256:…", "id": "sha256:…"}]}
+```
+
+`fetch` materializes each output (`CAS.materialize`, `--mode`, default `copy`; files read-only)
+at `DIR/<action dir>/<path>` (default `DIR` = `./ebs-out`; `--flat`: `DIR/<path>`; an output
+without a declared path uses its name). `<action dir>` is the action id with `%` → `%25` and
+`/` → `%2F` (`.`/`..` fully encoded). An argument is an exact action id, else a step name (all
+its actions), else a unique prefix; only if none matches is it split at its last `.` into
+ACTION and OUTPUT. Before anything is written, every destination is checked: inside `DIR` after
+normalization and through no symlink leaving it, no two the same (with `--flat`: "drop
+--flat"), not existing unless `--force` (removes it first), and every object present in the
+CAS. Errors (exit 2): unknown/ambiguous action, unknown output (lists the action's outputs),
+no result yet (states the action's state), no `[metadata].url`; an object missing from the CAS
+exits 3 ("may have been garbage-collected; `ebs build --no-cache <step>`"). Text: one line per
+output, `<action_id>.<name> -> <dest>`. `--json`: `{"v": 1, "uuid", "build", "fetched":
+[{"action_id", "name", "digest", "dest"}]}` (`dest` as printed: `DIR` as given).
 
 **`ebs rules list --json`**: `{"v": 1, "rules": [{"kind", "version", "impl"}]}`, sorted by kind.

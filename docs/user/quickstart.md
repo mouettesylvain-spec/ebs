@@ -80,6 +80,19 @@ counter: 0 violation(s)
 0 violation(s)
 ```
 
+The runner deletes its scratch directory, so the reports exist only in the CAS. `ebs outputs`
+lists what the build produced; `ebs fetch` copies outputs into `./ebs-out/<action>/<path>`
+(`--flat` drops the per-action directory; a step name fetches all its actions):
+
+```console
+$ ebs fetch lint --flat
+lint[block=alu].report -> ebs-out/lint/reports/alu.rpt
+lint[block=counter].report -> ebs-out/lint/reports/counter.rpt
+$ cat ebs-out/lint/reports/alu.rpt
+lint report (fake-lint 1)
+0 violation(s)
+```
+
 Nothing changed, so the second build runs nothing: every action is a cache hit.
 
 ```console
