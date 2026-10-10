@@ -426,6 +426,10 @@ class RulePlugin(Protocol):
 
 `Classification` = `PASSED | FAILED | INFRA(reason)`; rules decide e.g. that a Questa license
 checkout error is INFRA, a UVM_ERROR is FAILED. Plugins register via entry point group `ebs.rules`.
+The runner calls `classify` once per run, after the tool exits and before it collects the
+outputs, with the outputs that exist (name -> path in the work dir); a rule may finalize an
+output file there (P1-08: `questa.sim` writes its `result.json`), and what is then on disk is
+what gets collected. `summarize` runs after collection.
 
 Supporting types (P0-12):
 
@@ -471,6 +475,23 @@ class RuleRegistry:                                  # ebs.rules.registry
   `MAKEFLAGS=-j$EBS_CPUS`), `tcl` (`command: [tool, script, args…]` ⇒ `tool .ebs/ebs_main.tcl args…`,
   which sources `.ebs/ebs_params.tcl` with `set ::ebs(name) {value}` and then the script;
   values with characters above U+FFFF are a RuleError, since Tcl 8.6 cannot represent them).
+- Questa rule pack (`ebs.rules.questa`, P1-08): `questa.compile` (`vlib` + `vlog`/`vcom` per
+  library; params `lib`, `lang`, `vlog_opts`, `vcom_opts`; inputs `filelist`/`files`; output
+  `worklib`), `questa.opt` (`vlib` + `vopt … <top>… -o opt`; params `top`, `vopt_opts`; output
+  `model`) and `questa.sim` (`vsim -c -batch … -sv_seed`; params `seed`, `test`, `plusargs`,
+  `vsim_opts`; input `model`; outputs `result`, optional `cov`). Each runs a generated
+  `.ebs/questa_*.sh` with `-modelsimini modelsim.ini` (at the work-dir root, so relative library
+  paths mean the same to the tools as to the runner); every `${steps.…}` input other than
+  `filelist`/`files` (compile) and `model` (sim) is an upstream library, mapped under the
+  producer's `lib` matrix value (or its step name without a matrix), so `questa.compile`
+  requires its `lib` param to equal that name. Pass a sim step the libraries its model was
+  optimized from as well as `model`. Generated
+  `worklib`/`model` outputs are `deterministic: false`. `questa.sim` writes a stub
+  `result.json` before `exec vsim`; its `classify` (runner side, before outputs are collected)
+  parses the `transcript` (`ebs.rules.questa.transcript`) and replaces the stub with the final,
+  timestamp-free document. PASSED iff exit 0, no fatals, UVM_ERROR = 0 and a `$finish` marker:
+  a bare `** Error` (e.g. an SVA `$error`) is counted but does not fail a test. Exit 126/127
+  (tool not found) and the tools' own `** Fatal: (SIG…)` crash reports are INFRA.
 - The planner merges `env`/`inputs`/`outputs`/`config_files` into the `ActionSpec` and puts
   `runtime_env` in a non-key field (P0-08); declared and generated names must not collide.
 

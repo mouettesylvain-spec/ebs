@@ -1,0 +1,12 @@
+# UVM_INFO @ 0: reporter [RNTST] Running test cfg_test...
+# UVM_FATAL tb/env.sv(31) @ 0: uvm_test_top.env [NOVIF] virtual interface must be set for vif_3
+#
+# --- UVM Report Summary ---
+#
+# ** Report counts by severity
+# UVM_INFO :    1
+# UVM_WARNING :    0
+# UVM_ERROR :    0
+# UVM_FATAL :    1
+# ** Note: $finish    : uvm_root.svh(517)
+#    Time: 0 ns  Iteration: 125  Instance: /tb_top

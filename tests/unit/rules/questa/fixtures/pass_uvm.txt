@@ -1,0 +1,22 @@
+# vsim -c -batch -lib model/elab -sv_seed 7 +UVM_TESTNAME=smoke_test opt
+# Start time: 10:00:00 on Jan 01,2026
+# Loading sv_std.std
+# Loading work.tb_top(fast)
+# UVM_INFO @ 0: reporter [RNTST] Running test smoke_test...
+# UVM_INFO tb/env.sv(88) @ 1500: uvm_test_top.env [ENV] 42 transactions checked
+# UVM_WARNING tb/env.sv(91) @ 1500: uvm_test_top.env [ENV] slow response 0x3f
+#
+# --- UVM Report Summary ---
+#
+# ** Report counts by severity
+# UVM_INFO :    2
+# UVM_WARNING :    1
+# UVM_ERROR :    0
+# UVM_FATAL :    0
+# ** Report counts by id
+# [ENV]     2
+# [RNTST]     1
+# ** Note: $finish    : uvm_root.svh(517)
+#    Time: 1500 ns  Iteration: 61  Instance: /tb_top
+# End time: 10:00:02 on Jan 01,2026, Elapsed time: 0:00:02
+# Errors: 0, Warnings: 1

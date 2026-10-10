@@ -1,0 +1,14 @@
+# UVM_INFO @ 0: reporter [RNTST] Running test rand_test...
+# UVM_ERROR /proj/cpu/tb/scoreboard.sv(142) @ 12500: uvm_test_top.env.sb [SCB] data mismatch at 0x1f00: expected 'h12 got 'h13
+# UVM_ERROR /proj/cpu/tb/scoreboard.sv(142) @ 13700: uvm_test_top.env.sb [SCB] data mismatch at 0x1f04: expected 'h00 got 'h01
+#
+# --- UVM Report Summary ---
+#
+# ** Report counts by severity
+# UVM_INFO :    1
+# UVM_WARNING :    0
+# UVM_ERROR :    2
+# UVM_FATAL :    0
+# ** Note: $finish    : uvm_root.svh(517)
+#    Time: 20000 ns  Iteration: 61  Instance: /tb_top
+# Errors: 0, Warnings: 0

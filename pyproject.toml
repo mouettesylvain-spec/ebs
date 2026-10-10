@@ -52,6 +52,9 @@ ebs-runner = "ebs.runner.main:main"
 shell = "ebs.rules.shell:ShellRule"
 make = "ebs.rules.make:MakeRule"
 tcl = "ebs.rules.tcl:TclRule"
+"questa.compile" = "ebs.rules.questa.compile:QuestaCompileRule"
+"questa.opt" = "ebs.rules.questa.opt:QuestaOptRule"
+"questa.sim" = "ebs.rules.questa.sim:QuestaSimRule"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ebs"]
