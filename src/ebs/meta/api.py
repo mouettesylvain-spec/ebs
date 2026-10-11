@@ -33,6 +33,8 @@ from ebs.core.errors import DigestError, MetadataError
 from ebs.flow.model import NAME_PATTERN
 
 __all__ = [
+    "API_PREFIX",
+    "BATCH_MAX",
     "DIGEST_SQL_PATTERN",
     "DOMAIN_PATTERN",
     "EVENT_TYPE_PATTERN",
@@ -40,20 +42,30 @@ __all__ = [
     "TERMINAL_STATES",
     "TOUCH_INTERVAL_S",
     "TRANSITIONS",
+    "ActionBatch",
     "ActionId",
+    "ActionList",
     "ActionRow",
     "ActionState",
     "ActionUpdate",
     "BuildCreate",
+    "BuildFinish",
     "BuildId",
     "BuildStatus",
     "BuildView",
+    "CacheHits",
     "CacheMode",
+    "Changed",
+    "CreatedBuild",
+    "DigestBatch",
     "DigestField",
+    "ErrorBody",
     "Event",
     "EventType",
     "InfraReason",
     "MetadataStore",
+    "OptionalDigest",
+    "OptionalResult",
     "OutputResult",
     "PendingReason",
     "RegisterOutcome",
@@ -62,6 +74,7 @@ __all__ = [
     "RunnerInfo",
     "ToolchainCreate",
     "ToolchainRecord",
+    "StateChange",
     "check_domain",
     "check_transition",
 ]
@@ -484,3 +497,97 @@ class MetadataStore(Protocol):
     def touch_toolchain(self, toolchain_id: Digest) -> None:
         """Mark a toolchain as used now (at most once per hour); unknown ids are ignored."""
         ...
+
+# --- HTTP wire models (P1-06) --------------------------------------------------------------------
+# The metadata service (`ebs.meta.service`) and its client (`ebs.meta.client`) exchange the models
+# above plus these envelopes; both sides parse JSON with `model_validate_json` (strict models
+# accept ISO datetimes and UUID strings only in JSON mode).
+
+API_PREFIX: Final = "/api/v1"
+"""Every REST route of the metadata service lives below this prefix."""
+
+BATCH_MAX: Final = 500
+"""Most items one batch request may carry (`add_actions`, `touch`, `cache_get_many`)."""
+
+_WIRE = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+
+class ActionBatch(BaseModel):
+    """Body of `POST /builds/{id}/actions`: at most `BATCH_MAX` rows, added all or nothing."""
+
+    model_config = _WIRE
+
+    actions: Annotated[list[ActionRow], Field(max_length=BATCH_MAX)]
+
+
+class DigestBatch(BaseModel):
+    """Body of `touch` and `cache_get_many`: at most `BATCH_MAX` digests."""
+
+    model_config = _WIRE
+
+    digests: Annotated[list[DigestField], Field(max_length=BATCH_MAX)]
+
+
+class StateChange(BaseModel):
+    """Body of `set_action_state`; the store validates `state` and `fields` (`ActionUpdate`)."""
+
+    model_config = _WIRE
+
+    state: Annotated[StrictStr, Field(max_length=64)]
+    fields: dict[StrictStr, object] = Field(default_factory=dict)
+
+
+class BuildFinish(BaseModel):
+    """Body of `finish_build`; the store checks that `status` is final."""
+
+    model_config = _WIRE
+
+    status: Annotated[StrictStr, Field(max_length=64)]
+
+
+class CreatedBuild(BaseModel):
+    model_config = _WIRE
+
+    id: StrictInt
+
+
+class Changed(BaseModel):
+    """Whether a `cache_put` inserted or a `cache_replace_failed` replaced the entry."""
+
+    model_config = _WIRE
+
+    changed: StrictBool
+
+
+class OptionalResult(BaseModel):
+    model_config = _WIRE
+
+    result: ResultManifest | None
+
+
+class OptionalDigest(BaseModel):
+    model_config = _WIRE
+
+    digest: DigestField | None
+
+
+class ActionList(BaseModel):
+    model_config = _WIRE
+
+    actions: list[ActionRow]
+
+
+class CacheHits(BaseModel):
+    """Response of `cache_get_many`: only the keys that hit, by their digest string."""
+
+    model_config = _WIRE
+
+    results: dict[StrictStr, ResultManifest]
+
+
+class ErrorBody(BaseModel):
+    """Every error response: an actionable message (`MetadataError` text on the client)."""
+
+    model_config = _WIRE
+
+    detail: StrictStr

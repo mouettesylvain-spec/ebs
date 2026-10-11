@@ -176,12 +176,13 @@ class SiteServices:
             if required:
                 raise ConfigError(
                     "this command needs the metadata store: set [metadata].url in ebs.toml "
-                    "(postgresql+psycopg://user@host/db)"
+                    "(https://ebs-meta.example, or postgresql+psycopg://user@host/db for "
+                    "development)"
                 )
             return None
-        from ebs.meta.pg import PgMetadataStore  # SQLAlchemy only when a store is configured
+        from ebs.meta.factory import open_metadata_store  # backend imported only when configured
 
-        self._store = PgMetadataStore.from_config(section, clock=self.clock)
+        self._store = open_metadata_store(section, clock=self.clock)
         return self._store
 
     def close(self) -> None:

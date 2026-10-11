@@ -135,6 +135,11 @@ class PgMetadataStore:
         return cls(engine, clock=clock)
 
     @property
+    def engine(self) -> sa.Engine:
+        """The pooled engine (the metadata service shares it for tokens and readiness)."""
+        return self._engine
+
+    @property
     def pool_size(self) -> int:
         pool = self._engine.pool
         return pool.size() if isinstance(pool, sa.pool.QueuePool) else 0

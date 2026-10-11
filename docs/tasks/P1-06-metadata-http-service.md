@@ -1,6 +1,6 @@
 # P1-06 — Metadata HTTP service and client
 
-Status: todo · Phase: 1 · Depends on: P0-10 · Parallel-safe with: P0 tasks after P0-10 · Size: L
+Status: in-progress · Phase: 1 · Depends on: P0-10 · Parallel-safe with: P0 tasks after P0-10 · Size: L
 
 ## Goal
 Runners on compute nodes and CLIs on login nodes talk to shared state through a small FastAPI service
@@ -47,3 +47,26 @@ Runners on compute nodes and CLIs on login nodes talk to shared state through a 
 
 ## Notes
 D1 must be confirmed by the human before merge (MUNGE availability on login nodes).
+
+Implementation notes (P1-06):
+- D1 default implemented as specified: `X-EBS-Munge` verified by `unmunge --numeric` (uid → NSS
+  name), bearer tokens hashed in `ebs.api_tokens` (revision 0005; the table moved from phase 2 to
+  phase 1 in data-model.md, with an extra `team` column). Both schemes sit behind the
+  `Authenticator` protocol and are switchable in `[meta_service]` (`munge`, `bearer`).
+- R4 interpretation: "CI tokens for their team" = a `ci` token whose `team` equals the build's
+  `project` (the flow's project is the team's SLURM account). `service` tokens never write builds.
+- Dependencies added (all on the overview.md allowed list): runtime `fastapi`, `uvicorn`, `httpx`;
+  dev `respx`. FastAPI's own body parsing is bypassed (`deps.body`): it validates in Python mode,
+  where the strict `ebs.meta.api` models refuse ISO datetimes and UUID strings.
+- `add_actions` over HTTP is atomic per batch of 500, not for the whole call (documented in
+  interfaces.md § 6.1); duplicates are refused client-side before anything is sent.
+- Local integration runs used PostgreSQL 16 (no Docker daemon in the session); the target is 17.
+
+Follow-ups:
+- Add `cache_get_many` to the `MetadataStore` protocol (one query in PG) and make the driver use
+  it; today it exists only on `HttpMetadataStore` and the service loops over `cache_get`.
+- `cache_replace_failed` is not retried after a 5xx (its False answer would be ambiguous); an
+  idempotency key would make it safely retryable.
+- Starlette 1.x deprecates `httpx` in its TestClient (in favour of `httpx2`); the tests silence the
+  warning. Revisit when httpx2 is stable.
+- P2-01: put domain membership into `authorize()`; P2-05: OIDC for the dashboard.

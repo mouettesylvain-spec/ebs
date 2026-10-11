@@ -27,6 +27,7 @@ __all__ = [
     "SCHEMA",
     "action_cache",
     "actions",
+    "api_tokens",
     "blobs",
     "builds",
     "domains",
@@ -234,4 +235,20 @@ events = sa.Table(
     sa.CheckConstraint(f"type ~ '{EVENT_TYPE_PATTERN}'", name="type_valid"),
     sa.CheckConstraint("jsonb_typeof(data) = 'object'", name="data_object"),
     sa.Index(None, "build_id", "id"),
+)
+
+api_tokens = sa.Table(  # bearer tokens of the metadata service (P1-06); only the hash is stored
+    "api_tokens",
+    metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("principal", sa.Text, nullable=False),
+    sa.Column("kind", sa.Text, nullable=False),
+    sa.Column("team", sa.Text, nullable=True),
+    sa.Column("hash", sa.Text, nullable=False, unique=True),
+    sa.Column("created_at", _TS, nullable=False),
+    sa.Column("expires_at", _TS, nullable=True),
+    sa.Column("revoked_at", _TS, nullable=True),
+    sa.CheckConstraint("kind IN ('user', 'ci', 'service')", name="kind_valid"),
+    _digest_check("hash"),
+    sa.Index(None, "principal"),
 )
