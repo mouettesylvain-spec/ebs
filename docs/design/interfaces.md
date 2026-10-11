@@ -337,7 +337,7 @@ class MetadataStore(Protocol):
 ```
 
 Implementations: `PgMetadataStore` (SQLAlchemy), `InMemoryMetadataStore` (tests), `HttpMetadataStore`
-(client of the FastAPI service, P1). All three must pass `tests/contract/test_metadata_store.py`.
+(client of the FastAPI service, P1-06, § 6.1). All three must pass `tests/contract/test_metadata_store.py`.
 Every method is one short transaction and raises `MetadataError`; models are frozen, strict and
 re-validated on write (values must also pass `canonical_json`).
 
@@ -411,6 +411,78 @@ class ResultManifest(BaseModel):          # frozen
 ```
 
 Infrastructure failures never produce a ResultManifest; they produce an `InfraFailure` event.
+
+### 6.1 Metadata HTTP service and client (P1-06)
+
+`ebs.meta.service` (L4) serves a MetadataStore over REST; `ebs.meta.client.HttpMetadataStore` (L2)
+is the drop-in client and passes the contract suite (`http` over the memory store, `http-pg` over
+PostgreSQL). `ebs.meta.factory.open_metadata_store(section)` picks the client for an `http(s)`
+`[metadata].url` and `PgMetadataStore` for a `postgresql` one (development, and the service).
+
+Routes, under `API_PREFIX = "/api/v1"`; bodies and responses are `ebs.meta.api` models, parsed
+in JSON mode (`model_validate_json`):
+
+| Method and path | Store call | Body → response |
+| --- | --- | --- |
+| `GET /domains/{d}/cache/{key}` | `cache_get` | → `OptionalResult` |
+| `PUT /domains/{d}/cache/{key}` | `cache_put` | `ResultManifest` → `Changed` |
+| `POST /domains/{d}/cache/{key}/replace-failed` | `cache_replace_failed` | `ResultManifest` → `Changed` |
+| `POST /domains/{d}/cache/lookup` | `cache_get` per key | `DigestBatch` → `CacheHits` (hits only) |
+| `POST /domains/{d}/touch` | `touch` | `DigestBatch` → 204 |
+| `GET /domains/{d}/outputs/{id}` | `resolve_output` | → `OptionalDigest` |
+| `POST /builds` | `create_build` | `BuildCreate` → `CreatedBuild` |
+| `GET /builds/{b}` | `get_build` | → `BuildView` |
+| `POST /builds/{b}/actions` | `add_actions` | `ActionBatch` → 204 |
+| `GET /builds/{b}/actions[?state=]` | `list_actions` | → `ActionList` |
+| `POST /builds/{b}/actions/{a}/state` | `set_action_state` | `StateChange` → 204 |
+| `PUT /builds/{b}/actions/{a}/result` | `record_result` | `ResultManifest` → 204 |
+| `GET /builds/{b}/actions/{a}/result` | `get_result` | → `OptionalResult` |
+| `POST /builds/{b}/finish` | `finish_build` | `BuildFinish` → 204 |
+| `POST /builds/{b}/events` | `emit` | `Event` → 204 |
+| `POST /toolchains` | `register_toolchain` | `ToolchainRegistration` (manifest base64) → `RegisterOutcome` |
+| `GET /toolchains[?module=&current_only=]` | `list_toolchains` | → `ToolchainList` |
+| `GET /toolchains/current?module=` | `current_toolchain` | → `ToolchainList` (0 or 1) |
+| `GET /toolchains/{id}` | `get_toolchain` | → `ToolchainList` (0 or 1) |
+| `GET /toolchains/{id}/manifest` | `toolchain_manifest` | → `ToolchainManifest` |
+| `POST /toolchains/{id}/touch` | `touch_toolchain` | → 204 |
+| `GET /whoami` | — | → caller's principal |
+
+`/healthz` (process) and `/readyz` (database reachable, schema at the migrations' head, else 503)
+need no credentials. Errors are `ErrorBody {detail}`: 401 missing or invalid credentials, 403
+not allowed, 422 invalid request, 409 any other `MetadataError` (the store's message), 503 a
+database outage, 500 a bug. The client raises `MetadataError` with the detail.
+
+- **Batches:** `ActionBatch` and `DigestBatch` carry at most `BATCH_MAX = 500` items (422
+  otherwise). `HttpMetadataStore.add_actions` refuses duplicate ids over the whole sequence before
+  sending and then sends batches of 500; each batch is atomic, but a failure in a later batch
+  (build finished meanwhile, an id added concurrently) leaves the earlier batches added.
+  `HttpMetadataStore.cache_get_many(domain, keys)` (client only, not in the protocol yet) looks
+  keys up 500 at a time.
+- **Retries:** each request times out after 10 s (`[metadata].timeout_s`). Connect errors are
+  retried for every call; 5xx and read timeouts only for idempotent calls (reads, `cache_put`,
+  `record_result`, `touch`, `cache_get_many`, `register_toolchain`, `touch_toolchain`), with exponential backoff (0.5 s doubling, capped at
+  8 s, `[metadata].retries = 4`). Each attempt sends fresh credentials. A retried `cache_put`
+  whose first attempt landed returns False.
+- **Authentication (D1, decided 2026-10-11):** MUNGE for users on cluster hosts, bearer tokens
+  for CI and services. `X-EBS-Munge` carries a credential whose payload is
+  `ebs.meta.client.munge_payload(audience, method, path)` = compact JSON
+  `["ebs-meta/1", audience, METHOD, path]` (`path` below `API_PREFIX`, percent-decoded;
+  `audience` = `[meta_service].audience`, by default the `host[:port]` of the client's
+  `[metadata].url`). The service decodes it with `unmunge --numeric` (replays, expired and
+  rewound credentials refused), parses only the metadata block, takes exactly `LENGTH` payload
+  characters, refuses a payload other than the request's (so credentials seen in other MUNGE
+  traffic, or minted for another request, are useless), and maps the uid to a user name via NSS.
+  `Authorization: Bearer <token>`: only `sha256:` hashes stored in `api_tokens`, kinds
+  `user | ci | service`. Pluggable `Authenticator`s (`authenticate(RequestInfo)`), tried in
+  order by `ChainAuthenticator`.
+- **Authorization (R4):** every API route calls the one hook `ServiceDeps.authorize(principal,
+  op, *, domain, owner)` with `op = read | cache_write | build_write | toolchain_write`, the
+  domain, and the build's `BuildOwner(user_name, project, domain, build)` for build routes. The
+  default `Policy(toolchain_admins)`: a build write is allowed to its owner (`principal ==
+  user_name`) or to a `ci` token whose `team` is the build's project, and `service` tokens never
+  write builds; `toolchain_write` (registering makes a toolchain current for every later build)
+  only to `service` tokens and the users in `[meta_service].toolchain_admins`; everything else
+  is open to any authenticated principal until P2-01 adds domain membership in this hook.
 
 ## 7. Rules — `ebs.rules.api`
 

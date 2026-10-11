@@ -64,7 +64,9 @@ def test_copy_is_what_gets_analysed(ebs_copy: Path) -> None:
         ("plan/_violation.py", "import ebs.meta.service\n", "L0-L3 do not import meta.service"),
         ("toolchain/_violation.py", "import ebs.driver\n", "toolchain (at most L3)"),
         ("plan/_violation.py", "import ebs.toolchain.registry\n", "L0-L2 only use toolchain"),
-        ("meta/service.py", "import ebs.cli\n", "Nothing imports cli"),
+        ("meta/service/_violation.py", "import ebs.cli\n", "Nothing imports cli"),
+        # P1-06: the runner reaches meta.client, so the client must not import the service.
+        ("meta/client.py", "import ebs.meta.service\n", "runner does not import"),
     ],
 )
 def test_violation_detected(
@@ -72,9 +74,12 @@ def test_violation_detected(
 ) -> None:
     # Modules from later tasks: contracts naming a missing module are ignored, so create them.
     for placeholder in ("plan/planner.py", "meta/service.py", "toolchain/registry.py"):
-        (ebs_copy / placeholder).write_text('"""placeholder"""\n')
+        path = ebs_copy / placeholder
+        if not path.exists() and not path.with_suffix("").is_dir():  # P1-06: meta/service/
+            path.write_text('"""placeholder"""\n')
     (ebs_copy / module).write_text(source)
     assert _run_linter() != 0
     out = ANSI.sub("", capsys.readouterr().out)  # FORCE_COLOR in the environment adds codes
-    broken = [line for line in out.splitlines() if line.endswith("BROKEN")]
+    # "<contract> BROKEN", or "<contract> BROKEN (n ignored imports)" once ignores match (P1-06).
+    broken = [line for line in out.splitlines() if re.search(r" BROKEN( \(.*\))?$", line)]
     assert any(line.startswith(contract) for line in broken), broken

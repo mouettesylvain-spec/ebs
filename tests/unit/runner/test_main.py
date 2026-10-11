@@ -6,6 +6,7 @@ import pytest
 
 from ebs.cas.fs import FsCAS
 from ebs.core.digest import hash_bytes
+from ebs.core.errors import ConfigError
 from ebs.runner.main import EXIT_OK, EXIT_USAGE, EXIT_VERIFY, RunRequest, main
 from tests.helpers.runner import Harness, shell_spec, store_plan
 
@@ -166,3 +167,21 @@ def test_scratch_create_survives_concurrent_build_dir_removal(
     monkeypatch.setattr(Path, "mkdir", racing_mkdir)
     s = stage.Scratch.create(tmp_path, "7", "a")
     assert s.work.is_dir()
+
+
+# R7 (P1-06): an http(s) [metadata].url selects the HTTP client; PostgreSQL stays for dev.
+def test_selects_http_client() -> None:
+    from ebs.meta.client import HttpMetadataStore
+    from ebs.meta.pg import PgMetadataStore
+    from ebs.runner.main import _open_store
+
+    for url in ("https://meta.example.invalid", "http://meta.example.invalid:8080"):
+        store = _open_store({"url": url, "auth": "munge"})
+        assert isinstance(store, HttpMetadataStore)
+        assert store.base_url == url
+        store.close()
+    pg = _open_store({"url": "postgresql+psycopg://ebs@db.example.invalid/ebs"})
+    assert isinstance(pg, PgMetadataStore)
+    pg.close()
+    with pytest.raises(ConfigError, match=r"\[metadata\]\.url"):
+        _open_store({"url": "ftp://meta.example.invalid"})

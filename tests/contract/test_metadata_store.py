@@ -1,8 +1,10 @@
 """MetadataStore contract suite (docs/design/interfaces.md § 6).
 
 Every implementation must pass it: `memory` runs as a unit test, `pg` as an integration test.
-P1-06 adds `http` to `BACKENDS` with an `Inspector` over the service's backing store.
-The inspector reads state the protocol does not expose (hit counters, edges) and injects faults.
+`http` (P1-06 R1) is `HttpMetadataStore` talking to the FastAPI service in-process over a memory
+backing store (unit); `http-pg` serves the PostgreSQL store (integration). Their `Inspector` is the
+backing store's. The inspector reads state the protocol does not expose (hit counters, edges) and
+injects faults.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ from ebs.meta.api import (
 from ebs.meta.memory import InMemoryMetadataStore
 from ebs.meta.pg import PgMetadataStore
 from ebs.toolchain.model import toolchain_id
+from tests.helpers.meta_http import make_service
 from tests.helpers.pg import url_string
 
 Edge = tuple[str, str, str, str, str | None]  # action_key, direction, logical_path, id, content
@@ -184,24 +187,39 @@ class PgInspector:
 BACKENDS = [
     pytest.param("memory", id="memory"),
     pytest.param("pg", id="pg", marks=pytest.mark.integration),
+    pytest.param("http", id="http"),  # R1 (P1-06)
+    pytest.param("http-pg", id="http-pg", marks=pytest.mark.integration),  # R1 (P1-06)
 ]
 
 
 @pytest.fixture(params=BACKENDS)
 def h(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterator[Harness]:
     clock = FakeClock()
-    if request.param == "memory":
+    backend: str = request.param
+    if backend in ("memory", "http"):
         mem = InMemoryMetadataStore(clock=clock)
-        yield Harness(mem, clock, MemoryInspector(mem, monkeypatch))
+        harness = Harness(mem, clock, MemoryInspector(mem, monkeypatch))
+        if backend == "memory":
+            yield harness
+        else:
+            yield _over_http(harness)
         return
     url: URL = request.getfixturevalue("pg_url")
     pg = PgMetadataStore.from_config({"url": url_string(url)}, clock=clock)
     inspector = PgInspector(url)
     try:
-        yield Harness(pg, clock, inspector)
+        harness = Harness(pg, clock, inspector)
+        yield harness if backend == "pg" else _over_http(harness)
     finally:
         pg.close()
         inspector.close()
+
+
+def _over_http(backing: Harness) -> Harness:
+    """The same harness with the store replaced by an HTTP client of a service over it."""
+    # alice registers the toolchains of the P1-07 tests: make her a toolchain admin.
+    service = make_service(backing.store, toolchain_admins=("alice",))
+    return Harness(service.store(), backing.clock, backing.inspect)
 
 
 @pytest.fixture

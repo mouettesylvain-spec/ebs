@@ -1,0 +1,18 @@
+# ebs.toml of the metadata service host (P1-06). Copy to config.toml and `chmod 600` it: it holds
+# the database password. Clients never see it; they use [metadata].url = "https://ebs-meta.example".
+
+[metadata]
+# Through PgBouncer of deploy/postgres (hostname `pgbouncer` inside compose, port 6432).
+url = "postgresql+psycopg://ebs:CHANGE-ME@pgbouncer:6432/ebs?sslmode=require"
+pool_size = 10
+max_overflow = 10
+
+[meta_service]
+munge = true          # X-EBS-Munge credentials, verified with unmunge (decision D1)
+unmunge = "unmunge"
+# MUNGE credentials are bound to this name: the host[:port] of the URL clients use
+# ([metadata].url = "https://ebs-meta.example"), or their [metadata].audience.
+audience = "ebs-meta.example"
+bearer = true         # Authorization: Bearer tokens (python -m ebs.meta.service token create)
+# Users who may register toolchains (`ebs toolchain register`); service tokens may too.
+toolchain_admins = []
