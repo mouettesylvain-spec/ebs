@@ -78,6 +78,8 @@ def register_command(
         extra_roots=[r if r.is_absolute() else services.cwd / r for r in roots or []],
         timeout_s=timeout,
     )
+    for message in snap.warnings:
+        out.warn(message)
     reg = register(
         store,
         module=snap.module,

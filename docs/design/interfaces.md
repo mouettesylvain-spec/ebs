@@ -817,8 +817,12 @@ class RegistryToolchainResolver:  # ToolchainResolver over the store
   `<cmd> bash purge` then `<cmd> bash load <module>` (module name only ever an argument), with
   `base_env = {MODULESHOME, MODULEPATH}` from the caller. The module must be `<name>/<version>`.
   The recorded env is the **diff** against the same clean shell without the load (unset
-  variables are dropped); the caller's real HOME is normalized to `$HOME`, and a value naming
-  the registering user (as a whole word) is refused, so ids are user independent. Install roots:
+  variables are dropped), minus site variables matching `[runner]`'s default passthrough
+  (`LM_LICENSE_FILE`, `*_LICENSE_FILE`, `SLURM_*`: never in a key, the runner passes the
+  caller's). The caller's real HOME (and its realpath) is normalized to `$HOME` where a `:`-path
+  starts with it; a path element naming the registering user (as a whole word) is refused unless
+  it lies inside an install root (a service account owning the tool tree: warning only), so ids
+  are user independent. Install roots:
   existing absolute entries (split on `:`) of changed variables, a file by its directory, a
   `bin`/`lib`/`share`/`etc`… directory by its parent, skipping module bookkeeping variables
   (`MODULEPATH`, `LOADEDMODULES`, `_LMFILES_`, `__LMOD*`, `_ModuleTable*`, `LMOD_*`,
