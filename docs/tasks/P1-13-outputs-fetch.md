@@ -1,6 +1,6 @@
 # P1-13 — `ebs outputs` and `ebs fetch`
 
-Status: review · Phase: 1 · Depends on: P0-16 · Parallel-safe with: every P1 task except P1-10 (both add a CLI command; trivial merge in `cli/main.py`) · Size: S
+Status: done · Phase: 1 · Depends on: P0-16 · Parallel-safe with: every P1 task except P1-10 (both add a CLI command; trivial merge in `cli/main.py`) · Size: S
 
 ## Goal
 A user can list what a build produced and copy any output out of the CAS into a directory they

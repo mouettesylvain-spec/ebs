@@ -1,6 +1,6 @@
 # P1-11 — `ebs seeds gen`
 
-Status: review · Phase: 1 · Depends on: P0-05 · Size: S
+Status: done · Phase: 1 · Depends on: P0-05 · Size: S
 
 ## Goal
 Seeds are explicit table values (explicitness rule 1); a command generates them into the table so the

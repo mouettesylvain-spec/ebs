@@ -1,6 +1,6 @@
 # P1-08 — Questa rule pack and fake Questa tools
 
-Status: review · Phase: 1 · Depends on: P0-12 · Size: L
+Status: done · Phase: 1 · Depends on: P0-12 · Size: L
 
 ## Goal
 First-class `questa.compile`, `questa.opt` and `questa.sim` step kinds that generate correct command

@@ -1,6 +1,6 @@
 # P1-01 — SLURM CLI adapter and FakeSlurm
 
-Status: review · Phase: 1 · Depends on: P0-01 · Parallel-safe with: everything in P0 · Size: L
+Status: done · Phase: 1 · Depends on: P0-01 · Parallel-safe with: everything in P0 · Size: L
 
 ## Goal
 A typed, tested wrapper over `sbatch`, `squeue --json`, `sacct --json`, `scancel`, `scontrol`, and a

@@ -1,6 +1,6 @@
 # P1-06 — Metadata HTTP service and client
 
-Status: review · Phase: 1 · Depends on: P0-10 · Parallel-safe with: P0 tasks after P0-10 · Size: L
+Status: done · Phase: 1 · Depends on: P0-10 · Parallel-safe with: P0 tasks after P0-10 · Size: L
 
 ## Goal
 Runners on compute nodes and CLIs on login nodes talk to shared state through a small FastAPI service
