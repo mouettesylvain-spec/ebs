@@ -327,6 +327,13 @@ class MetadataStore(Protocol):
     def renew_lease(self, lease: LeaseId, ttl_s: int) -> None: ...
     # events
     def emit(self, event: Event) -> None: ...
+    # toolchain registry (P1-07)
+    def register_toolchain(self, spec: ToolchainCreate, manifest: bytes) -> RegisterOutcome: ...
+    def get_toolchain(self, toolchain_id: Digest) -> ToolchainRecord | None: ...
+    def current_toolchain(self, module: str) -> ToolchainRecord | None: ...
+    def list_toolchains(self, *, module: str | None = None, current_only: bool = False) -> list[ToolchainRecord]: ...
+    def toolchain_manifest(self, toolchain_id: Digest) -> bytes | None: ...
+    def touch_toolchain(self, toolchain_id: Digest) -> None: ...
 ```
 
 Implementations: `PgMetadataStore` (SQLAlchemy), `InMemoryMetadataStore` (tests), `HttpMetadataStore`
@@ -374,6 +381,20 @@ re-validated on write (values must also pass `canonical_json`).
   pinned, action_counts` (per-state counts for `ebs status`).
 - `Event` (§ 10) is defined in `ebs.meta.api`, because meta (L2) cannot import the driver (L4);
   `ebs.driver.events` re-exports it.
+- Toolchain registry (P1-07, migration `0004`). `ToolchainCreate = {id, name, module, version,
+  fingerprint, env: {[A-Za-z_][A-Za-z0-9_]*: str}, install_roots: [absolute path, ≥1],
+  registered_by}`; `ToolchainRecord` adds `registered_at`, `superseded_by`, `last_used_at`, the
+  only fields that ever change. `id` must be `toolchain_id(module, version, fingerprint, env)`
+  (§ 13): the registry computes it and re-checks it on every read; stores do not (the runner
+  imports the store and must not import `ebs.toolchain`). `register_toolchain` inserts a new id
+  with its manifest (opaque bytes, table `toolchain_manifests`), or leaves an existing id and
+  its manifest untouched; either way that id becomes the module's current toolchain: other
+  non-superseded rows of the module get `superseded_by = id`, and a superseded id registered
+  again (reverted install) is un-superseded. `RegisterOutcome = {inserted, superseded: ids}`.
+  Registrations of one module are serialized (PG: transaction advisory lock on the module), so a
+  module has at most one current row. `current_toolchain` = the non-superseded row;
+  `list_toolchains` orders by (module, registered_at, id); `touch_toolchain` sets
+  `last_used_at` with the `touch` throttle and ignores unknown ids.
 
 ```python
 class ResultManifest(BaseModel):          # frozen
@@ -740,6 +761,31 @@ class ToolchainResolver(Protocol):
     def resolve(self, name: str, module: str) -> Toolchain: ...
 class StaticToolchainResolver:  # reads .ebs/toolchains.yaml (P0); P1-07 adds the registry
     def __init__(self, path: Path) -> None: ...
+def fingerprint_entries(entries: Sequence[FingerprintEntry]) -> Digest: ...  # P1-07: digest of scan_roots output
+
+# ebs.toolchain.modules (P1-07, L3)
+@dataclass(frozen=True, slots=True)
+class ModuleSystem: flavour: Literal["envmodules", "lmod"]; version: str; command: Path; home: Path
+def detect_module_system(environ: Mapping[str, str], *, runner: EnvRunner = run_subprocess,
+                         timeout_s: float = 30.0) -> ModuleSystem: ...
+@dataclass(frozen=True, slots=True)
+class ModuleSnapshot: module: str; version: str; env: Mapping[str, str]; install_roots: tuple[Path, ...]; system: ModuleSystem
+def snapshot_module(module: str, *, system: ModuleSystem, environ: Mapping[str, str], user: str,
+                    extra_roots: Sequence[Path] = (), timeout_s: float = 120.0,
+                    runner: EnvRunner = run_subprocess) -> ModuleSnapshot: ...
+def derive_install_roots(env, *, modulepath=(), extra=()) -> tuple[Path, ...]: ...
+
+# ebs.toolchain.registry (P1-07, L3)
+def register(store: MetadataStore, *, module: str, version: str, env: Mapping[str, str],
+             install_roots: Sequence[Path], user: str, content_hash=default_content_hash) -> Registration: ...
+    # Registration: toolchain, status (registered|unchanged|reinstated), previous, superseded,
+    # changes (first DRIFT_LIST_LIMIT=20 FileChange by path), changes_total, env_changes
+def format_drift(reg: Registration) -> str | None: ...
+def check(store: MetadataStore, *, days: int, now: datetime, content_hash=...) -> list[CheckResult]: ...
+class RegistryToolchainResolver:  # ToolchainResolver over the store
+    def __init__(self, store: MetadataStore) -> None: ...
+    def resolve(self, name: str, module: str) -> Toolchain: ...   # current id; touches last_used_at
+    def get(self, toolchain_id: Digest, *, name: str) -> Toolchain: ...  # any id, superseded too
 ```
 
 - **Fingerprint**: SHA-256 over a header line `["ebs-toolchain-fingerprint", 1]` and one
@@ -765,10 +811,33 @@ class StaticToolchainResolver:  # reads .ebs/toolchains.yaml (P0); P1-07 adds th
   walking the roots. Fingerprints are computed once per resolver. A tree checked out from version
   control gets fresh mtimes in every clone, so demos and fixtures that need a stable id across
   checkouts pin `fingerprint`.
+- **Module snapshots (P1-07)**: Environment Modules ≥ 4 (`$MODULESHOME/libexec/modulecmd.tcl`)
+  or Lmod (`$LMOD_CMD`, else `$MODULESHOME/libexec/lmod`), version from `<cmd> bash --version`.
+  `capture_env` runs `source <pkg>/module_load.bash <cmd> <module>`, which evals the output of
+  `<cmd> bash purge` then `<cmd> bash load <module>` (module name only ever an argument), with
+  `base_env = {MODULESHOME, MODULEPATH}` from the caller. The module must be `<name>/<version>`.
+  The recorded env is the **diff** against the same clean shell without the load (unset
+  variables are dropped), minus site variables matching `[runner]`'s default passthrough
+  (`LM_LICENSE_FILE`, `*_LICENSE_FILE`, `SLURM_*`: never in a key, the runner passes the
+  caller's). The caller's real HOME (and its realpath) is normalized to `$HOME` where a `:`-path
+  starts with it; a path element naming the registering user (as a whole word) is refused unless
+  it lies inside an install root (a service account owning the tool tree: warning only), so ids
+  are user independent. Install roots:
+  existing absolute entries (split on `:`) of changed variables, a file by its directory, a
+  `bin`/`lib`/`share`/`etc`… directory by its parent, skipping module bookkeeping variables
+  (`MODULEPATH`, `LOADEDMODULES`, `_LMFILES_`, `__LMOD*`, `_ModuleTable*`, `LMOD_*`,
+  `__MODULES_*`, `MODULES_*`), system dirs and modulefile dirs; plus `--root`s; nested roots
+  collapse into their ancestor.
+- **Registry (P1-07)**: the manifest is `zlib(concat(FingerprintEntry.line()))`; drift lists
+  compare manifests by (root, path). Planning without `.ebs/toolchains.yaml` uses
+  `RegistryToolchainResolver` when `[metadata].url` is set; the plan records the id, so old
+  plans keep pointing at the old snapshot. `check` re-fingerprints current toolchains whose
+  `last_used_at` (else `registered_at`) is within `days`, and never writes.
 
 ## 14. CLI — `ebs.cli` (P0-16)
 
-Commands: `ebs plan`, `build`, `status`, `logs`, `outputs`, `fetch` (P1-13), `rules list`; global `--debug` (tracebacks,
+Commands: `ebs plan`, `build`, `status`, `logs`, `outputs`, `fetch` (P1-13), `rules list`,
+`seeds gen` (P1-11), `toolchain register|list|show|check` (P1-07); global `--debug` (tracebacks,
 debug logs). Exit codes: § 11. Every command has `--json`; `NO_COLOR` disables colors. The
 working directory holds `.ebs/` (config lookup, `builds/`, executor logs); `-f` names the flow
 (default `./flow.yaml`). `ebs.cli._context.SiteServices` builds the CAS, metadata store,
@@ -882,3 +951,14 @@ output, `<action_id>.<name> -> <dest>`. `--json`: `{"v": 1, "uuid", "build", "fe
 "filled": n}`. Options `--per-test N`, `--replace`, `--column` (default `seed`),
 `--test-column` (default `test`), `--base-seed` (default 0); algorithm and formatting rules:
 `ebs.flow.seeds` docstring (task P1-11).
+
+**`ebs toolchain`** (P1-07; needs `[metadata].url`). `register MODULE [--root DIR]… [--timeout S]`
+snapshots and registers (stdout `registered|unchanged|reinstated MODULE` + id, fingerprint,
+roots, env names, module system; a drift warning with the first 20 changed files on stderr);
+`--json`: `{"v": 1, "status", "id", "module", "version", "fingerprint", "install_roots", "env",
+"previous", "superseded", "drift": null | {"total", "files": [{"path", "change"}], "env"},
+"module_system": {"flavour", "version"}}`. `list [--all]` (current only by default; `--json`:
+`{"v": 1, "toolchains": [record]}`), `show MODULE|ID` (`{"v": 1, "toolchain": record}`).
+`check [--days N=30]` re-fingerprints, changes nothing and exits 1 if any toolchain drifted or
+could not be fingerprinted (`--json`: `{"v": 1, "days", "results": [{"id", "module", "status":
+ok|drift|error, "fingerprint", "registered_fingerprint", "changes", "error"}]}`).

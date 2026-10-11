@@ -1,0 +1,93 @@
+#!/bin/bash
+# Fake Environment Modules (`libexec/modulecmd.tcl`) and Lmod (`libexec/lmod`) command for tests.
+#
+# Called like the real ones: `<cmd> bash <subcommand> [args...]`. It prints shell code on stdout
+# for the caller to eval and messages on stderr. The flavour and version come from files next to
+# the script (`.fake-flavour`, `.fake-version`); every call is appended to `.calls`.
+#
+# Modulefiles (found on $MODULEPATH as <dir>/<name>/<version>) use a tiny line format:
+#   setenv NAME VALUE         prepend-path NAME VALUE         fail MESSAGE
+#   noload                    (succeeds without recording the module in LOADEDMODULES)
+# A literal `$HOME` in VALUE is replaced by the caller's HOME, as `$env(HOME)` would be.
+set -u
+here=$(cd "$(dirname "$0")" && pwd)
+flavour=$(cat "$here/.fake-flavour")
+version=$(cat "$here/.fake-version")
+shell=${1:-}
+shift || true
+sub=${1:-}
+shift || true
+printf '%s %s\n' "$sub" "$*" >> "$here/.calls"
+
+if [ "$shell" != bash ]; then
+    echo "fake modulecmd: unsupported shell '$shell'" >&2
+    exit 1
+fi
+
+fail() {
+    if [ "$flavour" = lmod ]; then
+        printf 'Lmod has detected the following error: %s\n' "$1" >&2
+        echo 'false;'
+        exit 0  # Lmod reports failure through the emitted code
+    fi
+    printf 'ERROR: %s\n' "$1" >&2
+    echo 'test 0 = 1;'
+    exit 1
+}
+
+emit() {
+    declare -gx "$1=$2"
+    printf '%s=%q; export %s;\n' "$1" "$2" "$1"
+}
+
+case $sub in
+--version)
+    if [ "$flavour" = lmod ]; then
+        printf '\nModules based on Lua: Version %s  2024-01-01 00:00 +00:00\n' "$version" >&2
+    else
+        printf 'Modules Release %s (2024-01-01)\n' "$version" >&2
+    fi
+    ;;
+purge)
+    echo 'unset LOADEDMODULES; unset _LMFILES_;'
+    ;;
+load)
+    for module in "$@"; do
+        file=
+        record=1
+        IFS=: read -r -a dirs <<< "${MODULEPATH:-}"
+        for dir in "${dirs[@]}"; do
+            if [ -n "$dir" ] && [ -f "$dir/$module" ]; then
+                file=$dir/$module
+                break
+            fi
+        done
+        [ -n "$file" ] || fail "Unable to locate a modulefile for '$module'"
+        while read -r cmd name value; do
+            value=${value//\$HOME/$HOME}
+            case $cmd in
+            setenv) emit "$name" "$value" ;;
+            prepend-path)
+                current=${!name:-}
+                emit "$name" "$value${current:+:$current}"
+                ;;
+            fail) fail "$name $value" ;;
+            noload) record= ;;
+            '' | '#'*) ;;
+            *) fail "bad modulefile line in $file: $cmd" ;;
+            esac
+        done < "$file"
+        [ -z "$record" ] || emit LOADEDMODULES "${LOADEDMODULES:+$LOADEDMODULES:}$module"
+        emit _LMFILES_ "${_LMFILES_:+$_LMFILES_:}$file"
+        if [ "$flavour" = lmod ]; then
+            emit _ModuleTable001_ "$(printf '%s' "$module" | base64)"
+            emit __LMOD_REF_COUNT_PATH "${PATH%%:*}:1"
+        else
+            emit __MODULES_SHARE_PATH "${PATH%%:*}:1"
+        fi
+    done
+    ;;
+*)
+    fail "unknown subcommand '$sub'"
+    ;;
+esac

@@ -32,6 +32,7 @@ from ebs.runner.config import RunnerSettings
 from ebs.sources.snapshot import SourceSnapshotter
 from ebs.sources.statcache import DEFAULT_RACY_WINDOW_S, StatCache, default_statcache_path
 from ebs.toolchain.model import StaticToolchainResolver, Toolchain, ToolchainResolver
+from ebs.toolchain.registry import RegistryToolchainResolver
 
 __all__ = ["EXECUTORS", "SiteServices", "StatCacheSettings"]
 
@@ -102,15 +103,17 @@ def _private_dir(path: Path) -> None:
 
 
 class _MissingToolchains:
-    """Resolver for a flow without `.ebs/toolchains.yaml`: fine until a step names a toolchain."""
+    """Resolver without `.ebs/toolchains.yaml` or a metadata store: fine until a step names a
+    toolchain."""
 
     def __init__(self, path: Path) -> None:
         self._path = path
 
     def resolve(self, name: str, module: str) -> Toolchain:
         raise ToolchainError(
-            f"toolchain {name!r} ({module}) cannot be resolved: {self._path} does not exist; "
-            "create it with the toolchain's module, install roots and env"
+            f"toolchain {name!r} ({module}) cannot be resolved: {self._path} does not exist and "
+            "no metadata store is configured; register it with `ebs toolchain register "
+            f"{module}` (needs [metadata].url) or create {self._path}"
         )
 
 
@@ -203,10 +206,15 @@ class SiteServices:
         )
 
     def toolchains(self, flow_dir: Path) -> ToolchainResolver:
+        """`.ebs/toolchains.yaml` next to the flow if it exists (demos, tests), else the
+        registered toolchains of the metadata store (P1-07)."""
         path = flow_dir / TOOLCHAINS_FILE
-        if not path.exists():
-            return _MissingToolchains(path)
-        return StaticToolchainResolver(path)
+        if path.exists():
+            return StaticToolchainResolver(path)
+        store = self.store(required=False)
+        if store is not None:
+            return RegistryToolchainResolver(store)
+        return _MissingToolchains(path)
 
     def stat_settings(self) -> StatCacheSettings:
         return StatCacheSettings.from_section(self._section("stat_cache"))

@@ -36,9 +36,11 @@ from ebs.meta.api import (
     ResourceUsage,
     ResultManifest,
     RunnerInfo,
+    ToolchainCreate,
 )
 from ebs.meta.memory import InMemoryMetadataStore
 from ebs.meta.pg import PgMetadataStore
+from ebs.toolchain.model import toolchain_id
 from tests.helpers.pg import url_string
 
 Edge = tuple[str, str, str, str, str | None]  # action_key, direction, logical_path, id, content
@@ -823,6 +825,134 @@ def test_touch_throttled(h: Harness) -> None:
     assert h.inspect.blob_last_access("test", dg("rep")) == h.clock.now()
     assert h.inspect.blob_last_access("test", dg("wl-bytes")) == t0
     assert h.inspect.blob_last_access("test", dg("unknown")) is None
+
+
+# --- toolchain registry (P1-07) -----------------------------------------------------------------
+
+
+def make_toolchain(
+    module: str = "questa/2025.2", label: str = "fp1", **env: str
+) -> ToolchainCreate:
+    version = module.rpartition("/")[2]
+    fingerprint = dg(label)
+    env = env or {"PATH": "/opt/eda/bin:/usr/bin:/bin"}
+    return ToolchainCreate(
+        id=toolchain_id(module, version, fingerprint, env),
+        name=module.rpartition("/")[0],
+        module=module,
+        version=version,
+        fingerprint=fingerprint,
+        env=env,
+        install_roots=["/opt/eda"],
+        registered_by="alice",
+    )
+
+
+def test_register_toolchain_insert_and_read_back(h: Harness) -> None:
+    spec = make_toolchain()
+    outcome = h.store.register_toolchain(spec, b"manifest-1")
+    assert (outcome.inserted, outcome.superseded) == (True, ())
+    row = h.store.get_toolchain(spec.id)
+    assert row is not None
+    assert row.model_dump(include=set(ToolchainCreate.model_fields)) == spec.model_dump()
+    assert (row.registered_at, row.superseded_by, row.last_used_at) == (h.clock.now(), None, None)
+    assert h.store.toolchain_manifest(spec.id) == b"manifest-1"
+    assert h.store.current_toolchain("questa/2025.2") == row
+    assert h.store.get_toolchain(dg("unknown")) is None
+    assert h.store.toolchain_manifest(dg("unknown")) is None
+    assert h.store.current_toolchain("questa/9.9") is None
+
+
+def test_register_toolchain_idempotent(h: Harness) -> None:
+    spec = make_toolchain()
+    h.store.register_toolchain(spec, b"m1")
+    row = h.store.get_toolchain(spec.id)
+    h.clock.advance(60)
+    again = h.store.register_toolchain(spec.model_copy(update={"registered_by": "bob"}), b"m2")
+    assert (again.inserted, again.superseded) == (False, ())
+    assert h.store.list_toolchains() == [row]
+    assert h.store.toolchain_manifest(spec.id) == b"m1"
+
+
+def test_register_toolchain_supersedes_and_reinstates(h: Harness) -> None:
+    a, b = make_toolchain(label="fp-a"), make_toolchain(label="fp-b")
+    other = make_toolchain("lint/1.0")
+    h.store.register_toolchain(a, b"a")
+    h.store.register_toolchain(other, b"o")
+    h.clock.advance(60)
+    out = h.store.register_toolchain(b, b"b")
+    assert (out.inserted, out.superseded) == (True, (a.id,))
+    row_a = h.store.get_toolchain(a.id)
+    assert row_a is not None
+    assert row_a.superseded_by == b.id
+    current = h.store.current_toolchain("questa/2025.2")
+    assert current is not None
+    assert current.id == b.id
+    assert [r.id for r in h.store.list_toolchains(module="questa/2025.2")] == [a.id, b.id]
+    assert {r.id for r in h.store.list_toolchains(current_only=True)} == {b.id, other.id}
+
+    back = h.store.register_toolchain(a, b"ignored")
+    assert (back.inserted, back.superseded) == (False, (b.id,))
+    row_a, row_b = h.store.get_toolchain(a.id), h.store.get_toolchain(b.id)
+    assert row_a is not None
+    assert row_a.superseded_by is None
+    assert row_b is not None
+    assert row_b.superseded_by == a.id
+    assert h.store.toolchain_manifest(a.id) == b"a"
+
+
+def test_register_toolchain_concurrent_versions(h: Harness) -> None:
+    specs = [make_toolchain(label=f"fp{i}") for i in range(6)]
+    errors: list[BaseException] = []
+
+    def worker(spec: ToolchainCreate) -> None:
+        try:
+            h.store.register_toolchain(spec, b"m")
+        except BaseException as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(s,)) for s in specs]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert len(h.store.list_toolchains(module="questa/2025.2", current_only=True)) == 1
+
+
+def test_touch_toolchain_throttled(h: Harness) -> None:
+    spec = make_toolchain()
+    h.store.register_toolchain(spec, b"m")
+    h.store.touch_toolchain(spec.id)
+    t0 = h.clock.now()
+    h.clock.advance(30 * 60)
+    h.store.touch_toolchain(spec.id)
+    h.store.touch_toolchain(dg("unknown"))  # ignored
+    row = h.store.get_toolchain(spec.id)
+    assert row is not None
+    assert row.last_used_at == t0
+    h.clock.advance(31 * 60)
+    h.store.touch_toolchain(spec.id)
+    row = h.store.get_toolchain(spec.id)
+    assert row is not None
+    assert row.last_used_at == h.clock.now()
+
+
+@pytest.mark.parametrize("case", ["bad id", "relative root", "no roots", "bad env name"])
+def test_register_toolchain_validates(h: Harness, case: str) -> None:
+    spec = make_toolchain()
+    cases: dict[str, dict[str, Any]] = {
+        "bad id": {"id": "sha256:nothex"},
+        "relative root": {"install_roots": ["opt/eda"]},
+        "no roots": {"install_roots": []},
+        "bad env name": {"env": {"BAD NAME": "x"}},
+    }
+    bad = cases[case]
+    with pytest.raises(MetadataError):
+        h.store.register_toolchain(ToolchainCreate.model_construct(**{**dict(spec), **bad}), b"m")
+    assert h.store.list_toolchains() == []
+    with pytest.raises(MetadataError, match="bytes"):
+        h.store.register_toolchain(spec, "text")  # type: ignore[arg-type]
 
 
 # --- PG only: R6, R9 ----------------------------------------------------------------------------
