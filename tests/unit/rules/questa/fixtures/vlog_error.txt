@@ -1,0 +1,5 @@
+-- Compiling module alu
+** Error: rtl/core/alu.sv(12): (vlog-1001) Undefined variable: 'sum_q'.
+** Error: rtl/core/alu.sv(19): (vlog-1001) Undefined variable: 'carry_q'.
+End time: 10:00:00 on Jan 01,2026, Elapsed time: 0:00:00
+Errors: 2, Warnings: 0

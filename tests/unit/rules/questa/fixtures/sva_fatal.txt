@@ -1,0 +1,7 @@
+# Loading work.tb_top(fast)
+# ** Error: Assertion error.
+#    Time: 450 ns Started: 440 ns  Scope: tb_top.dut.a_valid File: rtl/core/alu.sv Line: 77
+# ** Fatal: Assertion failed: handshake lost after 12 cycles
+#    Time: 500 ns  Scope: tb_top.chk File: tb/tb_top.sv Line: 55
+# ** Note: $finish    : tb/tb_top.sv(55)
+# Errors: 1, Warnings: 0

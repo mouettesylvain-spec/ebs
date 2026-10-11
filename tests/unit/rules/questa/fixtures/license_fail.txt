@@ -1,0 +1,3 @@
+# ** Error: License checkout failed for feature 'simfeature' (status -5)
+# ** Fatal: Unable to checkout a license. Check the license server settings.
+# Error loading design
