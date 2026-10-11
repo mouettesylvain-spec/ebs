@@ -18,6 +18,7 @@ from ebs.meta._common import (
     check_digest,
     check_final_status,
     check_result,
+    check_toolchain,
     edge_rows,
     revalidate,
     stored_result,
@@ -32,7 +33,10 @@ from ebs.meta.api import (
     BuildStatus,
     BuildView,
     Event,
+    RegisterOutcome,
     ResultManifest,
+    ToolchainCreate,
+    ToolchainRecord,
     check_domain,
 )
 
@@ -77,6 +81,8 @@ class InMemoryMetadataStore:
         self._edges: dict[_EdgeKey, tuple[str, str | None]] = {}  # -> object_id, content
         self._blobs: dict[tuple[str, str], _Blob] = {}
         self._events: list[Event] = []
+        self._toolchains: dict[str, ToolchainRecord] = {}
+        self._toolchain_manifests: dict[str, bytes] = {}
 
     # --- action cache ---------------------------------------------------------------------------
 
@@ -267,3 +273,68 @@ class InMemoryMetadataStore:
         with self._lock:
             self._build(checked.build)
             self._events.append(checked)
+
+    # --- toolchain registry ---------------------------------------------------------------------
+
+    def register_toolchain(self, spec: ToolchainCreate, manifest: bytes) -> RegisterOutcome:
+        checked = check_toolchain(spec, manifest)
+        new = str(checked.id)
+        with self._lock:
+            now = self._clock.now()
+            existing = self._toolchains.get(new)
+            if existing is not None and existing.superseded_by is None:
+                return RegisterOutcome(inserted=False, superseded=())
+            if existing is None:
+                self._toolchains[new] = ToolchainRecord(
+                    **dict(checked), registered_at=now, superseded_by=None, last_used_at=None
+                )
+                self._toolchain_manifests[new] = bytes(manifest)
+            else:
+                self._toolchains[new] = existing.model_copy(update={"superseded_by": None})
+            superseded = []
+            for key, row in self._toolchains.items():
+                if row.module == checked.module and row.superseded_by is None and key != new:
+                    self._toolchains[key] = row.model_copy(update={"superseded_by": checked.id})
+                    superseded.append(row.id)
+            return RegisterOutcome(
+                inserted=existing is None, superseded=tuple(sorted(superseded, key=str))
+            )
+
+    def get_toolchain(self, toolchain_id: Digest) -> ToolchainRecord | None:
+        key = str(check_digest(toolchain_id, "get_toolchain id"))
+        with self._lock:
+            return self._toolchains.get(key)
+
+    def current_toolchain(self, module: str) -> ToolchainRecord | None:
+        rows = self.list_toolchains(module=module, current_only=True)
+        return rows[-1] if rows else None
+
+    def list_toolchains(
+        self, *, module: str | None = None, current_only: bool = False
+    ) -> list[ToolchainRecord]:
+        with self._lock:
+            rows = list(self._toolchains.values())
+        return sorted(
+            (
+                r
+                for r in rows
+                if (module is None or r.module == module)
+                and (not current_only or r.superseded_by is None)
+            ),
+            key=lambda r: (r.module, r.registered_at, str(r.id)),
+        )
+
+    def toolchain_manifest(self, toolchain_id: Digest) -> bytes | None:
+        key = str(check_digest(toolchain_id, "toolchain_manifest id"))
+        with self._lock:
+            return self._toolchain_manifests.get(key)
+
+    def touch_toolchain(self, toolchain_id: Digest) -> None:
+        key = str(check_digest(toolchain_id, "touch_toolchain id"))
+        with self._lock:
+            row = self._toolchains.get(key)
+            now = self._clock.now()
+            if row is not None and (
+                row.last_used_at is None or row.last_used_at <= touch_cutoff(now)
+            ):
+                self._toolchains[key] = row.model_copy(update={"last_used_at": now})

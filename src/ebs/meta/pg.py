@@ -26,6 +26,7 @@ from ebs.meta._common import (
     check_digest,
     check_final_status,
     check_result,
+    check_toolchain,
     edge_rows,
     revalidate,
     stored_result,
@@ -40,10 +41,23 @@ from ebs.meta.api import (
     BuildStatus,
     BuildView,
     Event,
+    RegisterOutcome,
     ResultManifest,
+    ToolchainCreate,
+    ToolchainRecord,
     check_domain,
 )
-from ebs.meta.models import action_cache, actions, blobs, builds, domains, events, provenance_edges
+from ebs.meta.models import (
+    action_cache,
+    actions,
+    blobs,
+    builds,
+    domains,
+    events,
+    provenance_edges,
+    toolchain_manifests,
+    toolchains,
+)
 
 __all__ = ["MetadataConfig", "PgMetadataStore"]
 
@@ -474,4 +488,98 @@ class PgMetadataStore:
                     action_id=checked.action_id,
                     data=checked.data,
                 )
+            )
+
+    # --- toolchain registry ---------------------------------------------------------------------
+
+    def register_toolchain(self, spec: ToolchainCreate, manifest: bytes) -> RegisterOutcome:
+        checked = check_toolchain(spec, manifest)
+        new, t = str(checked.id), toolchains
+        now = self._clock.now()
+        with self._tx(f"register_toolchain {checked.module!r}") as conn:
+            # One registration per module at a time: at most one current toolchain per module.
+            conn.execute(
+                sa.select(
+                    sa.func.pg_advisory_xact_lock(sa.func.hashtextextended(checked.module, 0))
+                )
+            )
+            found = conn.execute(
+                sa.select(t.c.superseded_by).where(t.c.id == new).with_for_update()
+            ).first()
+            if found is not None and found[0] is None:
+                return RegisterOutcome(inserted=False, superseded=())
+            if found is None:
+                conn.execute(
+                    sa.insert(t).values(**checked.model_dump(mode="json"), registered_at=now)
+                )
+                conn.execute(
+                    sa.insert(toolchain_manifests).values(toolchain_id=new, entries=manifest)
+                )
+            else:
+                conn.execute(sa.update(t).where(t.c.id == new).values(superseded_by=None))
+            superseded: list[str] = list(
+                conn.execute(
+                    sa.update(t)
+                    .where(t.c.module == checked.module, t.c.superseded_by.is_(None), t.c.id != new)
+                    .values(superseded_by=new)
+                    .returning(t.c.id)
+                ).scalars()
+            )
+        return RegisterOutcome(
+            inserted=found is None, superseded=tuple(Digest.parse(i) for i in sorted(superseded))
+        )
+
+    def _toolchain_rows(self, what: str, *where: sa.ColumnElement[bool]) -> list[ToolchainRecord]:
+        t = toolchains
+        stmt = (
+            sa.select(t)
+            .where(*where)
+            .order_by(t.c.module.collate("C"), t.c.registered_at, t.c.id.collate("C"))
+        )
+        with self._tx(what) as conn:
+            found = conn.execute(stmt).mappings().all()
+        try:
+            return [ToolchainRecord.model_validate(dict(r)) for r in found]
+        except ValueError as exc:
+            raise MetadataError(f"{what}: a stored toolchain row is invalid: {exc}") from None
+
+    def get_toolchain(self, toolchain_id: Digest) -> ToolchainRecord | None:
+        key = str(check_digest(toolchain_id, "get_toolchain id"))
+        rows = self._toolchain_rows(f"get_toolchain {key}", toolchains.c.id == key)
+        return rows[0] if rows else None
+
+    def current_toolchain(self, module: str) -> ToolchainRecord | None:
+        rows = self.list_toolchains(module=module, current_only=True)
+        return rows[-1] if rows else None
+
+    def list_toolchains(
+        self, *, module: str | None = None, current_only: bool = False
+    ) -> list[ToolchainRecord]:
+        where: list[sa.ColumnElement[bool]] = []
+        if module is not None:
+            where.append(toolchains.c.module == module)
+        if current_only:
+            where.append(toolchains.c.superseded_by.is_(None))
+        return self._toolchain_rows("list_toolchains", *where)
+
+    def toolchain_manifest(self, toolchain_id: Digest) -> bytes | None:
+        key = str(check_digest(toolchain_id, "toolchain_manifest id"))
+        m = toolchain_manifests
+        with self._tx(f"toolchain_manifest {key}") as conn:
+            entries: bytes | None = conn.execute(
+                sa.select(m.c.entries).where(m.c.toolchain_id == key)
+            ).scalar_one_or_none()
+        return None if entries is None else bytes(entries)
+
+    def touch_toolchain(self, toolchain_id: Digest) -> None:
+        key = str(check_digest(toolchain_id, "touch_toolchain id"))
+        now, t = self._clock.now(), toolchains
+        with self._tx(f"touch_toolchain {key}") as conn:
+            conn.execute(
+                sa.update(t)
+                .where(
+                    t.c.id == key,
+                    sa.or_(t.c.last_used_at.is_(None), t.c.last_used_at <= touch_cutoff(now)),
+                )
+                .values(last_used_at=now)
             )

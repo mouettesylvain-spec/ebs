@@ -17,6 +17,7 @@ from ebs.meta.api import (
     ActionRow,
     ActionUpdate,
     ResultManifest,
+    ToolchainCreate,
     check_transition,
 )
 
@@ -143,3 +144,18 @@ def stored_result(payload: object, build: int, action_id: str) -> ResultManifest
             f"build {build} action {action_id!r} holds an invalid result manifest; rerun the "
             f"action: {exc}"
         ) from None
+
+
+def check_toolchain(spec: ToolchainCreate, manifest: object) -> ToolchainCreate:
+    """The re-validated toolchain; `manifest` must be bytes (P1-07).
+
+    The store does not recompute the toolchain id (the runner imports the store, and must not
+    import `ebs.toolchain`); `ebs.toolchain.registry` computes it on write and checks it on read.
+    """
+    checked = revalidate(spec, ToolchainCreate, f"register_toolchain {spec.module!r}")
+    if not isinstance(manifest, bytes):
+        raise MetadataError(
+            f"register_toolchain {checked.module!r}: the manifest must be bytes, "
+            f"got {type(manifest).__name__}"
+        )
+    return checked

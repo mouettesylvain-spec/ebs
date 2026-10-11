@@ -50,7 +50,10 @@ provenance_edges(domain FK, action_key text, direction text check in ('in','out'
                  -- passed-down id in object_id and the content digest in content_digest
 
 toolchains(id text PK, name text, module text, version text, fingerprint text,
-           env jsonb, install_roots jsonb, registered_at, registered_by, superseded_by text null)
+           env jsonb, install_roots jsonb, registered_at, registered_by, superseded_by text null,
+           last_used_at null)                                  -- last_used_at: P1-07, migration 0004
+toolchain_manifests(toolchain_id text PK FK toolchains ON DELETE CASCADE,
+                    entries bytea)                             -- P1-07: zlib fingerprint lines
 
 events(id bigserial PK, build_id FK, ts, type text check ~ '^[a-z][a-z0-9_]*$',
        action_id text null, data jsonb object)

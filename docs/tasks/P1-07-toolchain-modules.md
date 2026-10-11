@@ -1,6 +1,6 @@
 # P1-07 — Toolchain registration via modulefiles
 
-Status: todo · Phase: 1 · Depends on: P0-07, P0-10 · Size: M
+Status: in-progress · Phase: 1 · Depends on: P0-07, P0-10 · Size: M
 
 ## Goal
 `ebs toolchain register questa/2025.2` snapshots a module (env, install roots, fingerprint) into an

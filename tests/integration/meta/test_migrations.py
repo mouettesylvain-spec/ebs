@@ -26,6 +26,7 @@ P0_TABLES = {
     "toolchains",
     "events",
 }
+P1_TABLES = {"toolchain_manifests"}  # P1-07
 GOOD = "sha256:" + "a" * 64
 
 
@@ -52,7 +53,7 @@ def test_upgrade_downgrade(empty_db: URL) -> None:
     url = url_string(empty_db)
     assert _tables(empty_db) == set()
     migrations.upgrade(url)
-    assert _tables(empty_db) == P0_TABLES
+    assert _tables(empty_db) == P0_TABLES | P1_TABLES
     migrations.downgrade(url)
     engine = sa.create_engine(empty_db, poolclass=sa.pool.NullPool)
     try:
@@ -61,7 +62,7 @@ def test_upgrade_downgrade(empty_db: URL) -> None:
     finally:
         engine.dispose()
     migrations.upgrade(url)  # the round trip leaves nothing behind that blocks a re-upgrade
-    assert _tables(empty_db) == P0_TABLES
+    assert _tables(empty_db) == P0_TABLES | P1_TABLES
 
 
 # R1: a deployment may pre-create schema `ebs`, and a role named `ebs` then has it first in its
