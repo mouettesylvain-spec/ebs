@@ -1,6 +1,6 @@
 # P1-06 — Metadata HTTP service and client
 
-Status: in-progress · Phase: 1 · Depends on: P0-10 · Parallel-safe with: P0 tasks after P0-10 · Size: L
+Status: review · Phase: 1 · Depends on: P0-10 · Parallel-safe with: P0 tasks after P0-10 · Size: L
 
 ## Goal
 Runners on compute nodes and CLIs on login nodes talk to shared state through a small FastAPI service
@@ -43,7 +43,7 @@ Runners on compute nodes and CLIs on login nodes talk to shared state through a 
 | `tests/unit/runner/test_main.py::test_selects_http_client` | R7 | unit |
 
 ## Done when
-- [ ] `make check-all` passes
+- [x] `make check-all` passes
 
 ## Notes
 D1 must be confirmed by the human before merge (MUNGE availability on login nodes).
@@ -70,3 +70,10 @@ Follow-ups:
 - Starlette 1.x deprecates `httpx` in its TestClient (in favour of `httpx2`); the tests silence the
   warning. Revisit when httpx2 is stable.
 - P2-01: put domain membership into `authorize()`; P2-05: OIDC for the dashboard.
+- Before D1 is confirmed: bind MUNGE credentials to this service (munge a payload such as
+  `ebs-meta:<METHOD>:<path>` and check it server-side). Today a credential seen in other
+  plaintext MUNGE traffic is accepted until its TTL ends, because this host's replay cache has
+  not seen it. Payloads are refused for now (`LENGTH` must be 0).
+- The `http` contract backend uses Starlette's TestClient, which decodes paths a second time; an
+  action id containing a literal `%2F` reaches the store as `/` there (uvicorn decodes once).
+  Switch to an ASGI transport when a sync one is available in httpx.

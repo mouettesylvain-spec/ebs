@@ -14,7 +14,7 @@ from ebs.meta.service.routes import ok
 from ebs.meta.service.tokens import TokenKind
 
 probes = APIRouter(include_in_schema=False)
-api = APIRouter(tags=["auth"])
+api = APIRouter(tags=["auth"], dependencies=[Depends(current_principal)])
 
 
 @probes.get("/healthz")

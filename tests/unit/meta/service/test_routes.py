@@ -81,8 +81,11 @@ def svc(backing: InMemoryMetadataStore) -> Service:
     return make_service(backing)
 
 
+_ALICE = FakeMunge(uid=1000)  # one source: each call is a fresh credential (no replays)
+
+
 def alice_headers() -> dict[str, str]:
-    return FakeMunge(uid=1000).headers()
+    return _ALICE.headers()
 
 
 # --- R2: OpenAPI and wire models ------------------------------------------------------------------
@@ -351,7 +354,7 @@ def test_database_outage_is_503(svc: Service, backing: InMemoryMetadataStore) ->
     backing.cache_get = broken  # type: ignore[method-assign,assignment]
     r = svc.client.get(f"{API_PREFIX}/domains/test/cache/{dg('k')}", headers=alice_headers())
     assert r.status_code == 503
-    assert "database" in r.json()["detail"]
+    assert r.json()["detail"] == "metadata database unavailable; retry later"
 
 
 def test_unexpected_errors_are_500_without_internals(
@@ -410,3 +413,16 @@ def test_app_from_config(tmp_path: Path) -> None:
         )
         with pytest.raises(ConfigError, match=match):
             app_from_config(env)
+
+
+# R1 (review): action ids that look like URL syntax survive the path, as in the other stores.
+@pytest.mark.parametrize("action_id", [".", "..", "a/b", "x/result", "a b?c#d", "sim[t=a,s=1]"])
+def test_awkward_action_ids(svc: Service, action_id: str) -> None:
+    store = svc.store()
+    build = store.create_build(make_build())
+    store.add_actions(build, [ActionRow(action_id=action_id, step="lint")])
+    store.set_action_state(build, action_id, "running")
+    store.record_result(build, action_id, make_result(dg("k")))
+    assert store.get_result(build, action_id) == make_result(dg("k"))
+    assert [a.action_id for a in store.list_actions(build)] == [action_id]
+    assert store.list_actions(build)[0].state == "running"

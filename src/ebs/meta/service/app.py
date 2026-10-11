@@ -91,8 +91,9 @@ async def _forbidden(request: Request, exc: Exception) -> JSONResponse:
 
 async def _store_error(request: Request, exc: Exception) -> JSONResponse:
     if _is_outage(exc):
+        # The full text names the database host; it goes to the log, not to every caller.
         _log.error("metadata database unavailable", path=request.url.path, error=str(exc))
-        return _error(503, str(exc))
+        return _error(503, "metadata database unavailable; retry later")
     return _error(409, str(exc))
 
 
