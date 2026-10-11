@@ -1,0 +1,43 @@
+{
+  "errors": [],
+  "jobs": [],
+  "last_backfill": {
+    "infinite": false,
+    "number": 1790000002,
+    "set": true
+  },
+  "last_update": {
+    "infinite": false,
+    "number": 1790000003,
+    "set": true
+  },
+  "meta": {
+    "client": {
+      "group": "g1",
+      "source": "/dev/pts/0",
+      "user": "u1"
+    },
+    "command": [
+      "squeue",
+      "--json",
+      "--states=all",
+      "--jobs=999"
+    ],
+    "plugin": {
+      "accounting_storage": "accounting_storage/slurmdbd",
+      "data_parser": "data_parser/v0.0.44",
+      "name": "",
+      "type": ""
+    },
+    "slurm": {
+      "cluster": "c1",
+      "release": "26.05.0",
+      "version": {
+        "major": "26",
+        "micro": "0",
+        "minor": "05"
+      }
+    }
+  },
+  "warnings": []
+}

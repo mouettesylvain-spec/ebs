@@ -42,6 +42,14 @@ network, real `$HOME`, `/tmp` outside `tmp_path`, or wall-clock time (use `ebs.c
   `--mem` enforcement (kills with OOM state), `--time`, `--account/--qos` recording, and fault
   injection (`NODE_FAIL`, `PREEMPTED`, stuck `PENDING (Licenses)`). Its `--json` output is
   validated against JSON captured from SLURM 26.05 (`tests/fixtures/slurm/26.05/*.json`). (P1-01)
+  `FakeSlurm.install(dir)` writes the commands to `dir/bin` (pass `SlurmCli(bin_dir=…)` or put it
+  on PATH); there is no daemon: each command and each job's detached supervisor runs a scheduling
+  pass under a file lock. Config (`configure(cpus=, licenses=, accounts=, qos=, time_scale=,
+  min_job_age_s=, …)`) and faults (`inject({"fault": "NODE_FAIL" | "PREEMPTED" | "STUCK_LICENSES"
+  | "CLI_ERROR", …})`) are JSON files in its state dir, documented in `tests/fakes/slurm/core.py`.
+  Fixture `fake_slurm` (tests/integration/slurm/conftest.py) cleans up running jobs at teardown.
+  The 26.05 fixtures were hand-written in P1-01; `scripts/capture_slurm_fixtures.py` captures and
+  anonymizes real ones.
 - **Postgres**: `EBS_TEST_PG_URL` if set, otherwise a `testcontainers` PostgreSQL 17 container per
   session; each test gets its own schema via a transaction/rollback or `CREATE SCHEMA` fixture.
 - **Git repos**: fixture `git_repo(tmp_path)` that creates a repo with commits; never use this repo.
