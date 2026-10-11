@@ -122,6 +122,8 @@ license_error_patterns = []    # regexes on the log tail => INFRA("license"); re
 default_partition = ""
 max_array_size = 1000
 array_throttle = 200
+max_pending_jobs = 2000        # in-flight jobs, array tasks counted individually (D5)
+max_submits_per_min = 60
 poll_min_s = 5
 poll_max_s = 60
 ```
