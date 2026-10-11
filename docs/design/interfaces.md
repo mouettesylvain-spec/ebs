@@ -439,6 +439,12 @@ in JSON mode (`model_validate_json`):
 | `GET /builds/{b}/actions/{a}/result` | `get_result` | → `OptionalResult` |
 | `POST /builds/{b}/finish` | `finish_build` | `BuildFinish` → 204 |
 | `POST /builds/{b}/events` | `emit` | `Event` → 204 |
+| `POST /toolchains` | `register_toolchain` | `ToolchainRegistration` (manifest base64) → `RegisterOutcome` |
+| `GET /toolchains[?module=&current_only=]` | `list_toolchains` | → `ToolchainList` |
+| `GET /toolchains/current?module=` | `current_toolchain` | → `ToolchainList` (0 or 1) |
+| `GET /toolchains/{id}` | `get_toolchain` | → `ToolchainList` (0 or 1) |
+| `GET /toolchains/{id}/manifest` | `toolchain_manifest` | → `ToolchainManifest` |
+| `POST /toolchains/{id}/touch` | `touch_toolchain` | → 204 |
 | `GET /whoami` | — | → caller's principal |
 
 `/healthz` (process) and `/readyz` (database reachable, schema at the migrations' head, else 503)
@@ -454,19 +460,29 @@ database outage, 500 a bug. The client raises `MetadataError` with the detail.
   keys up 500 at a time.
 - **Retries:** each request times out after 10 s (`[metadata].timeout_s`). Connect errors are
   retried for every call; 5xx and read timeouts only for idempotent calls (reads, `cache_put`,
-  `record_result`, `touch`, `cache_get_many`), with exponential backoff (0.5 s doubling, capped at
+  `record_result`, `touch`, `cache_get_many`, `register_toolchain`, `touch_toolchain`), with exponential backoff (0.5 s doubling, capped at
   8 s, `[metadata].retries = 4`). Each attempt sends fresh credentials. A retried `cache_put`
   whose first attempt landed returns False.
-- **Authentication (D1):** `X-EBS-Munge: <munge -n>` verified with `unmunge --numeric` (replays,
-  expired and rewound credentials refused; uid → user name via NSS), or `Authorization: Bearer
-  <token>` (only `sha256:` hashes stored in `api_tokens`, kinds `user | ci | service`). Pluggable
-  `Authenticator`s, tried in order by `ChainAuthenticator`.
+- **Authentication (D1, decided 2026-10-11):** MUNGE for users on cluster hosts, bearer tokens
+  for CI and services. `X-EBS-Munge` carries a credential whose payload is
+  `ebs.meta.client.munge_payload(audience, method, path)` = compact JSON
+  `["ebs-meta/1", audience, METHOD, path]` (`path` below `API_PREFIX`, percent-decoded;
+  `audience` = `[meta_service].audience`, by default the `host[:port]` of the client's
+  `[metadata].url`). The service decodes it with `unmunge --numeric` (replays, expired and
+  rewound credentials refused), parses only the metadata block, takes exactly `LENGTH` payload
+  characters, refuses a payload other than the request's (so credentials seen in other MUNGE
+  traffic, or minted for another request, are useless), and maps the uid to a user name via NSS.
+  `Authorization: Bearer <token>`: only `sha256:` hashes stored in `api_tokens`, kinds
+  `user | ci | service`. Pluggable `Authenticator`s (`authenticate(RequestInfo)`), tried in
+  order by `ChainAuthenticator`.
 - **Authorization (R4):** every API route calls the one hook `ServiceDeps.authorize(principal,
-  op, *, domain, owner)` with `op = read | cache_write | build_write`, the domain, and the build's
-  `BuildOwner(user_name, project, domain, build)` for build routes. Policy in P1: a build write is
-  allowed to its owner (`principal == user_name`) or to a `ci` token whose `team` is the build's
-  project; `service` tokens never write builds; everything else is open to any authenticated
-  principal until P2-01 adds domain membership in this hook.
+  op, *, domain, owner)` with `op = read | cache_write | build_write | toolchain_write`, the
+  domain, and the build's `BuildOwner(user_name, project, domain, build)` for build routes. The
+  default `Policy(toolchain_admins)`: a build write is allowed to its owner (`principal ==
+  user_name`) or to a `ci` token whose `team` is the build's project, and `service` tokens never
+  write builds; `toolchain_write` (registering makes a toolchain current for every later build)
+  only to `service` tokens and the users in `[meta_service].toolchain_admins`; everything else
+  is open to any authenticated principal until P2-01 adds domain membership in this hook.
 
 ## 7. Rules — `ebs.rules.api`
 

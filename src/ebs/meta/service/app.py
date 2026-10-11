@@ -22,7 +22,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, ValidationError
 
 import ebs
 from ebs.config import config_paths, load_config
@@ -37,11 +37,12 @@ from ebs.meta.service.auth import (
     ChainAuthenticator,
     MungeAuthenticator,
     PermissionDeniedError,
+    Policy,
     UnmungeVerifier,
 )
 from ebs.meta.service.deps import BODY_MODELS, ServiceDeps
 from ebs.meta.service.readiness import PgReadiness
-from ebs.meta.service.routes import builds, cache, probes
+from ebs.meta.service.routes import builds, cache, probes, toolchains
 from ebs.meta.service.tokens import PgTokenStore
 
 __all__ = ["ServiceConfig", "ServiceDeps", "app_from_config", "create_app"]
@@ -138,7 +139,7 @@ def create_app(deps: ServiceDeps) -> FastAPI:
     )
     app.state.deps = deps
     app.include_router(probes.probes)
-    for router in (probes.api, cache.router, builds.router):
+    for router in (probes.api, cache.router, builds.router, toolchains.router):
         app.include_router(router, prefix=API_PREFIX, responses=_ERRORS)
     app.add_exception_handler(AuthenticationError, _auth_failed)
     app.add_exception_handler(PermissionDeniedError, _forbidden)
@@ -159,7 +160,9 @@ class ServiceConfig(BaseModel):
 
     munge: StrictBool = True
     unmunge: StrictStr = "unmunge"
+    audience: StrictStr | None = None  # required with munge: the host[:port] clients use
     bearer: StrictBool = True
+    toolchain_admins: list[StrictStr] = Field(default_factory=list)
 
     @classmethod
     def from_mapping(cls, section: Mapping[str, object]) -> ServiceConfig:
@@ -178,7 +181,13 @@ def app_from_config(environ: Mapping[str, str] | None = None) -> FastAPI:
     service = ServiceConfig.from_mapping(config.get("meta_service", {}))
     schemes: list[Authenticator] = []
     if service.munge:
-        schemes.append(MungeAuthenticator(UnmungeVerifier(service.unmunge)))
+        if not service.audience:
+            raise ConfigError(
+                "[meta_service].audience must be set with munge = true: the host[:port] of the "
+                "service URL clients use (MUNGE credentials are bound to it)"
+            )
+        verifier = UnmungeVerifier(service.unmunge)
+        schemes.append(MungeAuthenticator(verifier, audience=service.audience))
     if service.bearer:
         schemes.append(BearerAuthenticator(PgTokenStore(store.engine)))
     if not schemes:
@@ -187,5 +196,6 @@ def app_from_config(environ: Mapping[str, str] | None = None) -> FastAPI:
         store=store,
         authenticator=ChainAuthenticator(*schemes),
         readiness=PgReadiness(store.engine),
+        authorize=Policy(service.toolchain_admins),
     )
     return create_app(deps)

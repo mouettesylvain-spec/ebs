@@ -1,10 +1,10 @@
 """The metadata service in-process, for contract and route tests (P1-06).
 
-`service_store` serves a backing MetadataStore through the FastAPI app and returns an
+`make_service` serves a backing MetadataStore through the FastAPI app; `Service.store()` is an
 `HttpMetadataStore` talking to it over Starlette's in-process transport: no sockets, no network.
 Authentication uses `FakeMungeVerifier`, which behaves like `unmunge` (each credential decodes
 once; replays and expired credentials are refused), and `FakeMunge`, the client-side source that
-mints a fresh credential per request as `munge -n` does.
+mints a fresh credential bound to each request, as `munge --string <munge_payload>` does.
 """
 
 from __future__ import annotations
@@ -12,13 +12,14 @@ from __future__ import annotations
 import itertools
 import threading
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Generator, Iterable, Mapping
 from dataclasses import dataclass, field
 
+import httpx
 from starlette.exceptions import StarletteDeprecationWarning
 
-from ebs.meta.api import MetadataStore
-from ebs.meta.client import HttpMetadataStore
+from ebs.meta.api import API_PREFIX, MetadataStore
+from ebs.meta.client import HttpMetadataStore, munge_payload
 from ebs.meta.service.app import ServiceDeps, create_app
 from ebs.meta.service.auth import (
     MUNGE_HEADER,
@@ -27,6 +28,7 @@ from ebs.meta.service.auth import (
     ChainAuthenticator,
     MungeAuthenticator,
     MungeIdentity,
+    Policy,
 )
 from ebs.meta.service.tokens import InMemoryTokenStore
 
@@ -37,12 +39,13 @@ with warnings.catch_warnings():
     from starlette.testclient import TestClient
 
 BASE_URL = "http://meta.test"
+AUDIENCE = "meta.test"  # MUNGE binding: the host[:port] of BASE_URL
 USERS: Mapping[int, str] = {1000: "alice", 1001: "bob", 1002: "carol"}
 
 
 @dataclass
 class FakeMungeVerifier:
-    """`unmunge` stand-in: `cred:<uid>:<serial>` decodes once; `expired:` credentials never."""
+    """`unmunge` stand-in: `cred:<uid>:<serial>:<payload>` decodes once; `expired:` never."""
 
     seen: set[str] = field(default_factory=set)
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -57,22 +60,33 @@ class FakeMungeVerifier:
             if credential in self.seen:
                 raise AuthenticationError("MUNGE credential refused: Replayed credential")
             self.seen.add(credential)
-        uid = int(rest.split(":")[0])
-        return MungeIdentity(uid=uid, gid=uid)
+        uid, _serial, payload = [*rest.split(":", 2), "", ""][:3]
+        return MungeIdentity(uid=int(uid), gid=int(uid), payload=payload)
 
 
-class FakeMunge:
-    """Client credential source: a new `cred:<uid>:<n>` per request."""
+class FakeMunge(httpx.Auth):
+    """Client credential source: a new `cred:<uid>:<n>:<payload>` per request, bound like
+    `MungeCredential` (`munge_payload`). Also an `httpx.Auth` for raw test-client requests."""
 
-    def __init__(self, uid: int = 1000) -> None:
+    def __init__(self, uid: int = 1000, audience: str = AUDIENCE) -> None:
         self.uid = uid
+        self.audience = audience
         self._serial = itertools.count()
         self._lock = threading.Lock()
 
-    def headers(self) -> dict[str, str]:
+    def headers(self, method: str, path: str) -> dict[str, str]:
         with self._lock:
             n = next(self._serial)
-        return {MUNGE_HEADER: f"cred:{self.uid}:{n}"}
+        payload = munge_payload(self.audience, method, path)
+        return {MUNGE_HEADER: f"cred:{self.uid}:{n}:{payload}"}
+
+    def auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response, None]:
+        path = request.url.path
+        at = path.find(API_PREFIX)
+        request.headers.update(
+            self.headers(request.method, path[at + len(API_PREFIX) :] if at >= 0 else path)
+        )
+        yield request
 
 
 def user_of_uid(uid: int) -> str:
@@ -116,6 +130,7 @@ def make_service(
     *,
     tokens: InMemoryTokenStore | None = None,
     users: Callable[[int], str] = user_of_uid,
+    toolchain_admins: Iterable[str] = (),
 ) -> Service:
     tokens = tokens if tokens is not None else InMemoryTokenStore()
     munge = FakeMungeVerifier()
@@ -123,9 +138,10 @@ def make_service(
     deps = ServiceDeps(
         store=backing,
         authenticator=ChainAuthenticator(
-            MungeAuthenticator(munge, users), BearerAuthenticator(tokens)
+            MungeAuthenticator(munge, users, audience=AUDIENCE), BearerAuthenticator(tokens)
         ),
         readiness=ready,
+        authorize=Policy(toolchain_admins),
     )
     client = TestClient(create_app(deps), base_url=BASE_URL, raise_server_exceptions=False)
     return Service(deps, client, tokens, munge, ready)

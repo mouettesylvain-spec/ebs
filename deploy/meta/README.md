@@ -22,18 +22,24 @@ before starting a new version: `/readyz` answers 503 until the schema is at head
 
 ## Authentication (decision D1)
 
-- **MUNGE** (cluster hosts): clients send `X-EBS-Munge: $(munge -n)`; the service runs
-  `unmunge`, which refuses replayed and expired credentials, and maps the uid to a user name via
-  NSS. munged must run on the service host with the cluster's key (`/run/munge` is mounted into
-  the container).
+- **MUNGE** (cluster hosts): clients send `X-EBS-Munge` with a credential whose payload binds it
+  to this service and request: `munge --string '["ebs-meta/1","<audience>","<METHOD>","<path>"]'`
+  (`path` below `/api/v1`, percent-decoded). The service runs `unmunge`, which refuses replayed
+  and expired credentials, checks the payload against `[meta_service].audience` and the request,
+  and maps the uid to a user name via NSS. A credential captured from other MUNGE traffic (SLURM)
+  is therefore useless here. munged must run on the service host with the cluster's key
+  (`/run/munge` is mounted into the container).
 - **Bearer tokens** (CI, services): `python -m ebs.meta.service token create ci-cpu --kind ci
   --team rv32x-cpu` prints a token once; only its SHA-256 is stored. Clients set
   `[metadata].token_file` (mode 600) or `$EBS_META_TOKEN`. `token revoke NAME` revokes them.
 
-Check credentials with `curl -H "X-EBS-Munge: $(munge -n)" https://ebs-meta.example/api/v1/whoami`.
+Check credentials with
+`curl -H "X-EBS-Munge: $(munge -s '["ebs-meta/1","ebs-meta.example","GET","/whoami"]')" https://ebs-meta.example/api/v1/whoami`.
 
 Ownership (R4): a build is changed only by its owner (`user_name`) or by a CI token whose team
 is the build's project. Service tokens can read and write the action cache but not builds.
+Registering a toolchain makes it current for every later build, so only service tokens and the
+users in `[meta_service].toolchain_admins` may.
 
 ## Client configuration
 
@@ -41,6 +47,7 @@ is the build's project. Service tokens can read and write the action cache but n
 [metadata]
 url = "https://ebs-meta.example"   # the service root; routes are under /api/v1
 # auth = "munge"                   # default without a token; "token" with token_file/$EBS_META_TOKEN
+# audience = "ebs-meta.example"   # MUNGE binding; default: host[:port] of url
 # token_file = "~/.config/ebs/meta-token"
 # ca_file = "/etc/pki/tls/certs/site-ca.pem"
 # timeout_s = 10

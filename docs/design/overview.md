@@ -92,10 +92,14 @@ url = "https://ebs-meta.example"   # P1-06: the metadata service root (routes un
 # timeout_s = 10                   # per request
 # retries = 4
 
+# audience = "ebs-meta.example"   # HTTP + MUNGE: credential binding; default host[:port] of url
+
 [meta_service]                     # service host only (P1-06)
 munge = true                       # accept X-EBS-Munge, verified with `unmunge`
 unmunge = "unmunge"
+audience = "ebs-meta.example"      # required with munge: the host[:port] clients use
 bearer = true                      # accept bearer tokens (api_tokens)
+toolchain_admins = []              # users who may register toolchains (service tokens may too)
 
 [scratch]
 dir = "${TMPDIR}/ebs"

@@ -10,6 +10,7 @@ import pytest
 
 from ebs.core.clock import FakeClock
 from ebs.meta.api import API_PREFIX
+from ebs.meta.client import munge_payload
 from ebs.meta.memory import InMemoryMetadataStore
 from ebs.meta.service.auth import (
     MUNGE_HEADER,
@@ -36,7 +37,7 @@ def _whoami(svc: Service, headers: dict[str, str]) -> tuple[int, dict[str, objec
 
 # R3
 def test_munge_ok(svc: Service) -> None:
-    status, body = _whoami(svc, FakeMunge(uid=1001).headers())
+    status, body = _whoami(svc, FakeMunge(uid=1001).headers("GET", "/whoami"))
     assert status == 200
     assert body == {"name": "bob", "via": "munge", "token_kind": None, "team": None}
 
@@ -44,7 +45,7 @@ def test_munge_ok(svc: Service) -> None:
 # R3
 @pytest.mark.parametrize("case", ["replayed", "expired", "garbage", "unknown uid"])
 def test_munge_replay_or_expired_rejected(svc: Service, case: str) -> None:
-    good = FakeMunge().headers()
+    good = FakeMunge().headers("GET", "/whoami")
     assert _whoami(svc, good)[0] == 200
     headers = {
         "replayed": good,  # the same credential a second time
@@ -153,7 +154,7 @@ def test_unmunge_success_parses_identity() -> None:
     assert identity == MungeIdentity(uid=1000, gid=1000)
     argv, stdin = run.calls[0]
     assert argv[0] == "unmunge"
-    assert {"--numeric", "--metadata=-", "--output=/dev/null"} <= set(argv)
+    assert argv == ["unmunge", "--numeric"]
     assert stdin == "MUNGE:AwQ...:"  # the credential goes on stdin, never on the command line
 
 
@@ -217,17 +218,54 @@ def test_token_admin_commands() -> None:
 @pytest.mark.parametrize(
     "stdout",
     [
-        _DECODED + "UID:             0\nGID:             0\n",  # payload after the blank line
-        _DECODED.replace("LENGTH:          0", "LENGTH:          32"),  # non-empty payload
+        _DECODED.replace("LENGTH:          0", "LENGTH:          30")
+        + "UID:             0\nGID:       0\n",  # payload after the blank line
+        _DECODED.replace("LENGTH:          0", "LENGTH:          32"),  # truncated payload
         _DECODED.replace("LENGTH:          0\n", "LENGTH:          0\nUID:             0\n"),
     ],
-    ids=["payload-after-block", "non-empty-payload", "duplicate-uid"],
+    ids=["payload-after-block", "truncated-payload", "duplicate-uid"],
 )
 def test_unmunge_payload_cannot_forge_identity(stdout: str) -> None:
     verifier = UnmungeVerifier(run=FakeRun(stdout))
-    if stdout.startswith(_DECODED):
-        # unmunge's own lines win; whatever follows the metadata block is ignored.
-        assert verifier.verify("MUNGE:x:") == MungeIdentity(uid=1000, gid=1000)
+    if "LENGTH:          30" in stdout:
+        # unmunge's own lines win; what follows the metadata block is only the payload.
+        identity = verifier.verify("MUNGE:x:")
+        assert (identity.uid, identity.gid) == (1000, 1000)
+        assert identity.payload == "UID:             0\nGID:       0"[:30]
     else:
         with pytest.raises(AuthenticationError, match=r"payload|twice"):
             verifier.verify("MUNGE:x:")
+
+
+# D1 binding: the payload after the metadata block is returned exactly (LENGTH characters).
+def test_unmunge_returns_payload() -> None:
+    payload = munge_payload("meta.test", "GET", "/whoami")
+    out = _DECODED.replace("LENGTH:          0", f"LENGTH:          {len(payload)}") + payload
+    identity = UnmungeVerifier(run=FakeRun(out)).verify("MUNGE:x:")
+    assert identity == MungeIdentity(uid=1000, gid=1000, payload=payload)
+
+
+# D1 binding: a credential is accepted only for this service and this request.
+@pytest.mark.parametrize(
+    ("audience", "method", "path", "ok"),
+    [
+        ("meta.test", "GET", "/whoami", True),
+        ("other.test", "GET", "/whoami", False),  # minted for another service
+        ("meta.test", "POST", "/whoami", False),  # for another method
+        ("meta.test", "GET", "/builds/1", False),  # for another path
+    ],
+)
+def test_munge_credential_bound_to_service_and_request(
+    svc: Service, audience: str, method: str, path: str, ok: bool
+) -> None:
+    status, body = _whoami(svc, FakeMunge(uid=1000, audience=audience).headers(method, path))
+    assert status == (200 if ok else 401), body
+    if not ok:
+        assert "not bound to this request" in str(body["detail"])
+
+
+def test_munge_credential_without_payload_refused(svc: Service) -> None:
+    # What `munge -n` (no payload) gives: valid, but bound to nothing, as in other MUNGE traffic.
+    status, body = _whoami(svc, {MUNGE_HEADER: "cred:1000:99"})
+    assert status == 401
+    assert "not bound" in str(body["detail"])

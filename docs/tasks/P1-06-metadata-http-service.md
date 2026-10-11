@@ -49,17 +49,22 @@ Runners on compute nodes and CLIs on login nodes talk to shared state through a 
 D1 must be confirmed by the human before merge (MUNGE availability on login nodes).
 
 Implementation notes (P1-06):
-- D1 default implemented as specified: `X-EBS-Munge` verified by `unmunge --numeric` (uid → NSS
-  name), bearer tokens hashed in `ebs.api_tokens` (revision 0005; the table moved from phase 2 to
+- D1 confirmed by the human (2026-10-11): MUNGE for cluster users, bearer tokens for CI.
+  `X-EBS-Munge` credentials carry a payload binding them to the service (`audience`) and the
+  request (method, path), checked after `unmunge --numeric` (uid → NSS name); bearer tokens are
+  hashed in `ebs.api_tokens` (revision 0005, after P1-07's 0004; the table moved from phase 2 to
   phase 1 in data-model.md, with an extra `team` column). Both schemes sit behind the
   `Authenticator` protocol and are switchable in `[meta_service]` (`munge`, `bearer`).
+- P1-07 landed first and added the toolchain registry to `MetadataStore`; the service serves it
+  under `/toolchains`. Registering is `toolchain_write`: service tokens and
+  `[meta_service].toolchain_admins` only, since a new current toolchain affects every build.
 - R4 interpretation: "CI tokens for their team" = a `ci` token whose `team` equals the build's
   `project` (the flow's project is the team's SLURM account). `service` tokens never write builds.
 - Dependencies added (all on the overview.md allowed list): runtime `fastapi`, `uvicorn`, `httpx`;
   dev `respx`. FastAPI's own body parsing is bypassed (`deps.body`): it validates in Python mode,
   where the strict `ebs.meta.api` models refuse ISO datetimes and UUID strings.
-- `add_actions` over HTTP is atomic per batch of 500, not for the whole call (documented in
-  interfaces.md § 6.1); duplicates are refused client-side before anything is sent.
+- `add_actions` over HTTP is atomic per batch of 500, not for the whole call (accepted by the
+  human, 2026-10-11; interfaces.md § 6.1); duplicates are refused client-side before sending.
 - Local integration runs used PostgreSQL 16 (no Docker daemon in the session); the target is 17.
 
 Follow-ups:
@@ -70,10 +75,6 @@ Follow-ups:
 - Starlette 1.x deprecates `httpx` in its TestClient (in favour of `httpx2`); the tests silence the
   warning. Revisit when httpx2 is stable.
 - P2-01: put domain membership into `authorize()`; P2-05: OIDC for the dashboard.
-- Before D1 is confirmed: bind MUNGE credentials to this service (munge a payload such as
-  `ebs-meta:<METHOD>:<path>` and check it server-side). Today a credential seen in other
-  plaintext MUNGE traffic is accepted until its TTL ends, because this host's replay cache has
-  not seen it. Payloads are refused for now (`LENGTH` must be 0).
 - The `http` contract backend uses Starlette's TestClient, which decodes paths a second time; an
   action id containing a literal `%2F` reaches the store as `/` there (uvicorn decodes once).
   Switch to an ASGI transport when a sync one is available in httpx.

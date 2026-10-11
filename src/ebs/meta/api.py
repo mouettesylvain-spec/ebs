@@ -72,9 +72,12 @@ __all__ = [
     "ResourceUsage",
     "ResultManifest",
     "RunnerInfo",
-    "ToolchainCreate",
-    "ToolchainRecord",
     "StateChange",
+    "ToolchainCreate",
+    "ToolchainList",
+    "ToolchainManifest",
+    "ToolchainRecord",
+    "ToolchainRegistration",
     "check_domain",
     "check_transition",
 ]
@@ -498,6 +501,7 @@ class MetadataStore(Protocol):
         """Mark a toolchain as used now (at most once per hour); unknown ids are ignored."""
         ...
 
+
 # --- HTTP wire models (P1-06) --------------------------------------------------------------------
 # The metadata service (`ebs.meta.service`) and its client (`ebs.meta.client`) exchange the models
 # above plus these envelopes; both sides parse JSON with `model_validate_json` (strict models
@@ -591,3 +595,28 @@ class ErrorBody(BaseModel):
     model_config = _WIRE
 
     detail: StrictStr
+
+
+class ToolchainRegistration(BaseModel):
+    """Body of `POST /toolchains`: the snapshot and its manifest, base64 (standard alphabet)."""
+
+    model_config = _WIRE
+
+    spec: ToolchainCreate
+    manifest_b64: StrictStr
+
+
+class ToolchainManifest(BaseModel):
+    """Response of `GET /toolchains/{id}/manifest`: base64, or None for an unknown id."""
+
+    model_config = _WIRE
+
+    manifest_b64: StrictStr | None
+
+
+class ToolchainList(BaseModel):
+    """Response of the toolchain reads; `get` and `current` hold zero or one record."""
+
+    model_config = _WIRE
+
+    toolchains: list[ToolchainRecord]

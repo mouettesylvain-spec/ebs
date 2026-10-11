@@ -24,6 +24,7 @@ from ebs.meta.api import (
     ResourceUsage,
     ResultManifest,
     RunnerInfo,
+    ToolchainCreate,
 )
 from ebs.meta.client import BearerCredential, HttpMetadataStore
 from ebs.meta.memory import InMemoryMetadataStore
@@ -81,11 +82,7 @@ def svc(backing: InMemoryMetadataStore) -> Service:
     return make_service(backing)
 
 
-_ALICE = FakeMunge(uid=1000)  # one source: each call is a fresh credential (no replays)
-
-
-def alice_headers() -> dict[str, str]:
-    return _ALICE.headers()
+ALICE = FakeMunge(uid=1000)  # an httpx.Auth: a fresh credential bound to each request
 
 
 # --- R2: OpenAPI and wire models ------------------------------------------------------------------
@@ -139,7 +136,7 @@ def test_openapi_models(svc: Service) -> None:
 # R2
 def test_responses_are_api_models(svc: Service, backing: InMemoryMetadataStore) -> None:
     build = backing.create_build(make_build())
-    r = svc.client.get(f"{B}/{build}", headers=alice_headers())
+    r = svc.client.get(f"{B}/{build}", auth=ALICE)
     assert r.status_code == 200
     assert BuildView.model_validate_json(r.content) == backing.get_build(build)
 
@@ -160,7 +157,7 @@ def test_batch_limits(svc: Service, backing: InMemoryMetadataStore, route: str) 
             path = "touch" if route == "touch" else "cache/lookup"
             url = f"{API_PREFIX}/domains/test/{path}"
             body = json.dumps({"digests": digests})
-        r = svc.client.post(url, content=body, headers=alice_headers())
+        r = svc.client.post(url, content=body, auth=ALICE)
         return int(r.status_code)
 
     assert post(BATCH_MAX + 1) == 422
@@ -198,15 +195,15 @@ def test_client_batches(
 
 
 def test_request_validation_is_422_with_message(svc: Service) -> None:
-    r = svc.client.post(B, content=b'{"uuid": "nope"}', headers=alice_headers())
+    r = svc.client.post(B, content=b'{"uuid": "nope"}', auth=ALICE)
     assert r.status_code == 422
     assert "uuid" in r.json()["detail"]
-    r = svc.client.post(B, content=b"{not json", headers=alice_headers())
+    r = svc.client.post(B, content=b"{not json", auth=ALICE)
     assert r.status_code == 422
 
 
 def test_store_errors_are_409_with_message(svc: Service) -> None:
-    r = svc.client.get(f"{B}/424242", headers=alice_headers())
+    r = svc.client.get(f"{B}/424242", auth=ALICE)
     assert r.status_code == 409
     assert "424242" in r.json()["detail"]
 
@@ -352,7 +349,7 @@ def test_database_outage_is_503(svc: Service, backing: InMemoryMetadataStore) ->
         raise MetadataError("cache_get: metadata database error") from ConnectionError("down")
 
     backing.cache_get = broken  # type: ignore[method-assign,assignment]
-    r = svc.client.get(f"{API_PREFIX}/domains/test/cache/{dg('k')}", headers=alice_headers())
+    r = svc.client.get(f"{API_PREFIX}/domains/test/cache/{dg('k')}", auth=ALICE)
     assert r.status_code == 503
     assert r.json()["detail"] == "metadata database unavailable; retry later"
 
@@ -364,7 +361,7 @@ def test_unexpected_errors_are_500_without_internals(
         raise RuntimeError("secret internals")
 
     backing.cache_get = bug  # type: ignore[method-assign,assignment]
-    r = svc.client.get(f"{API_PREFIX}/domains/test/cache/{dg('k')}", headers=alice_headers())
+    r = svc.client.get(f"{API_PREFIX}/domains/test/cache/{dg('k')}", auth=ALICE)
     assert r.status_code == 500
     assert "secret" not in r.text
     assert json.loads(r.text)["detail"]
@@ -374,7 +371,7 @@ def test_state_fields_cannot_shadow_arguments(svc: Service, backing: InMemoryMet
     build = backing.create_build(make_build())
     backing.add_actions(build, [ActionRow(action_id="a", step="lint")])
     body = json.dumps({"state": "running", "fields": {"build": 3}})
-    r = svc.client.post(f"{B}/{build}/actions/a/state", content=body, headers=alice_headers())
+    r = svc.client.post(f"{B}/{build}/actions/a/state", content=body, auth=ALICE)
     assert r.status_code == 409
     assert "build" in r.json()["detail"]
     assert backing.list_actions(build)[0].state == "queued"
@@ -383,9 +380,7 @@ def test_state_fields_cannot_shadow_arguments(svc: Service, backing: InMemoryMet
 def test_event_must_match_path_build(svc: Service, backing: InMemoryMetadataStore) -> None:
     build = backing.create_build(make_build())
     event = Event(ts=FakeClock().now(), build=BuildId(build + 1), type="plan_ready", data={})
-    r = svc.client.post(
-        f"{B}/{build}/events", content=event.model_dump_json(), headers=alice_headers()
-    )
+    r = svc.client.post(f"{B}/{build}/events", content=event.model_dump_json(), auth=ALICE)
     assert r.status_code == 422
     assert f"not {build}" in r.json()["detail"]
 
@@ -404,8 +399,17 @@ def test_app_from_config(tmp_path: Path) -> None:
     store = app.state.deps.store
     assert isinstance(store, PgMetadataStore)
     store.close()
+    config.write_text(
+        '[metadata]\nurl = "postgresql+psycopg://ebs@db.example.invalid/ebs"\n'
+        '[meta_service]\naudience = "ebs-meta.example"\ntoolchain_admins = ["tcadmin"]\n'
+    )
+    app = app_from_config(env)
+    deps = app.state.deps
+    assert deps.authorize.toolchain_admins == {"tcadmin"}
+    deps.store.close()
     for bad, match in (
         ("[meta_service]\nmunge = false\nbearer = false\n", "no authentication"),
+        ("[meta_service]\nmunge = true\n", "audience"),  # D1: MUNGE needs the binding
         ("[meta_service]\ncolour = 1\n", r"\[meta_service\]"),
     ):
         config.write_text(
@@ -426,3 +430,63 @@ def test_awkward_action_ids(svc: Service, action_id: str) -> None:
     assert store.get_result(build, action_id) == make_result(dg("k"))
     assert [a.action_id for a in store.list_actions(build)] == [action_id]
     assert store.list_actions(build)[0].state == "running"
+
+
+# --- toolchain registry over HTTP (P1-07 methods) -------------------------------------------------
+
+
+def _toolchain(registered_by: str = "alice") -> ToolchainCreate:
+    from ebs.toolchain.model import toolchain_id
+
+    env = {"PATH": "/opt/eda/bin:/usr/bin"}
+    fingerprint = dg("fp")
+    return ToolchainCreate(
+        id=toolchain_id("questa/2025.2", "2025.2", fingerprint, env),
+        name="questa",
+        module="questa/2025.2",
+        version="2025.2",
+        fingerprint=fingerprint,
+        env=env,
+        install_roots=["/opt/eda"],
+        registered_by=registered_by,
+    )
+
+
+# R4: registering a toolchain makes it current for every later build, so only toolchain admins
+# (users listed in [meta_service].toolchain_admins) and service tokens may.
+@pytest.mark.parametrize(
+    ("who", "allowed"),
+    [
+        ("alice", True),  # listed admin
+        ("bob", False),
+        ("ci-same-team", False),
+        ("service-token", True),
+    ],
+)
+def test_toolchain_registration_restricted(
+    backing: InMemoryMetadataStore, who: str, allowed: bool
+) -> None:
+    svc = make_service(backing, toolchain_admins=("alice",))
+    store = _principal_store(svc, who)
+    spec = _toolchain()
+    if allowed:
+        assert store.register_toolchain(spec, b"\x00\xffmanifest").inserted is True
+        assert backing.toolchain_manifest(spec.id) == b"\x00\xffmanifest"
+    else:
+        with pytest.raises(MetadataError, match="not allowed to register toolchains"):
+            store.register_toolchain(spec, b"m")
+        assert backing.list_toolchains() == []
+        backing.register_toolchain(spec, b"m")
+    # Reading and touching stay open to every authenticated principal.
+    assert store.current_toolchain("questa/2025.2") == backing.get_toolchain(spec.id)
+    store.touch_toolchain(spec.id)
+    assert store.get_toolchain(dg("unknown")) is None
+    assert store.toolchain_manifest(dg("unknown")) is None
+
+
+def test_toolchain_manifest_must_be_base64(svc: Service) -> None:
+    body = json.dumps({"spec": _toolchain().model_dump(mode="json"), "manifest_b64": "%%%"})
+    admin = make_service(InMemoryMetadataStore(), toolchain_admins=("alice",))
+    r = admin.client.post(f"{API_PREFIX}/toolchains", content=body, auth=ALICE)
+    assert r.status_code == 409
+    assert "base64" in r.json()["detail"]

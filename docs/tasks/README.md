@@ -101,7 +101,7 @@ flowchart LR
 
 | ID | Question | Default used until confirmed | Confirm before |
 | --- | --- | --- | --- |
-| D1 | How do runners/CLI authenticate to the metadata service? | MUNGE credential (`munge -n`) on cluster hosts, verified by the service with `unmunge`; bearer tokens for CI/web | P1-06 |
+| D1 | How do runners/CLI authenticate to the metadata service? | **Decided (2026-10-11):** MUNGE credentials on cluster hosts, bound to the service and request by a signed payload and verified with `unmunge`; bearer tokens for CI (and services) | P1-06 |
 | D2 | Live log streaming path | Runner appends to `/debug/<domain>/<build>/<action>/live.log` (flushed every 5 s); `ebs logs -f` tails it | P1-04 |
 | D3 | Public repo host / CI for the OSS project | **Decided (2026-10-07):** github.com is the primary repo with GitHub Actions (`.github/workflows/`); supersedes the 2026-10-05 GitLab decision | P0-01 |
 | D4 | Release version format | Free-form string validated by regex `^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`; docs recommend CalVer `YYYY.MM.N` | P2-02 |

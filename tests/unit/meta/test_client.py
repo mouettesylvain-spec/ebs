@@ -30,6 +30,7 @@ from ebs.meta.client import (
     HttpMetadataConfig,
     HttpMetadataStore,
     MungeCredential,
+    munge_payload,
 )
 
 URL = "https://meta.example.invalid"
@@ -58,7 +59,7 @@ class Creds:
     def __init__(self) -> None:
         self.n = 0
 
-    def headers(self) -> dict[str, str]:
+    def headers(self, method: str, path: str) -> dict[str, str]:
         self.n += 1
         return {"X-EBS-Munge": f"cred-{self.n}"}
 
@@ -206,7 +207,7 @@ def test_unexpected_response_is_metadata_error(store: HttpMetadataStore) -> None
 
 
 def test_bearer_credential() -> None:
-    assert BearerCredential("tok").headers() == {"Authorization": "Bearer tok"}
+    assert BearerCredential("tok").headers("GET", "/x") == {"Authorization": "Bearer tok"}
     with pytest.raises(ConfigError):
         BearerCredential(" ")
 
@@ -218,14 +219,18 @@ def test_munge_credential_runs_munge() -> None:
         calls.append(list(argv))
         return subprocess.CompletedProcess(list(argv), 0, "MUNGE:AwQ:\n", "")
 
-    assert MungeCredential(run=run).headers() == {"X-EBS-Munge": "MUNGE:AwQ:"}
-    assert calls == [["munge", "--no-input"]]
+    cred = MungeCredential("meta.example.invalid", run=run)
+    assert cred.headers("POST", "/builds/7/actions/a b/state") == {"X-EBS-Munge": "MUNGE:AwQ:"}
+    # The payload binds the credential to this service and request (D1).
+    payload = '["ebs-meta/1","meta.example.invalid","POST","/builds/7/actions/a b/state"]'
+    assert calls == [["munge", "--string", payload]]
+    assert munge_payload("meta.example.invalid", "post", "/builds/7/actions/a b/state") == payload
 
     def fail(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(list(argv), 1, "", "munge: Error: munged not running")
 
     with pytest.raises(MetadataError, match="munged not running"):
-        MungeCredential(run=fail).headers()
+        MungeCredential("meta.example.invalid", run=fail).headers("GET", "/whoami")
 
 
 def test_config(tmp_path: Path) -> None:
@@ -235,13 +240,14 @@ def test_config(tmp_path: Path) -> None:
     cfg = HttpMetadataConfig.from_mapping({"url": URL, "token_file": str(token)})
     store = HttpMetadataStore.from_config(cfg, environ={})
     assert isinstance(store._credentials, BearerCredential)
-    assert store._credentials.headers() == {"Authorization": "Bearer secret-token"}
+    assert store._credentials.headers("GET", "/x") == {"Authorization": "Bearer secret-token"}
     store.close()
     munge = HttpMetadataStore.from_config({"url": URL}, environ={})
     assert isinstance(munge._credentials, MungeCredential)
+    assert munge._credentials.audience == "meta.example.invalid"  # host of [metadata].url
     munge.close()
     env = HttpMetadataStore.from_config({"url": URL}, environ={"EBS_META_TOKEN": "t2"})
-    assert env._credentials.headers() == {"Authorization": "Bearer t2"}  # type: ignore[union-attr]
+    assert env._credentials.headers("GET", "/x") == {"Authorization": "Bearer t2"}  # type: ignore[union-attr]
     env.close()
     for bad in ({"url": "ftp://x"}, {"url": URL, "colour": 1}, {"url": URL, "auth": "magic"}):
         with pytest.raises(ConfigError):

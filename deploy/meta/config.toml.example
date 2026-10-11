@@ -10,4 +10,9 @@ max_overflow = 10
 [meta_service]
 munge = true          # X-EBS-Munge credentials, verified with unmunge (decision D1)
 unmunge = "unmunge"
+# MUNGE credentials are bound to this name: the host[:port] of the URL clients use
+# ([metadata].url = "https://ebs-meta.example"), or their [metadata].audience.
+audience = "ebs-meta.example"
 bearer = true         # Authorization: Bearer tokens (python -m ebs.meta.service token create)
+# Users who may register toolchains (`ebs toolchain register`); service tokens may too.
+toolchain_admins = []

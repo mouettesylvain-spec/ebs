@@ -217,7 +217,9 @@ def h(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterat
 
 def _over_http(backing: Harness) -> Harness:
     """The same harness with the store replaced by an HTTP client of a service over it."""
-    return Harness(make_service(backing.store).store(), backing.clock, backing.inspect)
+    # alice registers the toolchains of the P1-07 tests: make her a toolchain admin.
+    service = make_service(backing.store, toolchain_admins=("alice",))
+    return Harness(service.store(), backing.clock, backing.inspect)
 
 
 @pytest.fixture

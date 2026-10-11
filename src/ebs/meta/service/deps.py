@@ -12,12 +12,13 @@ from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
 
-from ebs.meta.api import BuildId, MetadataStore
+from ebs.meta.api import API_PREFIX, BuildId, MetadataStore
 from ebs.meta.service.auth import (
     Authenticator,
     AuthorizeHook,
     BuildOwner,
     Principal,
+    RequestInfo,
     authorize,
 )
 from ebs.meta.service.readiness import Readiness
@@ -71,7 +72,14 @@ def get_deps(request: Request) -> ServiceDeps:
 
 def current_principal(request: Request) -> Principal:
     """The authenticated caller (sync: `unmunge` runs in the threadpool); 401 otherwise."""
-    principal = get_deps(request).authenticator.authenticate(request.headers)
+    path: str = request.scope["path"]  # percent-decoded, as the client binds it
+    at = path.find(API_PREFIX)
+    info = RequestInfo(
+        method=request.method,
+        path=path[at + len(API_PREFIX) :] if at >= 0 else path,
+        headers=request.headers,
+    )
+    principal = get_deps(request).authenticator.authenticate(info)
     if principal is None:  # pragma: no cover - ChainAuthenticator raises instead
         raise AssertionError("authenticator returned no principal")
     request.state.principal = principal

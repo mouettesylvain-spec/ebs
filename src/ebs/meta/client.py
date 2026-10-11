@@ -16,6 +16,9 @@ atomic, but a failure in a later batch leaves the earlier ones added (interfaces
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import os
 import stat
 import subprocess
@@ -23,7 +26,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Final, Literal, Protocol, TypeVar
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
@@ -32,7 +35,7 @@ from pydantic_core import PydanticSerializationError
 from ebs.core.digest import Digest
 from ebs.core.errors import ConfigError, MetadataError
 from ebs.core.log import get_logger
-from ebs.meta._common import check_digest, revalidate
+from ebs.meta._common import check_digest, check_toolchain, revalidate
 from ebs.meta.api import (
     API_PREFIX,
     BATCH_MAX,
@@ -52,20 +55,28 @@ from ebs.meta.api import (
     Event,
     OptionalDigest,
     OptionalResult,
+    RegisterOutcome,
     ResultManifest,
     StateChange,
+    ToolchainCreate,
+    ToolchainList,
+    ToolchainManifest,
+    ToolchainRecord,
+    ToolchainRegistration,
     check_domain,
 )
 
 __all__ = [
     "DEFAULT_TIMEOUT_S",
     "MUNGE_HEADER",
+    "MUNGE_PAYLOAD_VERSION",
     "TOKEN_ENV",
     "BearerCredential",
     "CredentialSource",
     "HttpMetadataConfig",
     "HttpMetadataStore",
     "MungeCredential",
+    "munge_payload",
 ]
 
 _log = get_logger(__name__)
@@ -84,9 +95,31 @@ _T = TypeVar("_T")
 
 
 class CredentialSource(Protocol):
-    """Headers that authenticate one request; called again for every attempt."""
+    """Headers that authenticate one request; called again for every attempt.
 
-    def headers(self) -> dict[str, str]: ...
+    `method` and `path` (below `API_PREFIX`, percent-decoded) let a credential be bound to the
+    request it authenticates (MUNGE).
+    """
+
+    def headers(self, method: str, path: str) -> dict[str, str]: ...
+
+
+MUNGE_PAYLOAD_VERSION: Final = "ebs-meta/1"
+
+
+def munge_payload(audience: str, method: str, path: str) -> str:
+    """What a MUNGE credential for this service must carry: compact JSON
+    `["ebs-meta/1", audience, METHOD, path]`, with `path` below `API_PREFIX`, percent-decoded.
+
+    MUNGE credentials are only replay-protected per host, so one seen in other MUNGE traffic of
+    the cluster (SLURM RPCs) could otherwise be presented here; binding the payload to this
+    service (`audience`) and to this request makes such a credential useless.
+    """
+    return json.dumps(
+        [MUNGE_PAYLOAD_VERSION, audience, method.upper(), path],
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
 
 
 class BearerCredential:
@@ -98,7 +131,7 @@ class BearerCredential:
             raise ConfigError("the metadata service token is empty")
         self._token = token
 
-    def headers(self) -> dict[str, str]:
+    def headers(self, method: str, path: str) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"}
 
     def __repr__(self) -> str:
@@ -118,29 +151,39 @@ def _run(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[
 
 
 class MungeCredential:
-    """A fresh MUNGE credential per request (`munge --no-input`), sent as `X-EBS-Munge` (D1).
+    """A fresh MUNGE credential per request, sent as `X-EBS-Munge` (D1).
 
     MUNGE proves the caller's uid to the service; munged on the login and compute nodes must
-    share the service host's key.
+    share the service host's key. The credential carries `munge_payload(audience, method,
+    path)`, which the service checks, so it is good for this service and request only.
     """
 
-    def __init__(self, munge: str = "munge", *, run: _Run = _run, timeout_s: float = 5.0) -> None:
-        self._argv = [munge, "--no-input"]
+    def __init__(
+        self,
+        audience: str,
+        munge: str = "munge",
+        *,
+        run: _Run = _run,
+        timeout_s: float = 5.0,
+    ) -> None:
+        self.audience = audience
+        self._munge = munge
         self._run = run
         self._timeout_s = timeout_s
 
-    def headers(self) -> dict[str, str]:
+    def headers(self, method: str, path: str) -> dict[str, str]:
+        argv = [self._munge, "--string", munge_payload(self.audience, method, path)]
         try:
-            done = self._run(self._argv, timeout=self._timeout_s)
+            done = self._run(argv, timeout=self._timeout_s)
         except (OSError, subprocess.SubprocessError) as exc:
             raise MetadataError(
-                f"cannot create a MUNGE credential with {self._argv[0]!r}: {exc}. Install MUNGE "
+                f"cannot create a MUNGE credential with {self._munge!r}: {exc}. Install MUNGE "
                 "and start munged, or set [metadata].token_file for a bearer token"
             ) from exc
         credential = done.stdout.strip()
         if done.returncode != 0 or not credential:
             raise MetadataError(
-                f"{self._argv[0]!r} failed (exit {done.returncode}): {done.stderr.strip()}. "
+                f"{self._munge!r} failed (exit {done.returncode}): {done.stderr.strip()}. "
                 "Check that munged is running on this host"
             )
         return {MUNGE_HEADER: credential}
@@ -151,7 +194,8 @@ class HttpMetadataConfig(BaseModel):
 
     `url` is the service root (`https://ebs-meta.example`); routes live under `/api/v1`.
     `auth` defaults to `token` when a token is configured (`token_file` or `$EBS_META_TOKEN`),
-    else `munge`.
+    else `munge`. `audience` (MUNGE only) must equal the service's `[meta_service].audience`;
+    by default it is the `host[:port]` of `url`.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
@@ -161,6 +205,7 @@ class HttpMetadataConfig(BaseModel):
     token_file: StrictStr | None = None
     ca_file: StrictStr | None = None
     munge: StrictStr = "munge"
+    audience: StrictStr | None = None  # MUNGE binding; default: host[:port] of `url`
     timeout_s: Annotated[StrictInt, Field(ge=1, le=600)] = int(DEFAULT_TIMEOUT_S)
     retries: Annotated[StrictInt, Field(ge=0, le=10)] = 4
 
@@ -201,7 +246,8 @@ def _credentials(cfg: HttpMetadataConfig, environ: Mapping[str, str]) -> Credent
         token = environ[TOKEN_ENV]
     auth = cfg.auth or ("token" if token is not None else "munge")
     if auth == "munge":
-        return MungeCredential(cfg.munge)
+        audience = cfg.audience or urlsplit(cfg.url).netloc.lower()
+        return MungeCredential(audience, cfg.munge)
     if token is None:
         raise ConfigError(
             f"[metadata].auth = 'token' needs a token: set [metadata].token_file or ${TOKEN_ENV}"
@@ -297,7 +343,7 @@ class HttpMetadataStore:
             if content is not None:
                 headers["Content-Type"] = "application/json"
             if self._credentials is not None:
-                headers |= self._credentials.headers()
+                headers |= self._credentials.headers(method, unquote(path))
             problem: str
             try:
                 response = self._client.request(
@@ -486,6 +532,68 @@ class HttpMetadataStore:
             "GET", f"/domains/{_q(domain)}/outputs/{_q(str(object_id))}", what, idempotent=True
         )
         return self._parse(r, OptionalDigest, what).digest
+
+    # --- toolchain registry (P1-07) -------------------------------------------------------------
+
+    def register_toolchain(self, spec: ToolchainCreate, manifest: bytes) -> RegisterOutcome:
+        checked = check_toolchain(spec, manifest)
+        what = f"register_toolchain {checked.module!r}"
+        body = ToolchainRegistration(
+            spec=checked, manifest_b64=base64.b64encode(manifest).decode("ascii")
+        )
+        # Idempotent by design: registering an id again changes nothing new (P1-07).
+        r = self._call("POST", "/toolchains", what, body=body, idempotent=True)
+        return self._parse(r, RegisterOutcome, what)
+
+    def _toolchains(
+        self, path: str, what: str, params: Mapping[str, str] | None = None
+    ) -> list[ToolchainRecord]:
+        r = self._call("GET", path, what, params=params, idempotent=True)
+        return self._parse(r, ToolchainList, what).toolchains
+
+    def get_toolchain(self, toolchain_id: Digest) -> ToolchainRecord | None:
+        check_digest(toolchain_id, "get_toolchain id")
+        found = self._toolchains(
+            f"/toolchains/{_q(str(toolchain_id))}", f"get_toolchain {toolchain_id}"
+        )
+        return found[0] if found else None
+
+    def current_toolchain(self, module: str) -> ToolchainRecord | None:
+        found = self._toolchains(
+            "/toolchains/current", f"current_toolchain {module!r}", {"module": module}
+        )
+        return found[0] if found else None
+
+    def list_toolchains(
+        self, *, module: str | None = None, current_only: bool = False
+    ) -> list[ToolchainRecord]:
+        params = {"current_only": "true" if current_only else "false"}
+        if module is not None:
+            params["module"] = module
+        return self._toolchains("/toolchains", "list_toolchains", params)
+
+    def toolchain_manifest(self, toolchain_id: Digest) -> bytes | None:
+        check_digest(toolchain_id, "toolchain_manifest id")
+        what = f"toolchain_manifest {toolchain_id}"
+        r = self._call(
+            "GET", f"/toolchains/{_q(str(toolchain_id))}/manifest", what, idempotent=True
+        )
+        encoded = self._parse(r, ToolchainManifest, what).manifest_b64
+        if encoded is None:
+            return None
+        try:
+            return base64.b64decode(encoded, validate=True)
+        except binascii.Error as exc:
+            raise MetadataError(f"{what}: the service sent an invalid manifest: {exc}") from None
+
+    def touch_toolchain(self, toolchain_id: Digest) -> None:
+        check_digest(toolchain_id, "touch_toolchain id")
+        self._call(
+            "POST",
+            f"/toolchains/{_q(str(toolchain_id))}/touch",
+            f"touch_toolchain {toolchain_id}",
+            idempotent=True,
+        )
 
     # --- access tracking, events ----------------------------------------------------------------
 
