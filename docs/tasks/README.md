@@ -102,10 +102,10 @@ flowchart LR
 | ID | Question | Default used until confirmed | Confirm before |
 | --- | --- | --- | --- |
 | D1 | How do runners/CLI authenticate to the metadata service? | **Decided (2026-10-11):** MUNGE credentials on cluster hosts, bound to the service and request by a signed payload and verified with `unmunge`; bearer tokens for CI (and services) | P1-06 |
-| D2 | Live log streaming path | Runner appends to `/debug/<domain>/<build>/<action>/live.log` (flushed every 5 s); `ebs logs -f` tails it | P1-04 |
+| D2 | Live log streaming path | **Decided (2026-10-11):** runner appends to `/debug/<domain>/<build>/<action>/live.log` (flushed every 5 s); `ebs logs -f` tails it | P1-04 |
 | D3 | Public repo host / CI for the OSS project | **Decided (2026-10-07):** github.com is the primary repo with GitHub Actions (`.github/workflows/`); supersedes the 2026-10-05 GitLab decision | P0-01 |
 | D4 | Release version format | Free-form string validated by regex `^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`; docs recommend CalVer `YYYY.MM.N` | P2-02 |
-| D5 | SLURM limits (MaxSubmitJobs, MaxArraySize, default partition/QOS per team) | All from `[slurm]` config; conservative defaults (array ≤ 1000, throttle 200) | P1-02 |
+| D5 | SLURM limits (MaxSubmitJobs, MaxArraySize, default partition) | **Decided (2026-10-11):** all from `[slurm]` config with defaults `max_array_size = 1000`, `array_throttle = 200`, `max_pending_jobs = 2000` (array tasks count individually), `max_submits_per_min = 60`, `default_partition = ""` (cluster default); real site values go in site config. Per-team account/QOS mapping is P1-03's `account_map`/`qos` | P1-02 |
 | D6 | Unprivileged user namespaces on compute nodes | Sandbox backend auto-detects; falls back to Apptainer, then to staging-only with a warning | P3-01 |
 | D7 | NDA domains and NFS exports | Domains are config (`[[domains]]`), one CAS root per domain, created by an admin script | P2-01 |
 
