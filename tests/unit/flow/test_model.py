@@ -97,7 +97,7 @@ def test_format_inverse() -> None:
 # R5
 def test_resources_dump_round_trips() -> None:
     res = Resources.model_validate({"cpus": 2, "mem": "8GiB", "time": "90:00"})
-    assert res.model_dump() == {"cpus": 2, "mem": "8G", "time": "90m"}
+    assert res.model_dump() == {"cpus": 2, "mem": "8G", "time": "90m", "max_parallel": None}
     assert Resources.model_validate(res.model_dump()) == res
 
 
@@ -202,6 +202,21 @@ def test_resources_deferred() -> None:
 # R5
 def test_resources_default_empty() -> None:
     assert Resources() == Resources(cpus=None, mem=None, time=None)
+
+
+# P1-02 R2: per-step array throttle; a literal positive integer.
+def test_resources_max_parallel() -> None:
+    assert Resources.model_validate({"max_parallel": 8}).max_parallel == 8
+    assert Resources().max_parallel is None
+    assert Resources(max_parallel=3).model_dump() == {
+        "cpus": None,
+        "mem": None,
+        "time": None,
+        "max_parallel": 3,
+    }
+    for value in (0, -1, True, "4", "${row.n}", 1.5):
+        with pytest.raises(ValidationError, match="max_parallel"):
+            Resources.model_validate({"max_parallel": value})
 
 
 # --- R6: outputs -------------------------------------------------------------------------------

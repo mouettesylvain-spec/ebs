@@ -201,7 +201,11 @@ def _resources(name: str, resources: Resources, scope: Scope) -> Resources:
         raise fail("time", str(exc)) from None
     # Values are already parsed; validation would reject the byte/second ints as bare numbers.
     return Resources.model_construct(
-        _fields_set=set(resources.model_fields_set), cpus=cpus, mem=mem, time=time
+        _fields_set=set(resources.model_fields_set),
+        cpus=cpus,
+        mem=mem,
+        time=time,
+        max_parallel=resources.max_parallel,
     )
 
 
