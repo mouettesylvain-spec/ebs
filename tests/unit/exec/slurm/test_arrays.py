@@ -135,3 +135,16 @@ def test_throttle_override() -> None:
     assert job.throttle == 3
     (job,) = plan_jobs(_specs(10), max_array_size=1000, throttle=200)
     assert job.throttle == 200
+
+
+# R2: in one array, the strictest max_parallel of its actions wins.
+def test_throttle_is_strictest_of_batch() -> None:
+    specs = [
+        *_specs(1, max_parallel=4),
+        dataclasses.replace(spec("x[0]")),
+        *[dataclasses.replace(s, action_id="y[0]") for s in _specs(1, max_parallel=2)],
+    ]
+    (job,) = plan_jobs(specs, max_array_size=10, throttle=50)
+    assert job.throttle == 2
+    (job,) = plan_jobs(_specs(3), max_array_size=10, throttle=50)
+    assert job.throttle == 50

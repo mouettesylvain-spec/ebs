@@ -33,6 +33,7 @@ from ebs.meta.api import BuildId
 from ebs.meta.memory import InMemoryMetadataStore
 from ebs.runner.errors import format_infra_line
 from tests.helpers.executor import PLAN, batch
+from tests.helpers.plan import resources
 from tests.helpers.runner import new_build
 from tests.helpers.slurm import ScriptedSlurm
 
@@ -505,3 +506,68 @@ def test_cancel_when_query_fails(env: Env) -> None:
     (scancel,) = [c for c in env.slurm.calls if Path(c[0]).name == "scancel"]
     assert scancel[1:] == ["100"]
     assert {s.state for s in ex.poll(handles).values()} == {"cancelled"}
+
+
+# R8: a batch needing more sbatch calls than the rate limit still goes on an empty window.
+def test_rate_never_deadlocks_on_split_batch(env: Env) -> None:
+    ex = env.executor(max_submits_per_min=1, max_array_size=2)
+    handles = ex.submit(batch("t[0]", "t[1]", "t[2]", "t[3]"))
+    assert len(handles) == 4
+    assert env.slurm.count("sbatch") == 2
+
+
+# R8: every sbatch call of a split batch counts against the rate.
+def test_rate_limit_counts_every_sbatch_call(env: Env) -> None:
+    ex = env.executor(max_submits_per_min=3, max_array_size=2)
+    ex.submit(batch("a[0]"))
+    env.clock.advance(1)
+    ex.submit(batch("t[0]", "t[1]", "t[2]", "t[3]"))  # 1 + 2 = 3 calls: fits exactly
+    assert env.slurm.count("sbatch") == 3
+    env.clock.advance(60)  # the window is empty again
+    ex.submit(batch("b[0]"))
+    env.clock.advance(1)
+    ex.submit(batch("c[0]"))
+    env.clock.advance(1)
+    with pytest.raises(ExecutorBusy) as busy:
+        ex.submit(batch("u[0]", "u[1]", "u[2]", "u[3]"))  # 2 + 2 > 3, though 2 + 1 is not
+    assert env.slurm.count("sbatch") == 5
+    assert busy.value.retry_after_s == pytest.approx(58.0)
+
+
+# R8: a batch refused for jobs in flight is told to come back after one poll interval.
+def test_in_flight_refusal_waits_poll_min(env: Env) -> None:
+    ex = env.executor(max_pending_jobs=1, poll_min_s=7.0, poll_max_s=30.0)
+    ex.submit(batch("t[0]"))
+    with pytest.raises(ExecutorBusy) as busy:
+        ex.submit(batch("t[1]"))
+    assert busy.value.retry_after_s == 7.0
+
+
+def _mixed(env: Env, *resources: Resources) -> list[list[str]]:
+    ids = [f"t[{i}]" for i in range(len(resources))]
+    b = batch(*ids)
+    b = dataclasses.replace(
+        b,
+        actions=tuple(
+            dataclasses.replace(a, resources=r) for a, r in zip(b.actions, resources, strict=True)
+        ),
+    )
+    env.executor().submit(b)
+    return _sbatches(env.slurm)
+
+
+# R1: one sbatch call for actions with different requests asks for the largest of each.
+def test_array_requests_largest_resources(env: Env) -> None:
+    (argv,) = _mixed(
+        env,
+        Resources(cpus=4, mem="1G", time="10m"),
+        Resources(cpus=1, mem="3G", time="60s"),
+    )
+    assert _opt(argv, "cpus-per-task") == "4"
+    assert _opt(argv, "mem") == "3072M"
+    assert _opt(argv, "time") == "0-00:12:00"
+
+
+def test_mem_rounds_up_to_mib(env: Env) -> None:
+    (argv,) = _mixed(env, resources(None, 3 * 2**30 + 1, None))
+    assert _opt(argv, "mem") == "3073M"

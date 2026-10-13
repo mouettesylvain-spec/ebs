@@ -20,7 +20,7 @@ from ebs.exec.slurm.cli import (
     sbatch_argv,
     write_env_file,
 )
-from ebs.exec.slurm.models import ArrayTaskId, JobId, SlurmJobInfo
+from ebs.exec.slurm.models import ArrayTaskId, JobId, JobRef, SlurmJobInfo
 
 FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "slurm" / "26.05"
 
@@ -713,3 +713,52 @@ def test_query_scales_to_large_arrays() -> None:
     assert result[refs[0]].state == "RUNNING"
     assert result[refs[-1]].state == "PENDING"
     assert elapsed < 1.0, f"query of {tasks} array tasks took {elapsed:.2f} s"
+
+
+def _pending(job: int, spec: str, reason: str) -> dict[str, Any]:
+    return {
+        "job_id": job,
+        "job_state": ["PENDING"],
+        "state_reason": reason,
+        "array_job_id": {"set": True, "infinite": False, "number": job},
+        "array_task_id": {"set": False, "infinite": False, "number": 0},
+        "array_task_string": spec,
+    }
+
+
+# P1-02: when several records answer one reference, the later one wins (as before the index).
+def test_query_later_pending_record_wins() -> None:
+    records = [_pending(50, "0-3", "Priority"), _pending(50, "2-3", "JobArrayTaskLimit")]
+    runner = FakeRunner(squeue=[ok(json.dumps({"jobs": records}))])
+    refs = [ArrayTaskId(JobId("50"), 2), ArrayTaskId(JobId("50"), 0)]
+    result = make_cli(runner).query(refs)
+    assert result[refs[0]].reason == "JobArrayTaskLimit"
+    assert result[refs[1]].reason == "Priority"
+
+
+def test_query_later_duplicate_record_wins() -> None:
+    def rec(job: int, state: str, array: int | None = None, task: int | None = None) -> object:
+        return {
+            "job_id": job,
+            "state": {"current": [state], "reason": "None"},
+            "array": {
+                "job_id": array or 0,
+                "task_id": {"set": task is not None, "infinite": False, "number": task or 0},
+                "task": "",
+            },
+        }
+
+    jobs = [
+        rec(7, "FAILED"),
+        rec(7, "RUNNING"),
+        rec(61, "PENDING", 60, 1),
+        rec(62, "RUNNING", 60, 1),
+    ]
+    runner = FakeRunner(
+        squeue=[err("slurm_load_jobs error: Invalid job id specified")],
+        sacct=[ok(json.dumps({"jobs": jobs}))],
+    )
+    refs: list[JobRef] = [JobId("7"), ArrayTaskId(JobId("60"), 1)]
+    result = make_cli(runner).query(refs)
+    assert result[refs[0]].state == "RUNNING"
+    assert result[refs[1]].state == "RUNNING"

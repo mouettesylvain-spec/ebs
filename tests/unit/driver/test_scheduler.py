@@ -388,3 +388,22 @@ def test_refused_retry_abandoned_on_stop(env: Env) -> None:
     rows = {r.action_id: r for r in env.store.list_actions(outcome.build)}
     assert rows["a"].state == "infra_failed"
     assert rows["a"].infra_reason == "node_fail"
+
+
+# P1-02 R8: an executor that says "busy, retry now" still gets at least poll_min_s of rest.
+def test_busy_with_zero_delay_waits_poll_min(env: Env) -> None:
+    plan = env.plan({"a": Node()})
+    executor = env.executor()
+    real = executor.submit
+    refused: list[int] = []
+
+    def submit(batch: SubmitBatch) -> list[JobHandle]:
+        if len(refused) < 3:
+            refused.append(1)
+            raise ExecutorBusy("busy", retry_after_s=0.0)
+        return real(batch)
+
+    executor.submit = submit  # type: ignore[method-assign]
+    outcome = env.run(plan, executor, poll_min_s=1.5, poll_max_s=4.0)
+    assert outcome.status == "passed"
+    assert env.clock.sleeps[:3] == [1.5, 1.5, 1.5]

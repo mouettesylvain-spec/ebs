@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -81,3 +82,12 @@ def test_quoting_hostile_values(tmp_path: Path, values: list[str]) -> None:
     assert done.returncode == 0, done.stderr
     assert json.loads(out.read_text()) == [*values, f"$(touch {canary})", "*"]
     assert not canary.exists()
+
+
+# R3: the runner command itself is quoted too (a configured path may hold spaces or $).
+def test_runner_path_is_quoted() -> None:
+    argv = ["/opt/my ebs/$X/ebs-runner", "--plan", "p"]
+    script = render_jobscript(argv)
+    line = next(ln for ln in script.splitlines() if ln.startswith("exec "))
+    assert line == "exec '/opt/my ebs/$X/ebs-runner' --plan p"
+    assert shlex.split(line)[1:] == argv
