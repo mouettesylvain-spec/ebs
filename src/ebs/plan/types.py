@@ -101,12 +101,15 @@ class InputRef:
     """One staged input: where the runner puts it and the content id it must have.
 
     `id` is None only for a deterministic output of an action that has not run yet (I14).
+    `writable` (P1-04) stages private writable copies instead of read-only CAS links; it
+    changes how the input is staged, never its content, so it is NOT in the key.
     """
 
     logical_path: str  # normalized, relative, POSIX; where the runner stages it
     kind: InputKind
     source: SourceInput | ActionOutputInput | ImportInput
     id: Digest | None
+    writable: bool = False  # NOT in key
 
 
 @dataclass(frozen=True, slots=True)

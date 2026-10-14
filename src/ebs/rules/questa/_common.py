@@ -12,7 +12,7 @@ from typing import Final
 
 from ebs.core.errors import RuleError
 from ebs.flow.interp import ParamValue, Ref, parse_template
-from ebs.flow.model import OutputDef, StepDef
+from ebs.flow.model import OutputDef, StepDef, input_texts
 from ebs.rules.api import (
     GENERATED_DIR,
     INFRA,
@@ -84,9 +84,7 @@ def step_inputs(step: StepDef, ctx: ExpandContext) -> StepInputs:
     refs: dict[str, list[str]] = {}
     sources: dict[str, list[str]] = {}
     for name, value in step.inputs.items():
-        texts = (value,) if isinstance(value, str) else value
-        for i, text in enumerate(texts):
-            field = f"inputs.{name}" if isinstance(value, str) else f"inputs.{name}[{i}]"
+        for field, text in input_texts(name, value):
             is_ref = any(
                 isinstance(p, Ref) and p.kind == "steps" for p in parse_template(text).parts
             )

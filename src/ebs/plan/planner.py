@@ -34,7 +34,15 @@ from ebs.core.digest import Digest
 from ebs.core.errors import PlanError, RuleError
 from ebs.flow.interp import Ref, SourceLocation, parse_template
 from ebs.flow.matrix import StepInstance, expand_matrix, load_matrix_tables
-from ebs.flow.model import Flow, OutputDef, Resources, StepDef, parse_memory
+from ebs.flow.model import (
+    Flow,
+    InputDef,
+    OutputDef,
+    Resources,
+    StepDef,
+    input_texts,
+    parse_memory,
+)
 from ebs.plan.graph import StepGraph
 from ebs.plan.keys import KEY_SCHEMA_VERSION, nondeterministic_output_id, with_key
 from ebs.plan.types import (
@@ -472,10 +480,13 @@ class _Run:
             )
         found: list[InputRef] = []
         declared: list[tuple[str, str]] = []
+        writable_names: set[str] = set()
+        writable_refs: set[Ref] = set()  # output references staged through a writable input
         for iname, value in step.inputs.items():
-            texts = (value,) if isinstance(value, str) else value
-            for i, text in enumerate(texts):
-                field = f"inputs.{iname}" if isinstance(value, str) else f"inputs.{iname}[{i}]"
+            writable = isinstance(value, InputDef) and value.writable
+            if writable:
+                writable_names.add(iname)
+            for field, text in input_texts(iname, value):
                 parts = parse_template(text).parts
                 if any(isinstance(p, Ref) and p.kind == "steps" for p in parts):
                     if len(parts) != 1:
@@ -483,21 +494,32 @@ class _Run:
                             f"{where}: {field} {text!r}: an output reference must be the whole "
                             "input value (outputs are staged as a unit)"
                         )
+                    if writable:
+                        writable_refs.update(p for p in parts if isinstance(p, Ref))
                     continue  # staged below, like every other output reference of the step
                 rendered = inst.render(text, field=field, resolver=self)
                 for pattern in rendered if isinstance(rendered, list) else [rendered]:
                     declared.append((iname, pattern))
-        declared.extend(template.inputs.items())
+        declared.extend(template.inputs.items())  # rule inputs ("ebs.*") are never writable
         for iname, pattern in declared:
             pattern = _source_pattern(pattern, iname, where)
+            writable = iname in writable_names
             for path, digest in self._snapshot(pattern):
-                found.append(InputRef(path, "file", SourceInput(iname, pattern), digest))
+                found.append(
+                    InputRef(path, "file", SourceInput(iname, pattern), digest, writable=writable)
+                )
         for static in refs:
             for spec, out in self._select(static.ref, f"steps.{inst.name}.{static.field}"):
                 kind: InputKind = "tree" if out.type == "dir" else "file"
                 source = ActionOutputInput(spec.action_id, out.name)
                 found.append(
-                    InputRef(_staged_path(out, spec.action_id), kind, source, _output_id(spec, out))
+                    InputRef(
+                        _staged_path(out, spec.action_id),
+                        kind,
+                        source,
+                        _output_id(spec, out),
+                        writable=static.ref in writable_refs,
+                    )
                 )
                 self._edges.add((spec.action_id, out.name, inst.instance_id))
         unique: dict[str, InputRef] = {}
@@ -508,6 +530,8 @@ class _Run:
                     f"{where}: two different inputs are staged at {ref.logical_path!r} "
                     f"({seen.source} and {ref.source}); rename one of them"
                 )
+            if ref.writable and not seen.writable:  # one writable declaration is enough
+                unique[ref.logical_path] = dataclasses.replace(seen, writable=True)
         return tuple(unique[p] for p in sorted(unique))
 
     def _snapshot(self, pattern: str) -> list[tuple[str, Digest]]:

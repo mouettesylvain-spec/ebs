@@ -49,8 +49,35 @@ def test_from_config() -> None:
         ({"cas": {"root": "/c"}, "runner": {"passthrough_env": "SLURM_*"}}, r"passthrough_env"),
         ({"cas": {"root": "/c"}, "runner": {"kill_grace_s": -1}}, r"kill_grace_s"),
         ({"cas": {"root": "/c"}, "runner": {"bogus": 1}}, r"bogus"),
+        ({"cas": {"root": "/c", "copy_threshold": "big"}}, r"copy_threshold"),
+        ({"cas": {"root": "/c"}, "debug": {"root": "debug"}}, r"\[debug\]\.root"),
+        ({"cas": {"root": "/c"}, "debug": {"max_size": -1}}, r"\[debug\]\.max_size"),
+        ({"cas": {"root": "/c"}, "runner": {"heartbeat_s": 0}}, r"heartbeat_s"),
     ],
 )
 def test_invalid(config: dict[str, dict[str, object]], message: str) -> None:
     with pytest.raises(ConfigError, match=message):
         RunnerSettings.from_config(config, {})
+
+
+# P1-04 R1-R3, R5: copy threshold, debug area and heartbeat.
+def test_grid_settings() -> None:
+    from ebs.cas.api import DEFAULT_COPY_THRESHOLD
+
+    s = RunnerSettings.from_config({"cas": {"root": "/cas"}}, {})
+    assert s.copy_threshold == DEFAULT_COPY_THRESHOLD
+    assert s.debug_root is None
+    assert s.debug_max_size == 2 << 30
+    assert s.heartbeat_s == 60
+    s = RunnerSettings.from_config(
+        {
+            "cas": {"root": "/cas", "copy_threshold": "1MiB"},
+            "debug": {"root": "/debug", "max_size": "10MiB"},
+            "runner": {"heartbeat_s": 15},
+        },
+        {},
+    )
+    assert s.copy_threshold == 1 << 20
+    assert s.debug_root == Path("/debug")
+    assert s.debug_max_size == 10 << 20
+    assert s.heartbeat_s == 15

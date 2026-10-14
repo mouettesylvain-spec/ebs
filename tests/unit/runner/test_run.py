@@ -182,12 +182,13 @@ def test_pass_fail_infra_paths(
         assert cas.has(manifest.log)
         assert h.store.cache_puts == [("test", spec.key)]
         assert h.store.cache_get("test", spec.key) == manifest
-        assert h.store.events == []
+        assert [e.type for e in h.store.events] == ["running"]  # P1-04 R5
         assert parse_infra_reason(h.err.getvalue()) is None
     else:
         assert manifest is None  # infra: no result
         assert h.store.cache_puts == []  # and never cached (I12)
-        (event,) = h.store.events
+        running, event = h.store.events  # the tool ran (P1-04 R5), then failed
+        assert running.type == "running"
         assert event.type == "infra_failed"
         assert event.action_id == "s"
         assert event.build == build
@@ -400,7 +401,7 @@ def test_exec_failure_is_infra(cas: FsCAS, tmp_path: Path) -> None:
     assert rc == EXIT_INFRA
     assert h.store.results == {}
     assert h.store.cache_puts == []
-    assert [e.type for e in h.store.events] == ["infra_failed"]
+    assert [e.type for e in h.store.events] == ["running", "infra_failed"]
 
 
 # R6: without --build there is no store to emit to; the reason still reaches the executor through
@@ -435,7 +436,8 @@ def test_timeout_graceful_exit_is_infra(cas: FsCAS, tmp_path: Path) -> None:
     assert rc == EXIT_INFRA
     assert h.store.results == {}
     assert h.store.cache_puts == []
-    (event,) = h.store.events
+    running, event = h.store.events
+    assert running.type == "running"
     assert event.data["reason"] == "timeout"
 
 
@@ -470,3 +472,25 @@ def test_unexpanded_time_is_usage_error(cas: FsCAS, tmp_path: Path) -> None:
     rc, _ = h.run(spec)
     assert rc == EXIT_USAGE
     assert "time" in h.err.getvalue()
+
+
+# P1-04: on_poll runs repeatedly while the tool runs, tee sees its output.
+def test_on_poll_and_tee(tmp_path: Path) -> None:
+    from ebs.runner.run import run_tool
+
+    polls: list[int] = []
+    seen: list[bytes] = []
+    run = run_tool(
+        ["sh", "-c", "echo hi; sleep 0.7"],
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin"},
+        log_path=tmp_path / "tool.log",
+        timeout_s=None,
+        max_log=1 << 20,
+        grace_s=0.5,
+        tee=seen.append,
+        on_poll=lambda: polls.append(1),
+    )
+    assert run.exit_code == 0
+    assert len(polls) >= 2
+    assert b"".join(seen) == b"hi\n"

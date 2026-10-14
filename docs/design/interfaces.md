@@ -97,6 +97,10 @@ Model details (P0-04):
 - Steps also have `licenses: dict[str, int]`, and `ToolchainRef` has `licenses` and `resources`.
 - `debug` is a `DebugDef(collect, max_size, on_success)`.
 - `OutputDef(file | dir, deterministic=True, optional=False)` accepts the short form `name: path`.
+- `StepDef.inputs` values (`InputValue`) are a pattern or `${…}` reference, a list of them, or (P1-04)
+  `InputDef(from_: str | tuple[str, ...], writable=False)`, YAML `{from: …, writable: true}`:
+  `writable` makes the runner stage private writable copies. `input_texts(name, value)` lists the
+  `(field path, text)` pairs of any form (`inputs.x`, `inputs.x[1]`, `inputs.x.from[0]`).
 - `Resources.cpus`, `mem` and `time` are an `int` (count, bytes, seconds) or, when the value holds a `${…}` reference, the verbatim string.
 - The planner parses a resolved resource string with `ebs.flow.model.parse_memory` / `parse_duration`.
 - `model_dump()` emits the YAML spelling again (`8G`, `30m`, `from`, `zip`), so the result re-validates.
@@ -166,6 +170,7 @@ class InputRef:
     kind: Literal["file", "tree"]
     source: SourceInput | ActionOutputInput | ImportInput
     id: Digest | None                  # None only when produced by a not-yet-run deterministic output
+    writable: bool = False             # P1-04; NOT in key: stage a writable copy, never a CAS link
 
 @dataclass(frozen=True, slots=True)
 class ActionSpec:
@@ -200,6 +205,11 @@ path)` (P2-03), `OutputSpec(name, path, type: "file"|"dir", deterministic, optio
 flow, toolchains, actions, edges, lock, key_schema, v)` with `Plan.action(id)`,
 `ActionSpec.input(path)` / `.output(name)`, and `ActionDiff(action_id, status, changed, pending)`
 with status `added | removed | unchanged | changed | unknown`.
+plan.json `inputs` entries are `{"path", "kind", "id", "source"}` plus `"writable": true` only for a
+writable input (P1-04; read-only inputs encode as before, so existing plan digests are unchanged).
+The planner marks an input writable when it is staged through a flow input declared
+`writable: true` (source files and output references alike; a path staged by both a writable
+and a read-only declaration is writable). Rule-generated inputs are never writable.
 `PlanToolchain.env` (P0-13) is the toolchain's captured env, HOME-normalized (literal `$HOME`,
 § 13); the runner applies it with `$HOME` replaced by the action's scratch home. It is already
 hashed into the toolchain id, so it changes no action key; plan.json `toolchains` entries are
@@ -674,8 +684,12 @@ Lifecycle and guarantees: architecture.md "Runner lifecycle on a node". P0-13 de
   unexpanded `resources.time`. A plan whose bytes do not hash to `--plan` is 76. An explicit
   `$EBS_CONFIG` that is not a file is a ConfigError (exit 64).
 - Scratch `<scratch>/<build|local>/<sha256(action_id)[:16]>/{work,home,tmp,logs}`; a stale dir
-  is replaced. Inputs are materialized at `work/<logical path>` (copies, or hard links for tree
-  files; never symlinks in P0), config files written read-only; each input is re-hashed
+  is replaced. Under SLURM the dir first gets `.ebs-job` holding `$SLURM_JOB_ID` (P1-04), the
+  key of the node epilog `deploy/slurm/epilog.d/ebs-scratch-cleanup.sh`. Inputs are
+  materialized at `work/<logical path>` with `CAS.materialize(mode="auto",
+  copy_threshold=[cas].copy_threshold (256 MiB), writable=ref.writable)`: larger files are
+  symlinked read-only from the CAS, writable inputs always copied (P1-04 R1); config files are
+  written read-only; each input is re-hashed
   (file: blob digest, tree: manifest digest) against its content digest: the input id, or
   `resolve_output(id)` for a nondeterministic producer output (I10).
 - Env (I11), later layers winning: toolchain env (`$HOME` replaced) → declared env → runtime
@@ -700,13 +714,42 @@ Lifecycle and guarantees: architecture.md "Runner lifecycle on a node". P0-13 de
   with `summary.missing_output = "<name>[,<name>…]"`; `record_result`, then `cache_put` if the
   build's cache mode is `write`.
 
+P1-04 (grid) details:
+
+- Before the tool starts the runner emits one `running` event, `data = {host, job_id}`
+  (`job_id` = `$SLURM_JOB_ID` or null), and calls the `renew_lease` hook (`Runner(...,
+  renew_lease=None)`; P1-09 wires the build lease) then every `[runner].heartbeat_s` (60 s)
+  while the tool runs; a failing renewal is logged, never fatal. `run_tool` takes `tee`
+  (every output chunk) and `on_poll` (each wait-loop turn, ≤ 0.25 s) hooks.
+- Debug area (`[debug].root`; none if unset): `<root>/<domain>/<build|local>/<action>/` with
+  `<action>` = `ebs.runner.collect.debug_action_dir` (the action id, `/` percent-encoded).
+  The domain dir is the admin's; dirs below it are created mode 2750 and files 0640 in the
+  domain dir's group, whatever the umask (R6). If the area cannot be set up the runner warns
+  on stderr and writes nothing there; the result is unaffected.
+- `live.log` (D2): the tool's output appended while it runs, flushed every 5 s (sooner past
+  1 MiB buffered), at most 256 MiB then a note; removed after a passed run unless
+  `debug.on_success`.
+- Debug collection on failed/infra (always) or passed (`debug.on_success`): `command.json`
+  `{action_id, key, argv, env, inputs: [{path, kind, id}], host, slurm_job_id}`, `tool.log`,
+  and the `debug.collect` matches below `work/` copied to `work/<path>` (a matched dir gives
+  all its files; symlinks, staged inputs, unreadable files and patterns with `..` are
+  skipped). The whole dir, `live.log` included, stays ≤ `debug.max_size` (else
+  `[debug].max_size`, 2 GiB): `live.log` is dropped if over half of it (`tool.log` has the
+  same output), `command.json` is always whole, the largest files are cut to their tail
+  after a `TRUNCATED_NOTE` line; a retry replaces the earlier attempt's files and restarts
+  `live.log`. After SIGTERM only `command.json` and the log tail
+  (≤ 16 MiB) are kept, so cleanup fits in SLURM's KillWait.
+- A SIGTERM that lands during debug collection or scratch removal does not stop the removal
+  (I16); a job killed with SIGKILL is cleaned by the epilog (deploy/slurm/README.md).
+
 ## 10. Driver events — `ebs.driver.events`
 
 The `Event` model is defined in `ebs.meta.api` (§ 6) and re-exported here.
 
 `Event` = `{v, ts, build, type, action_id?, data}` with types: `build_started`, `plan_ready`,
 `cache_hit`, `submitted`, `pending`, `running`, `finished`, `infra_failed`, `retrying`,
-`build_finished`, `stat_audit_mismatch`. Emitted to MetadataStore and to a local JSONL file
+`build_finished`, `stat_audit_mismatch` (the runner also emits `running {host, job_id}` once per
+attempt, § 9). Emitted to MetadataStore and to a local JSONL file
 (`<workdir>/.ebs/builds/<uuid>/events.jsonl`, written before the store so an outage leaves a
 trace) used by `ebs status` / `ebs logs` when offline; `read_events(path)` parses it. Data (no
 floats): `submitted {job_id, attempt, batch_size}`, `pending {reason}`, `running {job_id}`,

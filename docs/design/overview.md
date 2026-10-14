@@ -80,8 +80,9 @@ Looked up in order: `$EBS_CONFIG`, `./.ebs/config.toml`, `~/.config/ebs/config.t
 root = "/cas"                 # per-domain subdirs: /cas/<domain>
 copy_threshold = "256MiB"     # inputs above this are bind/symlinked read-only
 
-[debug]
-root = "/debug"
+[debug]                       # P1-04; no debug area (nor live log) when root is unset
+root = "/debug"               # <root>/<domain> created by an admin, group <domain>, 2750
+max_size = "2GiB"             # default cap for steps without debug.max_size
 
 [metadata]
 url = "https://ebs-meta.example"   # P1-06: the metadata service root (routes under /api/v1);
@@ -108,6 +109,7 @@ dir = "${TMPDIR}/ebs"
 passthrough_env = ["LM_LICENSE_FILE", "*_LICENSE_FILE", "SLURM_*"]   # caller vars the tool sees
 max_log = "2GiB"               # tool log cap; the tail is kept
 kill_grace_s = 30              # SIGTERM -> SIGKILL on timeout
+heartbeat_s = 60               # build-lease renewal while the tool runs (P1-04)
 
 [stat_cache]
 path = "/var/tmp/ebs-<uid>/statcache.sqlite"   # default; must be local disk, never NFS (P0-16)

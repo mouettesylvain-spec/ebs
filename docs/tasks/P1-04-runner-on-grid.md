@@ -1,6 +1,6 @@
 # P1-04 — Runner on the grid: materialization, debug collection, cleanup
 
-Status: todo · Phase: 1 · Depends on: P0-13, P1-06 · Size: M
+Status: review · Phase: 1 · Depends on: P0-13, P1-06 · Size: M
 
 ## Goal
 The runner behaves well on shared compute nodes: large inputs are never copied needlessly, debug files
@@ -41,4 +41,25 @@ come back to NFS, live logs are visible, and node scratch never leaks — even w
 | `test_debug_collect.py::test_permissions` | R6 | unit |
 
 ## Done when
-- [ ] `make check-all` passes; epilog script reviewed (shellcheck clean)
+- [x] `make check-all` passes; epilog script reviewed (shellcheck clean)
+
+## Notes (implementation, 2026-10-14)
+- R1 needed a flow/plan contract change, agreed with the user: flow `inputs.<name>: {from: …,
+  writable: true}` (`InputDef`), `InputRef.writable` (not in the key), plan.json `"writable": true`
+  only when set (existing plan digests unchanged). See interfaces.md § 3, § 4.
+- R4: the epilog finds a job's scratch through `.ebs-job` (SLURM job id) written by the runner in
+  each action dir, deletes as the job user via `setpriv`, and uses a non-empty `SLURM_JOB_COMMENT`
+  that is not a UUID only as an early "not EBS" exit. FakeSlurm gained `--comment` and an `epilog`.
+- R5: `renew_lease` is a hook (None until P1-09). The runner's `running` event has `{host, job_id}`.
+
+## Follow-ups
+- P1-02: submit with `--comment=<build uuid> <action>`, so the epilog can skip non-EBS jobs, and
+  have the job script `exec` the runner (it must receive SIGTERM directly).
+- `ebs-runner --array-map` (interfaces.md § 9 says P1-04) is not part of this task's requirements
+  and still exits 64; P1-02 needs it for job arrays.
+- `ebs logs -f` (cli/logs.py) should tail `live.log` from the debug area while an action runs.
+- Wire `renew_lease` to the P1-09 lease API (`MetadataStore.renew_lease`).
+- Open design question (key rules): a tool that writes into a read-only staged input fails with
+  EACCES and that FAILED result is cached; declaring the input `writable: true` (or changing
+  `[cas].copy_threshold`) keeps the same key, so the failure stays cached until `--rerun-failed`.
+  Options: classify writes to read-only inputs as infra, or key the staging mode.

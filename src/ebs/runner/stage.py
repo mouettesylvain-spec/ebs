@@ -2,7 +2,11 @@
 
 `work/` holds exactly the declared inputs at their logical paths plus the action's config files;
 every input is re-hashed after materialization and must match its expected content digest
-before the tool may run.
+before the tool may run. Inputs above `[cas].copy_threshold` are symlinked read-only from the
+CAS (a 100 GB database is never copied just to be read) unless declared `writable` (P1-04).
+
+Under SLURM the scratch dir holds a marker, `.ebs-job`, with the job id: the node epilog
+(deploy/slurm/epilog.d) removes the scratch of a job the runner could not clean (SIGKILL).
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from ebs.plan.types import ActionOutputInput, ActionSpec, ImportInput, InputRef,
 from ebs.runner.errors import InfraError, InputVerificationError, UsageError
 
 __all__ = [
+    "JOB_MARKER",
     "Scratch",
     "action_dir_name",
     "resolve_contents",
@@ -33,9 +38,8 @@ __all__ = [
     "write_config_files",
 ]
 
-# P0 never symlinks inputs out of the CAS: large-input bind mounts arrive with P1-04. Files are
-# copied, tree files hard-linked when the CAS shares the filesystem, else copied.
-_NO_SYMLINKS: Final = 1 << 62
+JOB_MARKER: Final = ".ebs-job"
+"""File in an action's scratch root holding the SLURM job id (read by the node epilog)."""
 _CREATE_ATTEMPTS: Final = 5
 
 
@@ -55,7 +59,10 @@ class Scratch:
     logs: Path
 
     @classmethod
-    def create(cls, scratch_dir: Path, build: str, action_id: str) -> Scratch:
+    def create(
+        cls, scratch_dir: Path, build: str, action_id: str, *, job_id: str | None = None
+    ) -> Scratch:
+        """Create the dirs; with `job_id`, first mark the root for the node epilog."""
         root = scratch_dir / build / action_dir_name(action_id)
         if os.path.lexists(root):  # left over from an earlier attempt killed with SIGKILL
             _rmtree(root)
@@ -70,6 +77,8 @@ class Scratch:
                     raise
         dirs = cls(root, root / "work", root / "home", root / "tmp", root / "logs")
         try:
+            if job_id is not None:  # before anything big lands here
+                (root / JOB_MARKER).write_text(f"{job_id}\n", encoding="ascii")
             for d in (dirs.work, dirs.home, dirs.tmp, dirs.logs):
                 d.mkdir(mode=0o700)
         except OSError:
@@ -155,8 +164,20 @@ def _resolve(spec: ActionSpec, ref: InputRef, ident: Digest, store: MetadataStor
     return content
 
 
-def stage_inputs(spec: ActionSpec, cas: CAS, work: Path, contents: Mapping[str, Digest]) -> None:
-    """Materialize every input at `work/<logical path>`; missing CAS objects are InfraError."""
+def stage_inputs(
+    spec: ActionSpec,
+    cas: CAS,
+    work: Path,
+    contents: Mapping[str, Digest],
+    *,
+    copy_threshold: int,
+) -> None:
+    """Materialize every input at `work/<logical path>`; missing CAS objects are InfraError.
+
+    Files up to `copy_threshold` bytes are copied, larger ones symlinked read-only from the CAS
+    (tree files are hard-linked when the CAS shares the filesystem); `writable` inputs are
+    always private writable copies.
+    """
     for ref in spec.inputs:
         try:
             cas.materialize(
@@ -164,7 +185,8 @@ def stage_inputs(spec: ActionSpec, cas: CAS, work: Path, contents: Mapping[str, 
                 ref.kind,
                 work / ref.logical_path,
                 mode="auto",
-                copy_threshold=_NO_SYMLINKS,
+                copy_threshold=copy_threshold,
+                writable=ref.writable,
             )
         except CasError as exc:
             raise InfraError(f"cannot stage input {ref.logical_path!r}: {exc}") from exc

@@ -92,6 +92,36 @@
       "title": "ImportDef",
       "type": "object"
     },
+    "InputDef": {
+      "additionalProperties": false,
+      "description": "The long form of an input: its pattern(s) under `from`, plus staging options.\n\n`writable: true` makes the runner stage private writable copies instead of read-only\nlinks into the CAS (for tools that write into their inputs). Never part of the key.",
+      "properties": {
+        "from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "title": "From"
+        },
+        "writable": {
+          "default": false,
+          "title": "Writable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "from"
+      ],
+      "title": "InputDef",
+      "type": "object"
+    },
     "MatrixDef": {
       "additionalProperties": false,
       "description": "Expands a step over table rows: one table, a cartesian product (`cross`) or `zip`.",
@@ -353,6 +383,9 @@
                     "type": "string"
                   },
                   "type": "array"
+                },
+                {
+                  "$ref": "#/$defs/InputDef"
                 }
               ]
             }

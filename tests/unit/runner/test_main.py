@@ -185,3 +185,127 @@ def test_selects_http_client() -> None:
     pg.close()
     with pytest.raises(ConfigError, match=r"\[metadata\]\.url"):
         _open_store({"url": "ftp://meta.example.invalid"})
+
+
+# R5 (P1-04): the runner says once that the tool runs, and where.
+def test_running_event_once(cas: FsCAS, tmp_path: Path) -> None:
+    h = Harness(tmp_path, cas, caller_env={"SLURM_JOB_ID": "4242"})
+    code, build = h.run(shell_spec("echo a; echo b; exit 0"))
+    assert code == EXIT_OK
+    running = [e for e in h.store.events if e.type == "running"]
+    assert len(running) == 1
+    (event,) = running
+    assert event.build == build
+    assert event.action_id == "s"
+    assert event.data == {"host": "node-test", "job_id": "4242"}
+
+
+# R5: outside SLURM there is no job id.
+def test_running_event_without_slurm(cas: FsCAS, tmp_path: Path) -> None:
+    h = Harness(tmp_path, cas)
+    code, _ = h.run(shell_spec("true"))
+    assert code == EXIT_OK
+    (event,) = [e for e in h.store.events if e.type == "running"]
+    assert event.data == {"host": "node-test", "job_id": None}
+
+
+# R5: the lease is renewed at start and then every interval while the tool runs.
+def test_heartbeat_renews_lease() -> None:
+    from ebs.core.clock import FakeClock
+    from ebs.runner.heartbeat import Heartbeat
+
+    clock = FakeClock()
+    renewals: list[float] = []
+    beat = Heartbeat(clock, interval_s=60, renew=lambda: renewals.append(clock.monotonic()))
+    beat.tick()
+    for _ in range(12):
+        clock.advance(10)
+        beat.tick()
+    assert renewals == [0, 60, 120]
+
+
+# R5: a renewal that fails is logged, not raised: the tool keeps running.
+def test_heartbeat_survives_renew_error() -> None:
+    from ebs.core.clock import FakeClock
+    from ebs.core.errors import MetadataError
+    from ebs.runner.heartbeat import Heartbeat
+
+    calls = {"n": 0}
+
+    def renew() -> None:
+        calls["n"] += 1
+        raise MetadataError("service down")
+
+    clock = FakeClock()
+    beat = Heartbeat(clock, interval_s=1, renew=renew)
+    beat.tick()
+    clock.advance(1)
+    beat.tick()
+    assert calls["n"] == 2
+
+
+# R5: the runner calls the renew hook while the tool runs.
+def test_runner_renews_lease_while_running(cas: FsCAS, tmp_path: Path) -> None:
+    renewals: list[int] = []
+    h = Harness(tmp_path, cas, renew_lease=lambda: renewals.append(1))
+    code, _ = h.run(shell_spec("true"))
+    assert code == EXIT_OK
+    assert renewals  # at least the initial renewal
+
+
+class _SteppingClock:
+    """A clock whose monotonic time advances 1 s per reading (heartbeats due at every poll)."""
+
+    def __init__(self) -> None:
+        from ebs.core.clock import FakeClock
+
+        self._fake = FakeClock()
+
+    def now(self):  # type: ignore[no-untyped-def]
+        return self._fake.now()
+
+    def monotonic(self) -> float:
+        self._fake.advance(1)
+        return self._fake.monotonic()
+
+    def sleep(self, seconds: float) -> None:
+        self._fake.advance(seconds)
+
+
+# R5 / R3: the lease is renewed and the live log flushed while the tool runs, not only at start.
+def test_renews_and_flushes_while_running(cas: FsCAS, tmp_path: Path) -> None:
+    import dataclasses
+
+    from ebs.plan.types import DebugSpec
+    from ebs.runner.collect import debug_action_dir
+
+    (tmp_path / "debug" / "test").mkdir(parents=True)
+    renewals: list[int] = []
+    h = Harness(
+        tmp_path,
+        cas,
+        renew_lease=lambda: renewals.append(1),
+        settings_overrides={"heartbeat_s": 1, "debug_root": tmp_path / "debug"},
+    )
+    runner = h.runner()
+    runner._clock = _SteppingClock()
+    live = debug_action_dir(tmp_path / "debug", "test", "1", "s") / "live.log"  # first build
+    # The tool waits until its own early output shows up in the live log and exits 1 if it
+    # does: it only gets there through flushes during the run.
+    script = (
+        "echo start\n"
+        f"for i in $(seq 1 100); do grep -q start {live} && exit 1; sleep 0.05; done; exit 0\n"
+    )
+    spec = dataclasses.replace(shell_spec(script), debug=DebugSpec((), None, True))
+    from tests.helpers.runner import new_build, store_plan
+
+    plan = store_plan(cas, spec)
+    build = new_build(h.store, "s", cache_mode="write")
+    assert build == 1
+    from ebs.runner.main import RunRequest
+
+    assert runner.run(RunRequest(plan, "s", build)) == EXIT_OK, h.err.getvalue()
+    manifest = h.result(build)
+    assert manifest is not None
+    assert manifest.exit_code == 1  # saw its output in the live log while running
+    assert len(renewals) >= 2

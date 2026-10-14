@@ -163,6 +163,7 @@ def sbatch(st: State, argv: Sequence[str]) -> str:
     p.add_argument("-D", "--chdir")
     p.add_argument("--export")
     p.add_argument("--export-file")
+    p.add_argument("--comment")
     p.add_argument("--requeue", dest="requeue", action="store_true", default=False)
     p.add_argument("--no-requeue", dest="requeue", action="store_false")
     p.add_argument("script")
@@ -224,8 +225,8 @@ def sbatch(st: State, argv: Sequence[str]) -> str:
         st.db.execute(
             "INSERT INTO jobs (id, array_job_id, array_task_id, throttle, name, script, workdir,"
             " stdout, stderr, env, cpus, mem_mb, time_s, licenses, partition, account, qos,"
-            " constraints, requeue, state, reason, submit_ts)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING','None',?)",
+            " constraints, requeue, state, reason, submit_ts, comment)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING','None',?,?)",
             (
                 job_id,
                 array_job,
@@ -247,6 +248,7 @@ def sbatch(st: State, argv: Sequence[str]) -> str:
                 a.constraint,
                 int(a.requeue),
                 now,
+                a.comment,
             ),
         )
     schedule(st)
