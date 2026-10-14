@@ -28,6 +28,7 @@ from ebs.plan.planfile import (
 from ebs.plan.types import ActionSpec, DebugSpec, FlowInfo, GitInfo, ImportInput, InputRef, Plan
 from tests.helpers.plan import ARCH_STEPS, RTL, arch_flow, planner, resources
 from tests.helpers.plan_strategies import specs, texts
+from tests.helpers.runner import shell_spec
 
 
 @st.composite
@@ -40,7 +41,9 @@ def rich_specs(draw: st.DrawFn) -> ActionSpec:
     spec = dataclasses.replace(
         spec,
         inputs=(*spec.inputs, *extra),
-        resources=resources(draw(maybe_int), draw(maybe_int), draw(maybe_int)),
+        resources=resources(
+            draw(maybe_int), draw(maybe_int), draw(maybe_int), draw(st.none() | st.integers(1, 99))
+        ),
         debug=DebugSpec(
             tuple(draw(st.lists(texts, max_size=2))), draw(maybe_int), draw(st.booleans())
         ),
@@ -55,6 +58,25 @@ def rich_specs(draw: st.DrawFn) -> ActionSpec:
 def test_spec_roundtrip(spec: ActionSpec) -> None:
     doc = spec_to_json(spec)
     assert spec_from_json(json.loads(canonical_json(doc))) == spec
+
+
+# P1-02 R2: max_parallel is written only when set, so plans without it encode as before.
+def test_max_parallel_only_when_set() -> None:
+    spec = with_key(dataclasses.replace(shell_spec("true\n"), resources=resources(2, None, 60)))
+    doc = spec_to_json(spec)
+    assert isinstance(doc, dict)
+    assert doc["resources"] == {"cpus": 2, "mem": None, "time": 60}
+    limited = dataclasses.replace(spec, resources=resources(2, None, 60, 5))
+    doc = spec_to_json(limited)
+    assert isinstance(doc, dict)
+    assert doc["resources"] == {"cpus": 2, "mem": None, "time": 60, "max_parallel": 5}
+    assert spec_from_json(json.loads(canonical_json(doc))) == limited
+    # Resources are not in the key.
+    assert with_key(dataclasses.replace(limited, key=None)).key == spec.key
+    bad = json.loads(canonical_json(doc))
+    bad["resources"]["max_parallel"] = 0
+    with pytest.raises(PlanError, match="max_parallel"):
+        spec_from_json(bad)
 
 
 # R8

@@ -48,6 +48,11 @@ network, real `$HOME`, `/tmp` outside `tmp_path`, or wall-clock time (use `ebs.c
   min_job_age_s=, …)`) and faults (`inject({"fault": "NODE_FAIL" | "PREEMPTED" | "STUCK_LICENSES"
   | "CLI_ERROR", …})`) are JSON files in its state dir, documented in `tests/fakes/slurm/core.py`.
   Fixture `fake_slurm` (tests/integration/slurm/conftest.py) cleans up running jobs at teardown.
+  Supervisors are forked from the (single-threaded) command or supervisor that started the job,
+  after its database transaction closed, and the package `__init__` stays import-light: a
+  2,000-task fake regression runs in well under a minute on 4 cores (P1-02).
+  `tests/helpers/slurm.py::ScriptedSlurm` is an in-process `CommandRunner` for executor unit
+  tests that need no real job processes.
   The 26.05 fixtures were hand-written in P1-01; `scripts/capture_slurm_fixtures.py` captures and
   anonymizes real ones.
 - **Postgres**: `EBS_TEST_PG_URL` if set, otherwise a `testcontainers` PostgreSQL 17 container per

@@ -28,7 +28,7 @@ from ebs.core.log import get_logger
 from ebs.driver.cache_policy import CachePolicy
 from ebs.driver.events import EventLog
 from ebs.driver.retry import RetryPolicy
-from ebs.exec.api import Executor, JobHandle, JobStatus, SubmitBatch
+from ebs.exec.api import Executor, ExecutorBusy, JobHandle, JobStatus, SubmitBatch
 from ebs.meta.api import (
     ActionState,
     BuildId,
@@ -122,6 +122,9 @@ class Scheduler:
         self._attempts: dict[str, int] = {}  # failed attempts (infrastructure)
         self._retry_at: dict[str, float] = {}  # action -> monotonic time it may be resubmitted
         self._missed_polls: dict[JobHandle, int] = {}
+        self._deferred_until: float | None = None  # a busy executor asked us to wait (P1-02)
+        self._cache_missed: set[str] = set()  # looked up once; a deferred batch is not re-read
+        self._retry_reason: dict[str, InfraReason] = {}  # last infra reason, per action
         self._replacing: set[str] = set()  # cached failures bypassed by --rerun-failed
         self._stopping = False
         self._cancel_requested = False
@@ -152,16 +155,17 @@ class Scheduler:
                 self._cancel()
                 break
             self._schedule()
+            wake = self._next_wake()
             if not self._inflight:
                 if len(self._final) == len(self._order):
                     break
-                if not self._retry_at:
+                if wake is None:
                     self._stuck()
-                self._sleep(max(0.0, min(self._retry_at.values()) - self._clock.monotonic()))
+                self._sleep(max(0.0, wake - self._clock.monotonic()))
                 continue
             wait = interval
-            if self._retry_at:
-                wait = min(wait, max(0.0, min(self._retry_at.values()) - self._clock.monotonic()))
+            if wake is not None:
+                wait = min(wait, max(0.0, wake - self._clock.monotonic()))
             self._sleep(wait)
             if self._cancelling():  # Ctrl-C while sleeping: cancel before polling
                 continue
@@ -170,6 +174,15 @@ class Scheduler:
                 self._config.poll_min_s if changed else min(interval * 2, self._config.poll_max_s)
             )
         return {a: self._final[a] for a in self._order}
+
+    def _next_wake(self) -> float | None:
+        """When a waiting retry or a batch deferred by a busy executor is due, if any.
+
+        While the executor is busy nothing is submitted, so a retry due earlier waits too.
+        """
+        if self._deferred_until is not None:
+            return self._deferred_until  # nothing goes before it; retries then wake us as usual
+        return min(self._retry_at.values(), default=None)
 
     def _sleep(self, seconds: float) -> None:
         # Python signal handlers do not interrupt time.sleep (PEP 475): on the real clock wait on
@@ -216,17 +229,23 @@ class Scheduler:
             if spec.key is None:
                 self._missing_input(spec)
                 continue
-            if self._policy.reads and self._try_cache(spec, spec.key):
+            if (
+                self._policy.reads
+                and action_id not in self._cache_missed
+                and self._try_cache(spec, spec.key)
+            ):
                 continue
             ready.append(spec)
         if self._stopping:  # a failure found during this pass: start nothing new (R5)
             self._stop_sweep(busy)
             return
-        for spec in ready:
-            if self._retry_at.pop(spec.action_id, None) is not None:
-                self._set_state(spec.action_id, "queued")  # infra_failed -> queued: the retry
+        if self._deferred_until is not None:
+            if now < self._deferred_until:
+                return  # the executor said it is busy: offer nothing before it asked
+            self._deferred_until = None
         for batch in self._batches(ready):
-            self._submit(batch)
+            if not self._submit(batch):
+                break
 
     def _stop_sweep(self, busy: set[str]) -> None:
         """Finish everything not running: actions passed over or made ready earlier in the pass
@@ -244,6 +263,7 @@ class Scheduler:
     def _try_cache(self, spec: ActionSpec, key: Digest) -> bool:
         hit = self._store.cache_get(spec.domain, key)
         if hit is None:
+            self._cache_missed.add(spec.action_id)
             return False
         if not self._policy.accept(hit):  # --rerun-failed: run it, then replace the failure
             self._replacing.add(spec.action_id)
@@ -274,7 +294,13 @@ class Scheduler:
             for start in range(0, len(specs), size):
                 yield specs[start : start + size]
 
-    def _submit(self, specs: list[ActionSpec]) -> None:
+    def _submit(self, specs: list[ActionSpec]) -> bool:
+        """Submit one batch; False if the executor is busy (the batch stays queued)."""
+        retries = [s.action_id for s in specs if s.action_id in self._retry_at]
+        for action_id in retries:
+            if self._store_state[action_id] == "infra_failed":
+                self._set_state(action_id, "queued")  # infra_failed -> queued: the retry
+            del self._retry_at[action_id]
         batch = SubmitBatch(
             plan=self._stored_plan(),
             domain=self._plan.domain,
@@ -283,11 +309,20 @@ class Scheduler:
         )
         try:
             handles = self._executor.submit(batch)
+        except ExecutorBusy as exc:
+            # Not the actions' fault: they stay queued and go in a later pass (P1-02 R8).
+            delay = max(exc.retry_after_s, self._config.poll_min_s)
+            now = self._clock.monotonic()
+            self._deferred_until = now + delay
+            for action_id in retries:  # still retries: a stopping build abandons them as such
+                self._retry_at[action_id] = now
+            _log.info("driver.executor_busy", step=batch.step, delay_s=delay, reason=str(exc))
+            return False
         except ExecutorError as exc:
             _log.warning("driver.submit_failed", step=batch.step, error=str(exc))
             for spec in specs:
                 self._infra_failed(spec.action_id, "other", detail=f"submit failed: {exc}")
-            return
+            return True
         if len(handles) != len(specs):
             if handles:
                 self._executor.cancel(handles)  # do not leak what it did start
@@ -304,6 +339,7 @@ class Scheduler:
                 attempt=self._attempts.get(spec.action_id, 0) + 1,
                 batch_size=len(specs),
             )
+        return True
 
     def _stored_plan(self) -> Digest:
         """The digest of the current (refined) plan, stored in the CAS for the runners."""
@@ -394,6 +430,7 @@ class Scheduler:
         detail: str | None = None,
     ) -> None:
         self._set_state(action_id, "infra_failed", infra_reason=reason)
+        self._retry_reason[action_id] = reason
         data: dict[str, object] = {"reason": reason}
         if exit_code is not None:
             data["exit_code"] = exit_code
@@ -441,6 +478,10 @@ class Scheduler:
     def _abandon_retry(self, action_id: str) -> None:
         """The build stopped while this action waited for a retry: its last attempt stands."""
         del self._retry_at[action_id]
+        if self._store_state[action_id] == "queued":  # its retry was refused by a busy executor
+            self._set_state(
+                action_id, "infra_failed", infra_reason=self._retry_reason.get(action_id, "other")
+            )
         self._final[action_id] = "infra_failed"
         self.failures.add(action_id)
         self._events.emit(

@@ -26,6 +26,7 @@ from tests.fakes.slurm.core import (
     kill_group,
     locked,
     meta,
+    request_cancel,
     sacct_job,
     schedule,
     squeue_job,
@@ -149,6 +150,7 @@ def sbatch(st: State, argv: Sequence[str]) -> str:
     p = _Parser(prog="sbatch", add_help=False)
     p.add_argument("--parsable", action="store_true")
     p.add_argument("-J", "--job-name")
+    p.add_argument("--comment", default="")
     p.add_argument("-p", "--partition")
     p.add_argument("-A", "--account")
     p.add_argument("-q", "--qos")
@@ -224,8 +226,8 @@ def sbatch(st: State, argv: Sequence[str]) -> str:
         st.db.execute(
             "INSERT INTO jobs (id, array_job_id, array_task_id, throttle, name, script, workdir,"
             " stdout, stderr, env, cpus, mem_mb, time_s, licenses, partition, account, qos,"
-            " constraints, requeue, state, reason, submit_ts)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING','None',?)",
+            " constraints, requeue, comment, state, reason, submit_ts)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING','None',?)",
             (
                 job_id,
                 array_job,
@@ -246,6 +248,7 @@ def sbatch(st: State, argv: Sequence[str]) -> str:
                 a.qos or "normal",
                 a.constraint,
                 int(a.requeue),
+                a.comment,
                 now,
             ),
         )
@@ -289,7 +292,7 @@ def squeue(st: State, argv: Sequence[str]) -> str:
     jobs = [squeue_job(row, ts) for row, ts in visible_records(known)]
     if a.json:
         doc = {"jobs": jobs, "meta": meta(["squeue", *argv]), "errors": [], "warnings": []}
-        return json.dumps(doc, indent=2) + "\n"
+        return json.dumps(doc) + "\n"
     lines = ["JOBID STATE REASON NAME"]
     lines += [f"{j['job_id']} {j['job_state'][0]} {j['state_reason']} {j['name']}" for j in jobs]
     return "\n".join(lines) + "\n"
@@ -303,7 +306,7 @@ def sacct(st: State, argv: Sequence[str]) -> str:
     jobs = [sacct_job(row, ts) for row, ts in visible_records(rows)]
     if a.json:
         doc = {"jobs": jobs, "meta": meta(["sacct", *argv]), "errors": [], "warnings": []}
-        return json.dumps(doc, indent=2) + "\n"
+        return json.dumps(doc) + "\n"
     lines = ["JobID State ExitCode"]
     lines += [
         f"{j['job_id']} {j['state']['current'][0]} {j['exit_code']['return_code']['number']}"
@@ -344,7 +347,7 @@ def scancel(st: State, argv: Sequence[str]) -> str | Output:
                     (time.time(), row["id"]),
                 )
             else:
-                st.db.execute("UPDATE jobs SET cancel_requested = 1 WHERE id = ?", (row["id"],))
+                request_cancel(st, int(row["id"]))
     schedule(st)
     if errors:  # returned, not raised: the cancellations above must be committed
         return Output("", "\n".join(dict.fromkeys(errors)) + "\n", 1)

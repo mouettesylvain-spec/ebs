@@ -291,7 +291,13 @@ def sample_spec(**overrides: Any) -> ActionSpec:
     return ActionSpec(**fields)
 
 
-def resources(cpus: int | None, mem: int | None, time: int | None) -> Resources:
+def resources(
+    cpus: int | None, mem: int | None, time: int | None, max_parallel: int | None = None
+) -> Resources:
     return Resources.model_construct(
-        _fields_set={"cpus", "mem", "time"}, cpus=cpus, mem=mem, time=time
+        _fields_set={"cpus", "mem", "time", "max_parallel"},
+        cpus=cpus,
+        mem=mem,
+        time=time,
+        max_parallel=max_parallel,
     )
