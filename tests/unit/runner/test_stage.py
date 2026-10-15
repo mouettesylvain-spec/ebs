@@ -73,7 +73,8 @@ def test_stage_inputs_materializes_bytes(cas: FsCAS, tmp_path: Path) -> None:
     ref = source_file(cas, "deep/dir/x.txt", b"payload")
     work = tmp_path / "work"
     work.mkdir()
-    stage_inputs(shell_spec("true", inputs=[ref]), cas, work, {ref.logical_path: ref.id})  # type: ignore[dict-item]
+    contents = {ref.logical_path: ref.id}
+    stage_inputs(shell_spec("true", inputs=[ref]), cas, work, contents, copy_threshold=1 << 20)  # type: ignore[arg-type]
     assert (work / "deep/dir/x.txt").read_bytes() == b"payload"
     assert all_paths(work) == {"deep", "deep/dir", "deep/dir/x.txt"}
 

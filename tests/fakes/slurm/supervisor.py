@@ -6,8 +6,10 @@ state, then runs a scheduling pass so pending jobs start without waiting for the
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import pwd
 import signal
 import subprocess
 import time
@@ -95,6 +97,26 @@ def _stop(proc: subprocess.Popen[bytes], first: int, kill_wait_s: float) -> None
     kill_group(proc.pid, signal.SIGKILL)
 
 
+def _epilog(config: dict[str, Any], row: Any) -> None:
+    """Run the configured epilog like slurmd does when a job ends (its failure is ignored)."""
+    epilog = config.get("epilog")
+    if not epilog:
+        return
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "SLURM_JOB_ID": str(row["id"]),
+        "SLURM_JOB_UID": str(os.getuid()),
+        "SLURM_JOB_GID": str(os.getgid()),
+        "SLURM_JOB_USER": pwd.getpwuid(os.getuid()).pw_name,
+        "SLURM_SCRIPT_CONTEXT": "epilog_slurmd",
+        **{str(k): str(v) for k, v in dict(config.get("epilog_env", {})).items()},
+    }
+    if row["comment"]:  # slurmd passes none for a job without one
+        env["SLURM_JOB_COMMENT"] = str(row["comment"])
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run([str(epilog)], env=env, stdin=subprocess.DEVNULL, timeout=60, check=False)
+
+
 def main(state_dir: str, job_id: int) -> None:
     root = Path(state_dir)
     with locked(root) as st:
@@ -170,6 +192,7 @@ def main(state_dir: str, job_id: int) -> None:
             break
     rc = proc.wait()
     kill_group(proc.pid, signal.SIGKILL)  # leftovers of the job's session
+    _epilog(config, row)
     code, sig = (rc, 0) if rc >= 0 else (0, -rc)
     state, reason = outcome or (("COMPLETED", "None") if rc == 0 else ("FAILED", "NonZeroExitCode"))
     with locked(root) as st:

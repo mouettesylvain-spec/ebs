@@ -1,10 +1,13 @@
 """`ebs-runner`: execute one action of a plan on this node (interfaces.md § 9).
 
 Lifecycle (architecture.md "Runner lifecycle on a node"): load the plan from the CAS by digest
-→ create `<scratch>/<build>/<action-hash>/{work,home,tmp,logs}` → stage the declared inputs and
-config files → verify every input digest (I10) → run the tool with a scrubbed env (I11) and a
-timeout → classify → hash and upload outputs and log → post the ResultManifest (and the cache
-entry when the build writes the cache) → delete the scratch directory, whatever happened.
+→ create `<scratch>/<build>/<action-hash>/{work,home,tmp,logs}` (marked with the SLURM job id
+for the node epilog) → stage the declared inputs (large ones linked read-only from the CAS) and
+config files → verify every input digest (I10) → emit `running`, run the tool with a scrubbed
+env (I11) and a timeout, mirroring its output to the live log and renewing the build lease →
+classify → hash and upload outputs and log → post the ResultManifest (and the cache entry when
+the build writes the cache) → copy debug files to the debug area → delete the scratch
+directory, whatever happened (I16).
 
 Exit codes: 0 result posted (passed or failed), 64 bad usage, 70 internal error, 75 infra
 failure (temporary; the driver retries), 76 input verification failed.
@@ -19,11 +22,11 @@ import os
 import signal
 import socket
 import sys
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
-from typing import TextIO
+from typing import Final, Literal, TextIO
 
 import ebs
 from ebs.cas.api import CAS
@@ -33,12 +36,29 @@ from ebs.core.clock import Clock, SystemClock
 from ebs.core.digest import Digest, hash_bytes
 from ebs.core.errors import CasError, ConfigError, DigestError, EbsError, MetadataError, PlanError
 from ebs.core.log import get_logger
-from ebs.meta.api import BuildId, CacheMode, Event, InfraReason, MetadataStore, RunnerInfo
+from ebs.meta.api import (
+    LEASE_TTL_S,
+    BuildId,
+    CacheMode,
+    Event,
+    InfraReason,
+    LeaseId,
+    MetadataStore,
+    RunnerInfo,
+)
 from ebs.plan.planfile import decode
 from ebs.plan.types import ActionSpec, Plan
 from ebs.rules.api import RulePlugin, RuleSettings
 from ebs.rules.registry import RuleRegistry
-from ebs.runner.collect import collect_outputs, log_tail, output_paths, stored_objects
+from ebs.runner.collect import (
+    collect_debug,
+    collect_outputs,
+    log_tail,
+    make_debug_dir,
+    output_paths,
+    stored_objects,
+    wants_debug,
+)
 from ebs.runner.config import RunnerSettings
 from ebs.runner.env import build_env
 from ebs.runner.errors import (
@@ -54,6 +74,8 @@ from ebs.runner.errors import (
     UsageError,
     format_infra_line,
 )
+from ebs.runner.heartbeat import Heartbeat
+from ebs.runner.livelog import LiveLog
 from ebs.runner.result import make_manifest
 from ebs.runner.run import ToolRun, run_tool
 from ebs.runner.stage import (
@@ -78,6 +100,9 @@ __all__ = [
 log = get_logger(__name__)
 
 _INFRA_REASONS: dict[str, InfraReason] = {"license": "license", "timeout": "timeout"}
+_INTERRUPTED_DEBUG_MAX: Final = 16 << 20  # after SIGTERM, cleanup must fit in SLURM's KillWait
+
+Status = Literal["passed", "failed", "infra"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +111,22 @@ class RunRequest:
     action_id: str
     build: BuildId | None  # None: run without posting; the manifest is printed on stdout
     keep_scratch: bool = False
+
+
+@dataclass(slots=True)
+class _Attempt:
+    """What the cleanup needs to know about how the run went."""
+
+    status: Status = "infra"  # until a result is posted
+    interrupted: bool = False
+    env: Mapping[str, str] | None = None
+    debug: _Debug | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Debug:
+    dest: Path
+    live: LiveLog
 
 
 class Runner:
@@ -103,6 +144,7 @@ class Runner:
         clock: Clock | None = None,
         out: TextIO | None = None,
         err: TextIO | None = None,
+        renew_lease: Callable[[], None] | None = None,
     ) -> None:
         self._cas = cas
         self._store = store
@@ -113,6 +155,7 @@ class Runner:
         self._clock = clock or SystemClock()
         self._out = out or sys.stdout
         self._err = err or sys.stderr
+        self._renew_lease = renew_lease  # P1-09 wires the build lease; None until then
 
     def run(self, req: RunRequest) -> int:
         """Run the action; returns the exit code. Never raises (except BaseException)."""
@@ -167,15 +210,26 @@ class Runner:
             )
 
         build_dir = "local" if req.build is None else str(req.build)
+        job_id = self._caller_env.get("SLURM_JOB_ID") or None
         try:
-            scratch = Scratch.create(self._settings.scratch_dir, build_dir, spec.action_id)
+            scratch = Scratch.create(
+                self._settings.scratch_dir, build_dir, spec.action_id, job_id=job_id
+            )
         except OSError as exc:
             raise InfraError(
                 f"cannot create the scratch dir under {self._settings.scratch_dir}: {exc}"
             ) from exc
         log_path = scratch.logs / "tool.log"
+        attempt = _Attempt()
         try:
-            stage_inputs(spec, self._cas, scratch.work, contents)
+            attempt.debug = self._open_debug(spec, build_dir)
+            stage_inputs(
+                spec,
+                self._cas,
+                scratch.work,
+                contents,
+                copy_threshold=self._settings.copy_threshold,
+            )
             write_config_files(spec, scratch.work)
             verify_inputs(spec, scratch.work, contents)  # I10: before anything executes
             self._touch_inputs(spec, contents)
@@ -186,6 +240,19 @@ class Runner:
                 caller_env=self._caller_env,
                 passthrough_patterns=self._settings.passthrough_env,
             )
+            attempt.env = env
+            self._emit_running(req, spec, job_id)
+            beat = Heartbeat(
+                self._clock, self._settings.heartbeat_s, self._lease_hook(req, spec, contents)
+            )
+            beat.tick()
+            live = None if attempt.debug is None else attempt.debug.live
+
+            def poll() -> None:
+                beat.tick()
+                if live is not None:
+                    live.tick()
+
             run = run_tool(
                 spec.argv,
                 cwd=scratch.work,
@@ -194,16 +261,24 @@ class Runner:
                 timeout_s=spec.resources.time if isinstance(spec.resources.time, int) else None,
                 max_log=self._settings.max_log,
                 grace_s=self._settings.kill_grace_s,
+                tee=None if live is None else live.write,
+                on_poll=poll,
             )
-            return self._finish(req, spec, key, rule, cache_mode, run, scratch, log_path)
+            code, attempt.status = self._finish(
+                req, spec, key, rule, cache_mode, run, scratch, log_path
+            )
+            return code
         except InfraError as exc:
+            attempt.interrupted = isinstance(exc, Interrupted)
             self._keep_log(exc, log_path)  # before the scratch dir goes
             raise
         finally:
-            if req.keep_scratch:
-                self._err.write(f"ebs-runner: scratch kept at {scratch.root}\n")
-            else:
-                scratch.remove()
+            try:
+                self._close_debug(spec, attempt, scratch, log_path)
+            except Interrupted:  # a first SIGTERM during collection: the scratch still goes
+                log.warning("debug collection interrupted by a signal", action_id=spec.action_id)
+            finally:
+                self._drop_scratch(req, scratch)
 
     def _finish(
         self,
@@ -215,7 +290,7 @@ class Runner:
         run: ToolRun,
         scratch: Scratch,
         log_path: Path,
-    ) -> int:
+    ) -> tuple[int, Status]:
         # A program that cannot start is treated as infra, not FAILED: it usually means a node or
         # toolchain install problem (automount not ready, tool missing on this node), and a
         # FAILED result would be cached for every node. Retries are bounded by the driver.
@@ -263,9 +338,10 @@ class Runner:
                 slurm_job_id=self._caller_env.get("SLURM_JOB_ID") or None,
             ),
         )
+        status: Status = "passed" if manifest.status == "passed" else "failed"
         if req.build is None or self._store is None:
             self._out.write(json.dumps(manifest.to_json(), sort_keys=True) + "\n")
-            return EXIT_OK
+            return EXIT_OK, status
         try:
             # Register every stored object first: a put is a use, and GC must see it (P1-09 R1).
             stored = stored_objects(self._cas, collected.outputs, log_digest, log_path)
@@ -285,7 +361,138 @@ class Runner:
         except MetadataError as exc:
             raise InfraError(f"cannot post the result: {exc}") from exc
         log.info("result posted", action_id=spec.action_id, status=manifest.status)
-        return EXIT_OK
+        return EXIT_OK, status
+
+    # --- grid: running event, debug area, scratch ---------------------------------------------
+
+    def _emit_running(self, req: RunRequest, spec: ActionSpec, job_id: str | None) -> None:
+        """Say once where the tool runs (R5); the driver's own `running` comes from SLURM."""
+        if req.build is None or self._store is None:
+            return
+        event = Event(
+            ts=self._clock.now(),
+            build=req.build,
+            type="running",
+            action_id=spec.action_id,
+            data={"host": self._host, "job_id": job_id},
+        )
+        try:
+            self._store.emit(event)
+        except MetadataError as exc:
+            log.warning("cannot emit running event", error=str(exc))
+
+    def _open_debug(self, spec: ActionSpec, build_dir: str) -> _Debug | None:
+        """The action's debug dir with its live log; None without `[debug].root` or on error."""
+        root = self._settings.debug_root
+        if root is None:
+            return None
+        try:
+            dest = make_debug_dir(root, spec.domain, build_dir, spec.action_id)
+            return _Debug(dest, LiveLog(dest / "live.log", clock=self._clock))
+        except OSError as exc:
+            self._debug_unavailable(spec, exc)
+            return None
+
+    def _close_debug(
+        self, spec: ActionSpec, attempt: _Attempt, scratch: Scratch, log_path: Path
+    ) -> None:
+        """Keep the live log and collect debug files, or drop both after a pass (R2, R3)."""
+        debug = attempt.debug
+        if debug is None:
+            return
+        debug.live.close()
+        if not wants_debug(spec.debug, attempt.status):
+            debug.live.remove()
+            with contextlib.suppress(OSError):
+                debug.dest.rmdir()  # only if nothing else is in it
+                debug.dest.parent.rmdir()  # the build dir, once no action left any
+            return
+        max_size = spec.debug.max_size
+        if max_size is None:
+            max_size = self._settings.debug_max_size
+        patterns = spec.debug.collect
+        # The live log counts against the cap (R2). Past half of it, drop it: tool.log holds
+        # the same output's tail, and gets the room instead.
+        reserved = debug.live.size()
+        if reserved > max_size // 2:
+            debug.live.remove()
+            reserved = 0
+        if attempt.interrupted:  # SLURM sends SIGKILL after KillWait: keep it short
+            patterns, max_size = (), min(max_size, _INTERRUPTED_DEBUG_MAX)
+        try:
+            collect_debug(
+                debug.dest,
+                work=scratch.work,
+                patterns=patterns,
+                tool_log=log_path,
+                command=self._command(spec, attempt.env),
+                max_size=max_size,
+                reserved=reserved,
+                exclude=[ref.logical_path for ref in spec.inputs],
+            )
+        except OSError as exc:
+            self._debug_unavailable(spec, exc)
+            return
+
+    def _command(self, spec: ActionSpec, env: Mapping[str, str] | None) -> dict[str, object]:
+        """command.json: what ran, with which env and inputs (`ebs debug`/`reproduce`, P1-10)."""
+        return {
+            "action_id": spec.action_id,
+            "key": None if spec.key is None else str(spec.key),
+            "argv": list(spec.argv),
+            "env": dict(env or {}),
+            "inputs": [
+                {"path": r.logical_path, "kind": r.kind, "id": None if r.id is None else str(r.id)}
+                for r in spec.inputs
+            ],
+            "host": self._host,
+            "slurm_job_id": self._caller_env.get("SLURM_JOB_ID") or None,
+        }
+
+    def _debug_unavailable(self, spec: ActionSpec, exc: OSError) -> None:
+        log.warning("debug area unavailable", action_id=spec.action_id, error=str(exc))
+        self._err.write(
+            f"ebs-runner: {spec.action_id}: debug area unavailable, nothing kept there: {exc}\n"
+        )
+
+    def _drop_scratch(self, req: RunRequest, scratch: Scratch) -> None:
+        if req.keep_scratch:
+            self._err.write(f"ebs-runner: scratch kept at {scratch.root}\n")
+            return
+        try:
+            scratch.remove()
+        except Interrupted:  # the first SIGTERM landed mid-removal; repeats are now ignored
+            scratch.remove()
+
+    def _lease_hook(
+        self, req: RunRequest, spec: ActionSpec, contents: Mapping[str, Digest]
+    ) -> Callable[[], None] | None:
+        """What the heartbeat calls (R5): the injected hook, else this action's own GC lease.
+
+        The driver's lease (P1-09 `LeaseKeeper`) lives in the driver; the runner holds a lease
+        of its own on the inputs it staged, which large inputs are read through as links into
+        the CAS, so they stay GC roots while the tool runs even if the driver stalls. It is
+        acquired on the first beat and renewed on each later one (re-acquired if it expired);
+        it lapses after `LEASE_TTL_S` or when the build finishes.
+        """
+        if self._renew_lease is not None:
+            return self._renew_lease
+        store, build = self._store, req.build
+        digests = sorted(set(contents.values()), key=str)
+        if store is None or build is None or not digests:
+            return None
+        held: list[LeaseId] = []
+
+        def renew() -> None:
+            if held:
+                try:
+                    store.renew_lease(build, held[0], LEASE_TTL_S)
+                    return
+                except MetadataError:  # expired or dropped: acquire a new one
+                    held.clear()
+            held.append(store.acquire_lease(spec.domain, build, digests, LEASE_TTL_S))
+
+        return renew
 
     def _touch_inputs(self, spec: ActionSpec, contents: Mapping[str, Digest]) -> None:
         """Record the use of the staged inputs for GC (best effort: never fails the action)."""

@@ -8,7 +8,7 @@ Action layout (one object per action, in plan order):
 
     {"action_id", "step", "rule": {"kind", "version"}, "argv": [...], "params": {...},
      "env": {...}, "runtime_env": {...}, "toolchain": {"name", "module", "id"} | null,
-     "inputs": [{"path", "kind", "id", "source": {"type": "source", "input", "pattern"}
+     "inputs": [{"path", "kind", "id", "writable"?, "source": {"type": "source", "input", "pattern"}
                                                 | {"type": "output", "action", "output"}
                                                 | {"type": "import", "name", "path"}}],
      "outputs": [{"name", "path", "type", "deterministic", "optional"}],
@@ -97,15 +97,7 @@ def spec_to_json(spec: ActionSpec) -> JsonValue:
             "module": spec.toolchain.module,
             "id": str(spec.toolchain.id),
         },
-        "inputs": [
-            {
-                "path": r.logical_path,
-                "kind": r.kind,
-                "source": _source_json(r.source),
-                "id": _opt(r.id),
-            }
-            for r in spec.inputs
-        ],
+        "inputs": [_input_json(r) for r in spec.inputs],
         "outputs": [
             {
                 "name": o.name,
@@ -268,6 +260,18 @@ _INPUT_KINDS: dict[str, InputKind] = {"file": "file", "tree": "tree"}
 _OUTPUT_TYPES: dict[str, OutputType] = {"file": "file", "dir": "dir"}
 
 
+def _input_json(ref: InputRef) -> JsonValue:
+    doc: dict[str, JsonValue] = {
+        "path": ref.logical_path,
+        "kind": ref.kind,
+        "source": _source_json(ref.source),
+        "id": _opt(ref.id),
+    }
+    if ref.writable:  # only when set: read-only inputs encode as before P1-04
+        doc["writable"] = True
+    return doc
+
+
 def _input(value: object, path: str) -> InputRef:
     doc = _obj(value, path)
     raw = doc.get("kind")
@@ -279,6 +283,7 @@ def _input(value: object, path: str) -> InputRef:
         kind=kind,
         source=_get(doc, "source", path, _source),
         id=_get(doc, "id", path, _opt_digest),
+        writable=_bool(doc.get("writable", False), f"{path}.writable"),
     )
 
 

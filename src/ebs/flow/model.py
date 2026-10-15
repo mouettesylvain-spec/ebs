@@ -36,6 +36,8 @@ __all__ = [
     "DebugDef",
     "Flow",
     "ImportDef",
+    "InputDef",
+    "InputValue",
     "MatrixDef",
     "OutputDef",
     "Resources",
@@ -44,6 +46,7 @@ __all__ = [
     "check_ref_syntax",
     "format_duration",
     "format_memory",
+    "input_texts",
     "parse_duration",
     "parse_memory",
 ]
@@ -487,6 +490,32 @@ OutputField = Annotated[
 """`name: path` is short for `name: {file: path}` (deterministic, required)."""
 
 
+class InputDef(_Model):
+    """The long form of an input: its pattern(s) under `from`, plus staging options.
+
+    `writable: true` makes the runner stage private writable copies instead of read-only
+    links into the CAS (for tools that write into their inputs). Never part of the key.
+    """
+
+    from_: Template | tuple[Template, ...] = Field(alias="from")
+    writable: StrictBool = False
+
+
+InputValue = Template | tuple[Template, ...] | InputDef
+"""An input: a pattern or reference, a list of them, or the long form `{from, writable}`."""
+
+
+def input_texts(name: str, value: InputValue) -> list[tuple[str, str]]:
+    """The (field path, template text) pairs of input `name`, for rendering and messages."""
+    if isinstance(value, InputDef):
+        texts, prefix = value.from_, f"inputs.{name}.from"
+    else:
+        texts, prefix = value, f"inputs.{name}"
+    if isinstance(texts, str):
+        return [(prefix, texts)]
+    return [(f"{prefix}[{i}]", text) for i, text in enumerate(texts)]
+
+
 class DebugDef(_Model):
     """Files copied to the debug area: always on failure, on success only if `on_success`."""
 
@@ -501,7 +530,7 @@ class StepDef(_Model):
     kind: Kind
     toolchain: StrictStr | None = None
     matrix: MatrixDef | None = None
-    inputs: dict[Ident, Template | tuple[Template, ...]] = {}
+    inputs: dict[Ident, InputValue] = {}
     params: dict[Ident, Template | ParamInt | StrictBool] = {}
     outputs: dict[OutputName, OutputField] = {}
     resources: Resources = Resources()

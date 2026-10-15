@@ -15,6 +15,10 @@ Configuration, `<state>/config.json` (all optional):
     poll_s          supervisor polling period (default 0.05)
     min_job_age_s   how long squeue still shows ended jobs, like MinJobAge (default 300)
     first_job_id    (default 1000)
+    epilog          executable run when a job ends, like slurmd's Epilog, before the
+                    job's final state is recorded; env: PATH, SLURM_JOB_ID,
+                    SLURM_JOB_UID, SLURM_JOB_GID, SLURM_JOB_USER, SLURM_JOB_COMMENT
+                    (if the job has one) plus `epilog_env` {name: value}
 
 Faults, `<state>/faults.json`: a list of objects, re-read on every use.
     {"fault": "NODE_FAIL" | "PREEMPTED", "job_name": glob, "after_s": float, "count": n}

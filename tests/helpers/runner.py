@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
@@ -158,6 +158,7 @@ class Harness:
     store: RecordingStore = field(default_factory=RecordingStore)
     caller_env: dict[str, str] = field(default_factory=dict)
     settings_overrides: dict[str, object] = field(default_factory=dict)
+    renew_lease: Callable[[], None] | None = None
     out: io.StringIO = field(default_factory=io.StringIO)
     err: io.StringIO = field(default_factory=io.StringIO)
 
@@ -172,6 +173,7 @@ class Harness:
             clock=FakeClock(),
             out=self.out,
             err=self.err,
+            renew_lease=self.renew_lease,
         )
 
     def run(

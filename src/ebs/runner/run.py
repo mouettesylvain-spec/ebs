@@ -5,7 +5,9 @@ closed and stdout+stderr on one pipe. A reader thread copies the pipe to `logs/t
 keeping at most `max_log` bytes: the *tail*, because the end of a log explains a failure. On
 timeout the whole group gets SIGTERM, then SIGKILL after `grace_s`. Whatever way the run ends
 (normal exit, timeout, or an exception such as `Interrupted` from a signal handler), no process
-of the group is left behind.
+of the group is left behind. Optional hooks: `tee` sees every chunk of output (the live log,
+P1-04) and `on_poll` runs on each turn of the wait loop, at least every 0.25 s (live-log flushes,
+lease heartbeat); neither may raise.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Final
@@ -56,6 +58,8 @@ def run_tool(
     timeout_s: float | None,
     max_log: int,
     grace_s: float,
+    tee: Callable[[bytes], None] | None = None,
+    on_poll: Callable[[], None] | None = None,
 ) -> ToolRun:
     log_file = _CappedLog(log_path, max_log)
     start = time.monotonic()
@@ -76,13 +80,13 @@ def run_tool(
         return ToolRun(127, False, time.monotonic() - start, 0.0, 0, 0, message.strip())
 
     assert proc.stdout is not None
-    reader = threading.Thread(target=_copy, args=(proc.stdout, log_file), daemon=True)
+    reader = threading.Thread(target=_copy, args=(proc.stdout, log_file, tee), daemon=True)
     reader.start()
     timed_out = False
     status: int | None = None
     usage: resource.struct_rusage | None = None
     try:
-        status, usage, timed_out = _wait(proc.pid, start, timeout_s, grace_s)
+        status, usage, timed_out = _wait(proc.pid, start, timeout_s, grace_s, on_poll)
     finally:
         if status is None:  # an exception (e.g. Interrupted) while the tool runs
             kill_group(proc.pid, signal.SIGKILL)
@@ -114,7 +118,11 @@ def run_tool(
 
 
 def _wait(
-    pid: int, start: float, timeout_s: float | None, grace_s: float
+    pid: int,
+    start: float,
+    timeout_s: float | None,
+    grace_s: float,
+    on_poll: Callable[[], None] | None = None,
 ) -> tuple[int, resource.struct_rusage, bool]:
     """Reap `pid`, enforcing the timeout; returns (wait status, rusage, timed out)."""
     deadline = None if timeout_s is None else start + timeout_s
@@ -125,6 +133,8 @@ def _wait(
         done, status, usage = os.wait4(pid, os.WNOHANG)
         if done:
             return status, usage, timed_out
+        if on_poll is not None:
+            on_poll()
         now = time.monotonic()
         if deadline is not None and not timed_out and now >= deadline:
             timed_out = True
@@ -145,9 +155,11 @@ def kill_group(pgid: int, sig: int) -> None:
         os.killpg(pgid, sig)
 
 
-def _copy(pipe: BinaryIO, out: _CappedLog) -> None:
+def _copy(pipe: BinaryIO, out: _CappedLog, tee: Callable[[bytes], None] | None = None) -> None:
     # Keep draining after a write error: a tool blocked on a full pipe would hang the run.
     while chunk := pipe.read1(_CHUNK):  # type: ignore[attr-defined]
+        if tee is not None:
+            tee(chunk)
         if out.error is not None:
             continue
         try:

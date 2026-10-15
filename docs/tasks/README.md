@@ -41,7 +41,7 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P1-13 | `ebs outputs` and `ebs fetch` | P0-16 | 1 | done |
 | P1-11 | `ebs seeds gen` | P0-05 | 1 | done |
 | P1-02 | SLURM executor (sbatch, arrays, polling, cancel) | P1-01, P0-14 | 2 | review |
-| P1-04 | Runner on grid: materialization, debug collection, cleanup | P0-13, P1-06 | 2 | todo |
+| P1-04 | Runner on grid: materialization, debug collection, cleanup | P0-13, P1-06 | 2 | review |
 | P1-03 | Licenses, accounts/QOS, constraints | P1-02 | 3 | todo |
 | P1-05 | Infra failure classification and retries | P1-02, P0-15 | 3 | todo |
 | P1-09 | GC v1 (access tracking, pins, leases, sweep) | P0-09, P0-10, P0-15 | 3 | review |

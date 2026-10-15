@@ -21,7 +21,7 @@ that test green, and a PR that weakens one needs explicit human approval.
 | I13 | Cache lookups are scoped by domain; a key present in domain A is a miss in domain B | `tests/contract/test_metadata_store.py::test_domain_scoping` | P0-10 |
 | I14 | Nondeterministic outputs pass `nondeterministic_output_id(producer_key, name)` downstream; re-running the producer does not change downstream keys | `tests/unit/plan/test_nondeterministic.py::test_nd_id_stable_across_producer_runs`, `::test_deterministic_pending` | P0-08 |
 | I15 | GC never deletes an object reachable from a release, a pin or a live lease; action-cache rows are removed before their blobs, after a grace period | `tests/unit/gc/test_mark.py`, `tests/integration/test_gc_concurrent_build.py` | P1-09 |
-| I16 | Node scratch is removed on success, failure, timeout and SIGTERM | `tests/integration/test_runner_cleanup.py` (fake SLURM kill) | P1-04 |
+| I16 | Node scratch is removed on success, failure, timeout and SIGTERM (by the runner) and SIGKILL (by the node epilog) | `tests/integration/test_runner_cleanup.py` (fake SLURM kill), `tests/unit/deploy/test_epilog.py` | P1-04 |
 | I17 | No subprocess is started with `shell=True` using interpolated user data | `tests/unit/test_no_shell_true.py` (AST scan of src/) | P0-01 |
 | I18 | Package layering (overview.md) holds | `tests/unit/test_layering.py` (import-linter contracts) | P0-01 |
 | I19 | Released outputs are GC roots and releases are never deleted (only yanked) | `tests/unit/release/test_release_immutability.py` | P2-02 |
