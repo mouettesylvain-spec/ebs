@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from ebs.core.digest import hash_bytes
+from ebs.core.digest import Digest, hash_bytes
+from ebs.driver.retry import BackoffRetry
+from ebs.exec.api import ExecutorBusy, JobHandle, SubmitBatch
 from ebs.flow.model import Resources
-from tests.helpers.driver import Env, Node
+from ebs.meta.api import ResultManifest
+from tests.helpers.driver import Env, Node, ScriptedExecutor
 
 CHAIN = {"a": Node(), "b": Node(deps=(("a", "out"),))}
 
@@ -226,3 +229,181 @@ def test_rerun_failed_read_mode_keeps_cache(env: Env) -> None:
     cached = env.store.cache_get("test", key)
     assert cached is not None
     assert cached.status == "failed"
+
+
+def _busy_for(executor: ScriptedExecutor, refusals: int) -> list[str]:
+    """Make `executor.submit` raise ExecutorBusy for its first `refusals` calls."""
+    refused: list[str] = []
+    real = executor.submit
+
+    def submit(batch: SubmitBatch) -> list[JobHandle]:
+        if len(refused) < refusals:
+            refused.append(batch.step)
+            raise ExecutorBusy("too many jobs in flight", retry_after_s=30.0)
+        return real(batch)
+
+    executor.submit = submit  # type: ignore[method-assign]
+    return refused
+
+
+# P1-02 R8: a busy executor leaves the batch queued; the driver waits and submits it later,
+# without counting an infrastructure failure or re-reading the cache.
+def test_busy_executor_keeps_batch_queued(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    plan = env.plan({"a": Node(), "b": Node()})
+    executor = env.executor()
+    refused = _busy_for(executor, 2)
+    lookups: list[str] = []
+    real_get = env.store.cache_get
+
+    def cache_get(domain: str, key: Digest) -> ResultManifest | None:
+        lookups.append(str(key))
+        return real_get(domain, key)
+
+    monkeypatch.setattr(env.store, "cache_get", cache_get)
+    outcome = env.run(plan, executor)
+
+    assert outcome.status == "passed"
+    assert refused == ["a", "a"]  # the first refusal ends the pass: "b" is not tried in vain
+    assert executor.submitted == ["a", "b"]
+    assert env.clock.sleeps[:2] == [30.0, 30.0]  # nothing in flight: wait as told
+    assert len(lookups) == 2  # one lookup per action, not one per pass
+    rows = {r.action_id: r for r in env.store.list_actions(outcome.build)}
+    assert {r.state for r in rows.values()} == {"done"}
+    assert all(r.attempts == 1 for r in rows.values())
+
+
+# P1-02 R8: a retry refused by a busy executor is submitted later (no queued -> queued).
+def test_busy_executor_on_retry(env: Env) -> None:
+    plan = env.plan({"a": Node()})
+    executor = env.executor()
+    executor.script("a", ("infra", "node_fail"), "pass")
+    real = executor.submit
+    calls: list[int] = []
+
+    def submit(batch: SubmitBatch) -> list[JobHandle]:
+        calls.append(1)
+        if len(calls) == 2:  # the retry
+            raise ExecutorBusy("rate limited", retry_after_s=5.0)
+        return real(batch)
+
+    executor.submit = submit  # type: ignore[method-assign]
+    outcome = env.run(plan, executor)
+    assert outcome.status == "passed"
+    assert executor.submitted == ["a", "a"]
+    assert len(calls) == 3
+
+
+# P1-02 R8: with jobs in flight, the driver keeps polling and retries the refused batch.
+def test_busy_executor_with_jobs_in_flight(env: Env) -> None:
+    plan = env.plan({"a": Node(), "b": Node(deps=(("a", "out"),)), "c": Node()})
+    executor = env.executor()
+    executor.script("a", "pass", running_polls=3)
+    real = executor.submit
+    calls: list[str] = []
+
+    def submit(batch: SubmitBatch) -> list[JobHandle]:
+        calls.append(batch.step)
+        if batch.step == "c" and calls.count("c") == 1:
+            raise ExecutorBusy("too many jobs", retry_after_s=100.0)
+        return real(batch)
+
+    executor.submit = submit  # type: ignore[method-assign]
+    outcome = env.run(plan, executor)
+    assert outcome.status == "passed"
+    assert sorted(executor.submitted) == ["a", "b", "c"]
+    assert calls.count("c") == 2
+    # Polling goes on at its usual pace while "c" waits; "c" goes once its delay is over.
+    assert all(s <= 4.0 for s in env.clock.sleeps[:3])
+    assert sum(env.clock.sleeps) >= 100.0
+
+
+# P1-02 R8: a retry that comes due while the executor is busy waits for the executor too
+# (the driver sleeps until then instead of spinning).
+def test_retry_due_while_executor_busy(env: Env) -> None:
+    plan = env.plan({"a": Node(), "b": Node()})
+    executor = env.executor()
+    executor.script("a", ("infra", "node_fail"), "pass")
+    executor.script("b", "pass", running_polls=1)
+    real = executor.submit
+    calls: list[str] = []
+
+    def submit(batch: SubmitBatch) -> list[JobHandle]:
+        calls.append(batch.step)
+        if calls == ["a", "b"]:  # "b" finds the executor busy; "a" then fails and waits
+            raise ExecutorBusy("too many jobs", retry_after_s=500.0)
+        return real(batch)
+
+    executor.submit = submit  # type: ignore[method-assign]
+    outcome = env.run(plan, executor)
+    assert outcome.status == "passed"
+    assert calls == ["a", "b", "a", "b"]
+    assert len(env.clock.sleeps) < 20
+    assert 0.0 not in env.clock.sleeps[-3:]
+    assert sum(env.clock.sleeps) >= 500.0
+
+
+# P1-02 R8: a refused batch goes as soon as the executor's delay is over, even if a retry of
+# another action is due later.
+def test_deferral_not_held_back_by_later_retry(env: Env) -> None:
+    plan = env.plan({"a": Node(), "b": Node()})
+    executor = env.executor()
+    executor.script("a", ("infra", "node_fail"), "pass")
+    real = executor.submit
+    calls: list[str] = []
+
+    def submit(batch: SubmitBatch) -> list[JobHandle]:
+        calls.append(batch.step)
+        if calls == ["a", "b"]:
+            raise ExecutorBusy("too many jobs", retry_after_s=10.0)
+        return real(batch)
+
+    executor.submit = submit  # type: ignore[method-assign]
+    retry = BackoffRetry(base_s=200.0)
+    outcome = env.run(plan, executor, retry=retry)
+    assert outcome.status == "passed"
+    assert calls == ["a", "b", "b", "a"]  # "b" goes after 10 s, long before a's retry at 200 s
+
+
+# P1-02 R8: a retry refused by a busy executor is still a retry when the build stops: it ends
+# infra_failed (its last attempt stands), not skipped.
+def test_refused_retry_abandoned_on_stop(env: Env) -> None:
+    plan = env.plan({"a": Node(), "z": Node()})
+    executor = env.executor()
+    executor.script("a", ("infra", "node_fail"), "pass")
+    executor.script("z", "fail", running_polls=3)
+    real = executor.submit
+    calls: list[str] = []
+
+    def submit(batch: SubmitBatch) -> list[JobHandle]:
+        calls.append(batch.step)
+        if len(calls) > 2:  # every retry of "a" finds the executor busy
+            raise ExecutorBusy("too many jobs", retry_after_s=1.0)
+        return real(batch)
+
+    executor.submit = submit  # type: ignore[method-assign]
+    outcome = env.run(plan, executor, retry=BackoffRetry(base_s=0.5))
+    assert calls.count("a") >= 2  # a retry of "a" was offered and refused
+    assert outcome.status == "failed"
+    assert outcome.states["a"] == "infra_failed"
+    rows = {r.action_id: r for r in env.store.list_actions(outcome.build)}
+    assert rows["a"].state == "infra_failed"
+    assert rows["a"].infra_reason == "node_fail"
+
+
+# P1-02 R8: an executor that says "busy, retry now" still gets at least poll_min_s of rest.
+def test_busy_with_zero_delay_waits_poll_min(env: Env) -> None:
+    plan = env.plan({"a": Node()})
+    executor = env.executor()
+    real = executor.submit
+    refused: list[int] = []
+
+    def submit(batch: SubmitBatch) -> list[JobHandle]:
+        if len(refused) < 3:
+            refused.append(1)
+            raise ExecutorBusy("busy", retry_after_s=0.0)
+        return real(batch)
+
+    executor.submit = submit  # type: ignore[method-assign]
+    outcome = env.run(plan, executor, poll_min_s=1.5, poll_max_s=4.0)
+    assert outcome.status == "passed"
+    assert env.clock.sleeps[:3] == [1.5, 1.5, 1.5]

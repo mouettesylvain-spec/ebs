@@ -640,7 +640,7 @@ def _check_overlaps(
 
 def _merge_resources(step: Resources, toolchain: Resources | None, where: str) -> Resources:
     values: dict[str, int | None] = {}
-    for attr in ("cpus", "mem", "time"):
+    for attr in ("cpus", "mem", "time", "max_parallel"):
         value = getattr(step, attr)
         if value is None and toolchain is not None:
             value = getattr(toolchain, attr)
@@ -650,4 +650,4 @@ def _merge_resources(step: Resources, toolchain: Resources | None, where: str) -
                 "references are resolved per step, so set it on the step instead"
             )
         values[attr] = value
-    return Resources.model_construct(_fields_set={"cpus", "mem", "time"}, **values)
+    return Resources.model_construct(_fields_set=set(values), **values)

@@ -396,7 +396,7 @@ def test_toolchain_defaults_merge_with_step(cas: FsCAS, tmp_path: Path) -> None:
         "questa": {
             "module": "questa/2025.2",
             "licenses": {"msimhdlsim": 1, "qvip": 1},
-            "resources": {"cpus": 4, "mem": "2G"},
+            "resources": {"cpus": 4, "mem": "2G", "max_parallel": 10},
         }
     }
     step = {
@@ -414,6 +414,11 @@ def test_toolchain_defaults_merge_with_step(cas: FsCAS, tmp_path: Path) -> None:
         8 << 30,
         None,
     )
+    assert action.resources.max_parallel == 10  # P1-02 R2: a toolchain default too
+
+    step["resources"] = {"max_parallel": 2}
+    (action,) = p.plan(flow({"s": step}, toolchains=toolchains), base=tmp_path).actions
+    assert action.resources.max_parallel == 2  # the step wins
 
 
 def test_unknown_kind_is_a_plan_error(cas: FsCAS, tmp_path: Path) -> None:

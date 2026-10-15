@@ -53,10 +53,10 @@ come back to NFS, live logs are visible, and node scratch never leaks — even w
 - R5: `renew_lease` is a hook (None until P1-09). The runner's `running` event has `{host, job_id}`.
 
 ## Follow-ups
-- P1-02: submit with `--comment=<build uuid> <action>`, so the epilog can skip non-EBS jobs, and
-  have the job script `exec` the runner (it must receive SIGTERM directly).
-- `ebs-runner --array-map` (interfaces.md § 9 says P1-04) is not part of this task's requirements
-  and still exits 64; P1-02 needs it for job arrays.
+- P1-02 (merged) sets `--comment=<build uuid>` and `exec`s the runner: both fit the epilog.
+- `ebs-runner --array-map` (interfaces.md § 9 says P1-04) is not in this task's requirements and
+  still exits 64, but the merged P1-02 executor submits job arrays with it: needed before arrays
+  work end to end on the grid.
 - `ebs logs -f` (cli/logs.py) should tail `live.log` from the debug area while an action runs.
 - Wire `renew_lease` to the P1-09 lease API (`MetadataStore.renew_lease`).
 - Open design question (key rules): a tool that writes into a read-only staged input fails with

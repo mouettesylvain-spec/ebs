@@ -42,16 +42,22 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+
+# Job supervisors import this module once per job: stay off `typing`/`dataclasses` (~25 ms).
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from typing import Any
 
 RELEASE = "26.05.0"
 CLUSTER = "fake"
 NODE = "n001"
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+_SPAWN_TIMEOUT_S = 30.0  # a started job whose supervisor never reported is NODE_FAIL
 
 TERMINAL = frozenset(
     {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED"}
@@ -87,6 +93,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     qos TEXT NOT NULL,
     constraints TEXT NOT NULL,
     requeue INTEGER NOT NULL,
+    comment TEXT NOT NULL DEFAULT '',
     state TEXT NOT NULL,
     reason TEXT NOT NULL,
     exit_code INTEGER,
@@ -97,20 +104,20 @@ CREATE TABLE IF NOT EXISTS jobs (
     supervisor_pid INTEGER,
     job_pgid INTEGER,
     cancel_requested INTEGER NOT NULL DEFAULT 0,
-    fault TEXT,
-    comment TEXT
+    fault TEXT
 );
 CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
 """
 
 
-@dataclass(frozen=True)
 class State:
     """An open, locked view of the fake cluster."""
 
-    root: Path
-    db: sqlite3.Connection
-    config: dict[str, Any]
+    def __init__(self, root: Path, db: sqlite3.Connection, config: dict[str, Any]) -> None:
+        self.root = root
+        self.db = db
+        self.config = config
+        self.spawn: list[int] = []  # jobs started in this transaction: supervisors to fork
 
     # faults -------------------------------------------------------------------------------
 
@@ -142,10 +149,12 @@ class State:
             return fault
         return None
 
-    def has_fault(self, kind: str, job_name: str) -> bool:
+    def has_fault(
+        self, kind: str, job_name: str, faults: list[dict[str, Any]] | None = None
+    ) -> bool:
         return any(
             f.get("fault") == kind and fnmatch.fnmatchcase(job_name, str(f.get("job_name", "*")))
-            for f in self.faults()
+            for f in (self.faults() if faults is None else faults)
         )
 
     # ids ----------------------------------------------------------------------------------
@@ -178,7 +187,11 @@ def load_config(root: Path) -> dict[str, Any]:
 
 @contextlib.contextmanager
 def locked(root: Path) -> Iterator[State]:
-    """Exclusive access to the fake cluster; commits on success."""
+    """Exclusive access to the fake cluster; commits on success.
+
+    Supervisors of the jobs a scheduling pass started are forked after the commit, once the
+    database connection is closed (SQLite connections must not cross a fork).
+    """
     root.mkdir(parents=True, exist_ok=True)
     with open(root / "lock", "a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -187,7 +200,8 @@ def locked(root: Path) -> Iterator[State]:
         try:
             db.executescript(_SCHEMA)
             db.execute("BEGIN IMMEDIATE")
-            yield State(root, db, load_config(root))
+            st = State(root, db, load_config(root))
+            yield st
             db.execute("COMMIT")
         except BaseException:
             db.execute("ROLLBACK")
@@ -195,6 +209,8 @@ def locked(root: Path) -> Iterator[State]:
         finally:
             db.close()
             fcntl.flock(lock, fcntl.LOCK_UN)
+    for job_id in st.spawn:
+        _spawn_supervisor(root, job_id)
 
 
 # --- scheduling ------------------------------------------------------------------------------
@@ -221,6 +237,21 @@ def kill_group(pgid: int | None, sig: int) -> None:
             os.killpg(pgid, sig)
 
 
+def request_cancel(st: State, job_id: int) -> None:
+    """Flag a running job for its supervisor, which polls a marker file (no lock needed).
+
+    The marker outlives a rolled-back transaction; harmless while job ids are never reused.
+    """
+    st.db.execute("UPDATE jobs SET cancel_requested = 1 WHERE id = ?", (job_id,))
+    marker = cancel_marker(st.root, job_id)
+    marker.parent.mkdir(exist_ok=True)
+    marker.touch()
+
+
+def cancel_marker(root: Path, job_id: int) -> Path:
+    return root / "cancel" / str(job_id)
+
+
 def finish(
     st: State, job_id: int, state: str, exit_code: int, sig: int, reason: str = "None"
 ) -> None:
@@ -232,9 +263,12 @@ def finish(
 
 def schedule(st: State) -> None:
     """One scheduling pass: notice lost supervisors, start every pending job that fits."""
+    now = time.time()
     for row in st.db.execute("SELECT * FROM jobs WHERE state = 'RUNNING'").fetchall():
         pid = row["supervisor_pid"]
-        if pid and not _alive(int(pid)):
+        # A supervisor records its pid first thing; one that never did was lost on the way.
+        lost = not _alive(int(pid)) if pid else now - float(row["start_ts"]) > _SPAWN_TIMEOUT_S
+        if lost:
             kill_group(row["job_pgid"], signal.SIGKILL)
             finish(st, int(row["id"]), "NODE_FAIL", 0, 9, "NodeDown")
     running = st.db.execute("SELECT * FROM jobs WHERE state = 'RUNNING'").fetchall()
@@ -246,13 +280,19 @@ def schedule(st: State) -> None:
             pools[name] = pools.get(name, 0) - int(n)
         if r["array_job_id"] is not None:
             per_array[int(r["array_job_id"])] = per_array.get(int(r["array_job_id"]), 0) + 1
-    pending = st.db.execute("SELECT * FROM jobs WHERE state = 'PENDING' ORDER BY id").fetchall()
+    # Thousands of pending array tasks are common (P1-02 regressions): read only what this
+    # loop needs, the fault list once, and parse licenses only when there are any.
+    pending = st.db.execute(
+        "SELECT id, name, licenses, array_job_id, throttle, cpus, reason FROM jobs"
+        " WHERE state = 'PENDING' ORDER BY id"
+    ).fetchall()
+    faults = st.faults()
     for row in pending:
         job_id = int(row["id"])
-        wanted: dict[str, int] = json.loads(row["licenses"])
+        wanted: dict[str, int] = {} if row["licenses"] == "{}" else json.loads(row["licenses"])
         array = row["array_job_id"]
         reason = None
-        if st.has_fault("STUCK_LICENSES", str(row["name"])):
+        if faults and st.has_fault("STUCK_LICENSES", str(row["name"]), faults):
             reason = "Licenses"
         elif (
             array is not None
@@ -265,7 +305,8 @@ def schedule(st: State) -> None:
         elif int(row["cpus"]) > free_cpus:
             reason = "Resources"
         if reason is not None:
-            st.db.execute("UPDATE jobs SET reason = ? WHERE id = ?", (reason, job_id))
+            if reason != row["reason"]:
+                st.db.execute("UPDATE jobs SET reason = ? WHERE id = ?", (reason, job_id))
             continue
         free_cpus -= int(row["cpus"])
         for name, n in wanted.items():
@@ -275,11 +316,11 @@ def schedule(st: State) -> None:
         fault = st.consume_fault("NODE_FAIL", job_name=str(row["name"])) or st.consume_fault(
             "PREEMPTED", job_name=str(row["name"])
         )
-        pid = _spawn_supervisor(st.root, job_id)
+        st.spawn.append(job_id)
         st.db.execute(
             "UPDATE jobs SET state = 'RUNNING', reason = 'None', start_ts = ?, "
-            "supervisor_pid = ?, fault = ? WHERE id = ?",
-            (time.time(), pid, json.dumps(fault) if fault else None, job_id),
+            "supervisor_pid = NULL, fault = ? WHERE id = ?",
+            (time.time(), json.dumps(fault) if fault else None, job_id),
         )
 
 
@@ -290,9 +331,60 @@ _BOOT = (
 
 
 def _spawn_supervisor(root: Path, job_id: int) -> int:
+    """Start a detached supervisor for `job_id`; returns its pid.
+
+    The fake commands and supervisors are single-threaded, so they fork: the child already has
+    this module loaded and skips an interpreter start, which dominates the cost of a job in
+    large fake regressions (P1-02). A multi-threaded caller starts a fresh interpreter instead.
+    Called by `locked` after it closed its database connection. The supervisor records its own
+    pid (`supervisor_pid`) when it starts.
+    """
+    if threading.active_count() > 1:
+        return _exec_supervisor(root, job_id)
+    log_fd = os.open(root / "supervisor.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    pid = os.fork()
+    if pid:
+        os.close(log_fd)
+        return pid
+    code = 1
+    try:  # the child: detach, drop the parent's lock/database descriptors, run the job
+        os.setsid()
+        devnull = os.open(os.devnull, os.O_RDWR)
+        os.dup2(devnull, 0)
+        os.dup2(devnull, 1)
+        os.dup2(log_fd, 2)
+        os.closerange(3, 1 << 16)
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGPIPE):
+            signal.signal(sig, signal.SIG_DFL)
+        from tests.fakes.slurm.supervisor import main
+
+        main(str(root), job_id)
+        code = 0
+    except BaseException:
+        import traceback
+
+        traceback.print_exc()
+    finally:
+        os._exit(code)
+
+
+_BOOT = (
+    "import sys; sys.path.insert(0, {root!r}); "
+    "from tests.fakes.slurm.supervisor import main; main(sys.argv[1], int(sys.argv[2]))"
+)
+
+
+def _exec_supervisor(root: Path, job_id: int) -> int:
     with open(root / "supervisor.log", "ab") as log:
         proc = subprocess.Popen(
-            [sys.executable, "-I", "-c", _BOOT.format(root=str(REPO_ROOT)), str(root), str(job_id)],
+            [
+                sys.executable,
+                "-IS",
+                "-c",
+                _BOOT.format(root=str(REPO_ROOT)),
+                str(root),
+                str(job_id),
+            ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=log,
@@ -409,6 +501,7 @@ def squeue_job(row: sqlite3.Row, task_string: str) -> dict[str, Any]:
         "array_task_string": task_string,
         "batch_flag": True,
         "command": row["script"],
+        "comment": row["comment"],
         "constraints": row["constraints"],
         "cpus": _num(int(row["cpus"])),
         "cpus_per_task": _num(int(row["cpus"])),
@@ -448,6 +541,7 @@ def sacct_job(row: sqlite3.Row, task_string: str) -> dict[str, Any]:
             "task_id": _num(task),
         },
         "cluster": CLUSTER,
+        "comment": {"administrator": "", "job": row["comment"], "system": ""},
         "constraints": row["constraints"],
         "exit_code": _exit(row),
         "job_id": _record_id(row, task_string),

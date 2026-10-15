@@ -17,8 +17,8 @@ Safety:
 - Symlinked base, build or action dirs are never followed; markers owned by another user are
   ignored.
 - When slurmd passes a non-empty `SLURM_JOB_COMMENT` that does not start with a build UUID,
-  the job is skipped at once (the EBS SLURM executor is to set `--comment=<build uuid> …`,
-  P1-02). With no or an empty comment, the markers alone decide.
+  the job is skipped at once (the EBS SLURM executor submits with `--comment=<build uuid>`).
+  With no or an empty comment, the markers alone decide.
 - The script always exits 0: a failing epilog would drain the node.
 
 ### Install

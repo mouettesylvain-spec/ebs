@@ -200,8 +200,9 @@ class SbatchOptions(BaseModel):
     workdir: Path | None = None
     export_file: Path | None = None  # NUL-separated NAME=value (write_env_file)
     requeue: bool = False  # the driver retries; SLURM requeues would run an action twice
+    comment: _Text | None = None  # P1-02: the build UUID, for admin tooling and the epilog
 
-    @field_validator("job_name", "constraint")
+    @field_validator("job_name", "constraint", "comment")
     @classmethod
     def _printable(cls, value: str | None) -> str | None:
         if value is not None and any(ord(c) < 32 or ord(c) == 127 for c in value):
@@ -257,6 +258,8 @@ def sbatch_argv(script: Path, opts: SbatchOptions, *, command: str = "sbatch") -
         argv.append(f"--error={opts.error}")
     if opts.workdir is not None:
         argv.append(f"--chdir={opts.workdir}")
+    if opts.comment is not None:
+        argv.append(f"--comment={opts.comment}")
     argv.append("--export=NONE")
     if opts.export_file is not None:
         argv.append(f"--export-file={opts.export_file}")
@@ -293,6 +296,56 @@ def _ref_text(ref: JobRef) -> str:
 
 def _base_job(ref: JobRef) -> JobId:
     return ref.array_job_id if isinstance(ref, ArrayTaskId) else ref
+
+
+class _Records:
+    """squeue/sacct records indexed by job id and array task: lookups cost O(1), not O(records),
+    so one poll of thousands of array tasks stays linear (P1-02 R5).
+
+    When several records answer a reference (a requeued task, or a task that started while its
+    array's pending record was read), the later record wins, in the order SLURM listed them.
+    """
+
+    def __init__(self, jobs: Sequence[SqueueJob | SacctJob]) -> None:
+        self._jobs = jobs
+        self._infos = [job.info() for job in jobs]
+        self._by_id: dict[JobId, int] = {}
+        self._by_task: dict[tuple[JobId, int], int] = {}
+        self._pending: dict[JobId, list[tuple[int, str]]] = {}  # array -> (record, "2-9%2")
+        for i, (job, info) in enumerate(zip(jobs, self._infos, strict=True)):
+            self._by_id[info.job_id] = i
+            if info.array_job_id is None:
+                continue
+            if info.array_task_id is not None:
+                self._by_task[(info.array_job_id, info.array_task_id)] = i
+                continue
+            spec = job.array_task_string if isinstance(job, SqueueJob) else job.array.task
+            if spec:
+                self._pending.setdefault(info.array_job_id, []).append((i, spec))
+
+    def match(self, ref: JobRef, out: dict[JobRef, SlurmJobInfo]) -> bool:
+        """Put what the records say about `ref` into `out`; False if they do not know it."""
+        if not isinstance(ref, ArrayTaskId):
+            i = self._by_id.get(ref)
+            if i is None:
+                return False
+            out[ref] = self._infos[i]
+            return True
+        own = self._by_task.get((ref.array_job_id, ref.task_id), -1)
+        collapsed = max(
+            (
+                i
+                for i, spec in self._pending.get(ref.array_job_id, ())
+                if array_spec_contains(spec, ref.task_id)
+            ),
+            default=-1,
+        )
+        if own < 0 and collapsed < 0:
+            return False
+        out[ref] = (
+            self._infos[own] if own > collapsed else self._jobs[collapsed].info(task_id=ref.task_id)
+        )
+        return True
 
 
 class SlurmCli:
@@ -379,42 +432,13 @@ class SlurmCli:
         if not refs:
             return {}
         result: dict[JobRef, SlurmJobInfo] = {}
-        live = self._squeue(sorted({_base_job(r) for r in refs}, key=_job_sort_key))
-        missing = [r for r in refs if not self._match(r, live, result)]
+        live = _Records(self._squeue(sorted({_base_job(r) for r in refs}, key=_job_sort_key)))
+        missing = [r for r in refs if not live.match(r, result)]
         if missing:
-            done = self._sacct(sorted({_base_job(r) for r in missing}, key=_job_sort_key))
+            done = _Records(self._sacct(sorted({_base_job(r) for r in missing}, key=_job_sort_key)))
             for ref in missing:
-                self._match(ref, done, result)
+                done.match(ref, result)
         return result
-
-    @staticmethod
-    def _match(
-        ref: JobRef,
-        jobs: Sequence[SqueueJob | SacctJob],
-        out: dict[JobRef, SlurmJobInfo],
-    ) -> bool:
-        found: SlurmJobInfo | None = None
-        for job in jobs:
-            info = job.info()
-            if isinstance(ref, ArrayTaskId):
-                if info.array_job_id != ref.array_job_id:
-                    continue
-                if info.array_task_id == ref.task_id:
-                    found = info  # a later record (requeue) wins
-                    continue
-                pending = job.array_task_string if isinstance(job, SqueueJob) else job.array.task
-                if (
-                    info.array_task_id is None
-                    and pending
-                    and array_spec_contains(pending, ref.task_id)
-                ):
-                    found = job.info(task_id=ref.task_id)
-            elif info.job_id == ref:
-                found = info
-        if found is None:
-            return False
-        out[ref] = found
-        return True
 
     def _squeue(self, jobs: list[JobId]) -> list[SqueueJob]:
         argv = [self._cmd("squeue"), "--json", "--states=all", f"--jobs={','.join(jobs)}"]

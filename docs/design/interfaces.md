@@ -102,6 +102,7 @@ Model details (P0-04):
   `writable` makes the runner stage private writable copies. `input_texts(name, value)` lists the
   `(field path, text)` pairs of any form (`inputs.x`, `inputs.x[1]`, `inputs.x.from[0]`).
 - `Resources.cpus`, `mem` and `time` are an `int` (count, bytes, seconds) or, when the value holds a `${…}` reference, the verbatim string.
+- `Resources.max_parallel` (P1-02) is a literal positive `int`: the SLURM array throttle (`%N`) for the step's job arrays, overriding `[slurm].array_throttle`; a toolchain's `resources.max_parallel` is a default like `cpus`. Like all resources it is not in the action key.
 - The planner parses a resolved resource string with `ebs.flow.model.parse_memory` / `parse_duration`.
 - `model_dump()` emits the YAML spelling again (`8G`, `30m`, `from`, `zip`), so the result re-validates.
 - `ebs.flow.model.check_ref_syntax(s) -> str | None` validates the grammar below without resolving anything.
@@ -251,7 +252,8 @@ Plan file (`plan.json`, canonical JSON, stored in CAS; its digest is the build's
 ```
 
 `actions` are in topological order (producers first; steps in declaration order on ties), edges
-sorted. Action JSON layout: `ebs.plan.planfile` module docstring; `encode`/`decode`/`plan_digest`,
+sorted. An action's `resources` is `{"cpus", "mem", "time"}` plus `"max_parallel"` only when set
+(P1-02), so plans that do not use it encode as before. Action JSON layout: `ebs.plan.planfile` module docstring; `encode`/`decode`/`plan_digest`,
 `to_json`/`from_json`, `spec_to_json`/`spec_from_json`. `decode` rejects another plan format
 version or key schema (re-plan).
 
@@ -582,7 +584,7 @@ class RuleRegistry:                                  # ebs.rules.registry
 ```python
 class Executor(Protocol):
     name: str
-    def submit(self, batch: SubmitBatch) -> list[JobHandle]: ...   # one handle per action, in batch order
+    def submit(self, batch: SubmitBatch) -> list[JobHandle]: ...   # one handle per action, in batch order; may raise ExecutorBusy
     def poll(self, handles: Sequence[JobHandle]) -> dict[JobHandle, JobStatus]: ...   # ONE backend call per poll; never blocks
     def cancel(self, handles: Sequence[JobHandle]) -> None: ...   # finished jobs keep their state
 
@@ -606,6 +608,11 @@ class JobStatus(BaseModel):               # frozen, strict
     exit_code: int | None = None                  # the runner's; negative = killed by that signal
 ```
 
+`ExecutorBusy(ExecutorError)` (P1-02) carries `retry_after_s`: `submit` started nothing because the
+backend cannot take the batch now (rate limit, too many jobs in flight). It is not a failure of
+the actions: the driver leaves them queued, submits nothing for `max(retry_after_s, poll_min_s)`
+(polling goes on) and does not read the cache again for them.
+
 `done` means the runner finished and posted a ResultManifest (passed or failed); the driver reads
 the result from MetadataStore, not from the executor. Every executor maps runner exit codes
 (§ 9) the same way (`ebs.exec.api.status_for_exit`): `0` ⇒ `done`; `75` ⇒ `infra_failed` with the
@@ -626,11 +633,13 @@ SlurmCli(runner: CommandRunner | None = None, clock: Clock | None = None, bin_di
     .version() -> str                                            # scontrol --version
 SbatchOptions(job_name, partition=, account=, qos=, cpus_per_task=, mem_mb=, time_limit_s=,
               licenses={name[@server]: n}, constraint=, array=ArraySpec(indices, throttle=),
-              output=, error=, workdir=, export_file=, requeue=False)   # frozen, validated
+              output=, error=, workdir=, export_file=, requeue=False, comment=)   # frozen, validated
 write_env_file(path, env)                 # NUL-separated NAME=value for --export-file
 states.job_status(info: SlurmJobInfo, *, infra_reason: InfraReason | None = None) -> JobStatus
 ```
 
+- `comment` (P1-02) becomes `--comment=…`: the build UUID, read by admin tooling and the
+  scratch-cleanup epilog (P1-04).
 - argv is always a list; options are single `--name=value` elements; `--export=NONE` always
   (the job's environment is the env file only); `--no-requeue` unless `requeue=True` (the driver
   retries, a SLURM requeue would run the action twice).
@@ -649,6 +658,52 @@ states.job_status(info: SlurmJobInfo, *, infra_reason: InfraReason | None = None
   `infra_failed`); CANCELLED ⇒ `cancelled`; COMPLETED/FAILED ⇒ `status_for_exit(runner exit code)`
   (negative when a signal ended it); an unknown state ⇒ `infra_failed("other")` with a warning.
 
+SLURM executor (P1-02, `ebs.exec.slurm.executor`):
+
+```python
+SlurmSettings(debug_root=Path("/debug"), default_partition=None, max_array_size=1000, array_throttle=200,
+              max_pending_jobs=2000, max_submits_per_min=60, poll_min_s=5.0, poll_max_s=60.0, bin_dir=None)
+SlurmSettings.from_config(config) -> SlurmSettings      # [slurm] (D5 defaults) + [debug].root; ConfigError
+SlurmExecutor(*, cli: SlurmCli, cas: CAS, settings: SlurmSettings, store: MetadataStore | None = None,
+              runner_argv=("ebs-runner",), env: Mapping[str, str] | None = None, clock: Clock | None = None)
+    .submit / .poll / .cancel                         # the Executor protocol; name = "slurm"
+    .job_ref(handle) -> JobId | ArrayTaskId           # the SLURM job behind a handle
+    .in_flight() -> int                               # unfinished jobs, array tasks counted one by one
+# ebs.exec.slurm.arrays
+plan_jobs(actions, *, max_array_size, throttle) -> list[JobPlan(actions, is_array, throttle)]
+array_throttle(actions, default) -> int               # strictest resources.max_parallel, else default
+store_array_map(cas, plan, action_ids) -> Digest;  load_array_map(cas, d) / decode_array_map(bytes) -> ArrayMap
+# ebs.exec.slurm.jobscript
+runner_arguments(runner_argv, *, plan, domain, build, action=None | array_map=None) -> list[str]
+render_jobscript(argv) -> str                         # fixed template, every value shlex.quote'd
+```
+
+- One executor per domain (its CAS's). A batch of one action is one plain job; a larger batch is
+  one job array, split into parts of at most `max_array_size` (a part of one action is a plain
+  job). Handles are `"<job>"` or `"<array job>_<task>"`. The array throttle is
+  `array_throttle(actions, [slurm].array_throttle)`, per array part.
+- The job script is `#!/bin/bash`, `set -euo pipefail`, `exec <runner argv>` (§ 9 form, with
+  `--domain` and, for a build, `--build`); sbatch gets `--export=NONE` and `--export-file` with
+  `env` (default: the caller's `PATH` and `EBS_CONFIG`). stdout+stderr go to
+  `<debug_root>/<domain>/<build id|local>/slurm/%A_%a.out` (arrays) or `%j.out`; scripts and env
+  files sit in its `jobs/` subdirectory. Job name `ebs:<build uuid[:8]|local>:<step>`, comment
+  the build UUID. Partition, cpus, memory (MiB, rounded up) and time (`resources.time` +
+  `JOB_TIME_GRACE_S` = 120 s, so the runner's own timeout fires first) come from the batch's
+  largest request; licenses, account, QOS and constraints are P1-03.
+- R7: before `submit` returns, each job id is recorded with
+  `set_action_state(build, action, "pending", slurm_job_id=…)`; a build needs a store. If an
+  sbatch call or a record fails, the batch's jobs already submitted are scancelled and `submit`
+  raises ExecutorError.
+- `poll` makes at most one `SlurmCli.query` (one squeue, plus one sacct for what squeue forgot)
+  for the unfinished handles it is given; finished jobs answer from memory, a job SLURM does
+  not know is left out of the result. Runner exit 75: the infra reason is read from the tail of
+  the job's output file. `cancel` makes one query (finished jobs keep their state), then one
+  scancel (whole arrays by their id when all their unfinished tasks are cancelled).
+- R8: `submit` raises `ExecutorBusy` when its sbatch calls would exceed `max_submits_per_min` in
+  the last 60 s (`retry_after_s` = until the oldest call leaves the window), or when the jobs in
+  flight plus the batch would exceed `max_pending_jobs` (`retry_after_s = poll_min_s`). Neither
+  applies when nothing is in flight / no call is in the window, so an oversized batch runs alone.
+
 `LocalExecutor(log_dir=, runner_argv=("ebs-runner",), max_parallel=None, env=None)` (P0-14) runs
 runner subprocesses on this machine: at most `max_parallel` slots (default `os.cpu_count()`), an
 action taking `resources.cpus` slots (default 1; more than `max_parallel` is capped, so it runs
@@ -662,8 +717,12 @@ session with stdin closed; stdout/stderr go to files under `<log_dir>/local-*/` 
 
 ```
 ebs-runner --plan sha256:<plan digest> --action <action_id> [--build <id>] [--domain <d>]
-ebs-runner --plan sha256:<plan digest> --array-map sha256:<map digest>    # uses $SLURM_ARRAY_TASK_ID
+ebs-runner --plan sha256:<plan digest> --array-map sha256:<map digest> [--build <id>] [--domain <d>]   # uses $SLURM_ARRAY_TASK_ID
 ```
+
+Array map (P1-02, a blob in the domain's CAS, canonical JSON; `ebs.exec.slurm.arrays`):
+`{"v": 1, "plan": "sha256:<plan digest>", "actions": [<action id of task 0>, <task 1>, …]}`.
+Task `$SLURM_ARRAY_TASK_ID` runs `actions[i]`; its `plan` must equal `--plan` (P1-04 reads it).
 
 Exit codes: `0` result posted (passed or failed), `64` bad usage, `70` internal error,
 `75` infra failure (temporary; driver retries), `76` input verification failed (digest mismatch).

@@ -14,9 +14,12 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
 
-from tests.fakes.slurm.core import NODE, finish, kill_group, locked, schedule
+from tests.fakes.slurm.core import NODE, cancel_marker, finish, kill_group, locked, schedule
+
+TYPE_CHECKING = False  # see core.py
+if TYPE_CHECKING:
+    from typing import Any
 
 _PAGE_KB = os.sysconf("SC_PAGE_SIZE") // 1024
 
@@ -108,7 +111,7 @@ def _epilog(config: dict[str, Any], row: Any) -> None:
         "SLURM_SCRIPT_CONTEXT": "epilog_slurmd",
         **{str(k): str(v) for k, v in dict(config.get("epilog_env", {})).items()},
     }
-    if row["comment"] is not None:
+    if row["comment"]:  # slurmd passes none for a job without one
         env["SLURM_JOB_COMMENT"] = str(row["comment"])
     with contextlib.suppress(OSError, subprocess.SubprocessError):
         subprocess.run([str(epilog)], env=env, stdin=subprocess.DEVNULL, timeout=60, check=False)
@@ -117,6 +120,7 @@ def _epilog(config: dict[str, Any], row: Any) -> None:
 def main(state_dir: str, job_id: int) -> None:
     root = Path(state_dir)
     with locked(root) as st:
+        st.db.execute("UPDATE jobs SET supervisor_pid = ? WHERE id = ?", (os.getpid(), job_id))
         row = st.job(job_id)
         if row is None or row["state"] != "RUNNING":
             return
@@ -166,10 +170,9 @@ def main(state_dir: str, job_id: int) -> None:
     while proc.poll() is None:
         time.sleep(poll_s)
         elapsed = time.monotonic() - started
-        with locked(root) as st:
-            now = st.job(job_id)
-            cancel = bool(now["cancel_requested"]) if now is not None else True
-        if cancel:
+        # scancel leaves a marker: checking it needs no lock, so hundreds of running jobs do
+        # not starve the commands of the lock.
+        if cancel_marker(root, job_id).exists():
             outcome = ("CANCELLED", "None")
             _stop(proc, signal.SIGTERM, kill_wait)
         elif time_limit is not None and elapsed > time_limit:

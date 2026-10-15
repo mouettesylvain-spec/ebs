@@ -333,6 +333,19 @@
           ],
           "default": null,
           "title": "Time"
+        },
+        "max_parallel": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Parallel"
         }
       },
       "title": "Resources",
@@ -440,7 +453,8 @@
           "default": {
             "cpus": null,
             "mem": null,
-            "time": null
+            "time": null,
+            "max_parallel": null
           }
         },
         "licenses": {
@@ -569,7 +583,8 @@
           "default": {
             "cpus": null,
             "mem": null,
-            "time": null
+            "time": null,
+            "max_parallel": null
           }
         }
       },

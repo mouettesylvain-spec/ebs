@@ -29,6 +29,7 @@ class FakeRunner:
 
     root: Path
     script: dict[str, dict[str, object]] = field(default_factory=dict)
+    cas_root: Path | None = None  # where array maps are read from (SLURM executor)
 
     @property
     def record(self) -> Path:
@@ -36,17 +37,20 @@ class FakeRunner:
 
     @property
     def argv(self) -> tuple[str, ...]:
-        return (sys.executable, str(fake_runner.PATH))
+        return (sys.executable, "-IS", str(fake_runner.PATH))  # stdlib only: skip site
 
     def env(self) -> dict[str, str]:
         self.root.mkdir(parents=True, exist_ok=True)
         script = self.root / "script.json"
         script.write_text(json.dumps(self.script))
-        return {
+        env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             fake_runner.SCRIPT_ENV: str(script),
             fake_runner.RECORD_ENV: str(self.record),
         }
+        if self.cas_root is not None:
+            env[fake_runner.CAS_ENV] = str(self.cas_root)
+        return env
 
     def set(self, action_id: str, **behaviour: object) -> None:
         """Script `action_id`; must be called before the executor is created (env is fixed)."""
@@ -100,6 +104,7 @@ def wait_states(
     *,
     until: set[str] | None = None,
     timeout: float = 10.0,
+    interval: float = 0.05,
 ) -> dict[JobHandle, JobStatus]:
     """Poll until every handle is in `until` (default: a terminal state); the last poll."""
     wanted = until or TERMINAL
@@ -110,5 +115,5 @@ def wait_states(
         last = executor.poll(handles)
         return all(s.state in wanted for s in last.values())
 
-    wait_until(check, timeout=timeout, what=f"jobs in {sorted(wanted)}")
+    wait_until(check, timeout=timeout, interval=interval, what=f"jobs in {sorted(wanted)}")
     return last
