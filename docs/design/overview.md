@@ -118,6 +118,12 @@ untrusted_mounts = []
 [rules]                        # read into ebs.rules.api.RuleSettings (config wiring: P0-16)
 license_error_patterns = []    # regexes on the log tail => INFRA("license"); replaces the defaults
 
+[gc]                           # P1-09: `ebs gc`, as the GC service account
+domain = ""                    # default for --domain (one domain per run)
+grace_hours = 24               # cache rows go first, their bytes this much later (I15)
+tmp_max_age_hours = 24         # abandoned uploads in <cas root>/<domain>/tmp/
+# TTL and quota are per domain, in the `domains` table (ttl_days, quota_bytes, *_water)
+
 [slurm]                        # P1
 default_partition = ""
 max_array_size = 1000

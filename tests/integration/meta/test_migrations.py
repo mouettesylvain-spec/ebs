@@ -28,6 +28,8 @@ P0_TABLES = {
     "api_tokens",  # P1-06 (revision 0005)
 }
 P1_TABLES = {"toolchain_manifests"}  # P1-07
+GC_TABLES = {"leases", "lease_objects", "pins", "gc_runs", "tombstones"}  # P1-09 (revision 0006)
+P1_TABLES |= GC_TABLES
 GOOD = "sha256:" + "a" * 64
 
 
@@ -339,3 +341,15 @@ def test_downgrade_0003(empty_db: URL) -> None:
 
 def _without(row: dict[str, object], key: str) -> dict[str, object]:
     return {k: v for k, v in row.items() if k != key}
+
+
+# P1-09: revision 0006 upgrades from 0005 and downgrades back to it, leaving the P0 data alone.
+def test_gc_revision_round_trip(empty_db: URL) -> None:
+    url = url_string(empty_db)
+    migrations.upgrade(url, "0005_api_tokens")
+    assert not GC_TABLES & _tables(empty_db)
+    migrations.upgrade(url, "0006_gc")
+    assert _tables(empty_db) >= GC_TABLES
+    migrations.downgrade(url, "0005_api_tokens")
+    assert not GC_TABLES & _tables(empty_db)
+    assert _tables(empty_db) >= P0_TABLES

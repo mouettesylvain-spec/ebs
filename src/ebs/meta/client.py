@@ -35,7 +35,14 @@ from pydantic_core import PydanticSerializationError
 from ebs.core.digest import Digest
 from ebs.core.errors import ConfigError, MetadataError
 from ebs.core.log import get_logger
-from ebs.meta._common import check_digest, check_toolchain, revalidate
+from ebs.meta._common import (
+    check_blobs,
+    check_digest,
+    check_lease_ttl,
+    check_pin,
+    check_toolchain,
+    revalidate,
+)
 from ebs.meta.api import (
     API_PREFIX,
     BATCH_MAX,
@@ -43,6 +50,8 @@ from ebs.meta.api import (
     ActionList,
     ActionRow,
     ActionState,
+    BlobBatch,
+    BlobRef,
     BuildCreate,
     BuildFinish,
     BuildId,
@@ -51,10 +60,14 @@ from ebs.meta.api import (
     CacheHits,
     Changed,
     CreatedBuild,
+    CreatedLease,
     DigestBatch,
     Event,
+    LeaseId,
+    LeaseRequest,
     OptionalDigest,
     OptionalResult,
+    PinRequest,
     RegisterOutcome,
     ResultManifest,
     StateChange,
@@ -606,6 +619,63 @@ class HttpMetadataStore:
                 "POST", f"/domains/{_q(domain)}/touch", f"touch {domain}", body=body,
                 idempotent=True,
             )  # fmt: skip
+
+    def register_blobs(self, domain: str, blobs: Iterable[BlobRef]) -> None:
+        check_domain(domain)
+        refs = check_blobs(blobs)
+        for chunk in _chunks(refs, BATCH_MAX):
+            self._call(
+                "POST",
+                f"/domains/{_q(domain)}/blobs",
+                f"register_blobs {domain}",
+                body=BlobBatch(blobs=chunk),
+                idempotent=True,
+            )
+
+    # --- leases and pins ------------------------------------------------------------------------
+
+    def acquire_lease(
+        self, domain: str, build: BuildId, digests: Iterable[Digest], ttl_s: int
+    ) -> LeaseId:
+        check_domain(domain)
+        check_lease_ttl(ttl_s)
+        keys = sorted({check_digest(d, "acquire_lease digest") for d in digests}, key=str)
+        first, rest = keys[:BATCH_MAX], keys[BATCH_MAX:]
+        body = LeaseRequest(domain=domain, digests=first, ttl_s=ttl_s)
+        what = f"acquire_lease for build {build}"
+        r = self._call("POST", f"/builds/{int(build)}/leases", what, body=body, idempotent=False)
+        lease = LeaseId(self._parse(r, CreatedLease, what).id)
+        if rest:  # larger leases grow by renewals, each at most one batch
+            self.renew_lease(build, lease, ttl_s, add=rest)
+        return lease
+
+    def renew_lease(
+        self, build: BuildId, lease: LeaseId, ttl_s: int, *, add: Iterable[Digest] = ()
+    ) -> None:
+        check_lease_ttl(ttl_s)
+        keys = sorted({check_digest(d, "renew_lease digest") for d in add}, key=str)
+        for chunk in _chunks(keys, BATCH_MAX) if keys else iter([[]]):
+            self._call(
+                "POST",
+                f"/builds/{int(build)}/leases/{int(lease)}/renew",
+                f"renew_lease {lease}",
+                body=LeaseRequest(digests=chunk, ttl_s=ttl_s),
+                idempotent=True,
+            )
+
+    def pin_build(self, build: BuildId, *, by: str, reason: str = "") -> None:
+        # The service records the authenticated caller as the pin's author, not `by`.
+        _, reason = check_pin(by, reason)
+        what = f"pin_build {build}"
+        body = PinRequest(reason=reason)
+        self._call("PUT", f"/builds/{int(build)}/pin", what, body=body, idempotent=True)
+
+    def unpin_build(self, build: BuildId) -> bool:
+        what = f"unpin_build {build}"
+        r = self._call("DELETE", f"/builds/{int(build)}/pin", what, idempotent=True)
+        return self._parse(r, Changed, what).changed
+
+    # --- events ---------------------------------------------------------------------------------
 
     def emit(self, event: Event) -> None:
         checked = revalidate(event, Event, "emit")

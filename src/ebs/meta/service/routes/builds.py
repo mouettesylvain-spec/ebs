@@ -16,9 +16,14 @@ from ebs.meta.api import (
     BuildFinish,
     BuildId,
     BuildView,
+    Changed,
     CreatedBuild,
+    CreatedLease,
     Event,
+    LeaseId,
+    LeaseRequest,
     OptionalResult,
+    PinRequest,
     ResultManifest,
     StateChange,
 )
@@ -157,3 +162,53 @@ def emit(
     _write(deps, caller, build)
     deps.store.emit(event)
     return no_content()
+
+
+# --- leases and pins (P1-09 R2) ------------------------------------------------------------------
+
+
+@router.post("/{build}/leases", response_model=CreatedLease, openapi_extra=json_body(LeaseRequest))
+def acquire_lease(
+    build: int,
+    req: Annotated[LeaseRequest, Depends(body(LeaseRequest))],
+    deps: Deps,
+    caller: Caller,
+) -> Response:
+    _write(deps, caller, build)
+    if req.domain is None:
+        raise MetadataError("acquire_lease: the request must name the build's domain")
+    lease = deps.store.acquire_lease(req.domain, BuildId(build), req.digests, req.ttl_s)
+    return ok(CreatedLease(id=lease))
+
+
+@router.post(
+    "/{build}/leases/{lease}/renew", status_code=204, openapi_extra=json_body(LeaseRequest)
+)
+def renew_lease(
+    build: int,
+    lease: int,
+    req: Annotated[LeaseRequest, Depends(body(LeaseRequest))],
+    deps: Deps,
+    caller: Caller,
+) -> Response:
+    _write(deps, caller, build)
+    deps.store.renew_lease(BuildId(build), LeaseId(lease), req.ttl_s, add=req.digests)
+    return no_content()
+
+
+@router.put("/{build}/pin", status_code=204, openapi_extra=json_body(PinRequest))
+def pin_build(
+    build: int,
+    req: Annotated[PinRequest, Depends(body(PinRequest))],
+    deps: Deps,
+    caller: Caller,
+) -> Response:
+    _write(deps, caller, build)
+    deps.store.pin_build(BuildId(build), by=caller.name, reason=req.reason)
+    return no_content()
+
+
+@router.delete("/{build}/pin", response_model=Changed)
+def unpin_build(build: int, deps: Deps, caller: Caller) -> Response:
+    _write(deps, caller, build)
+    return ok(Changed(changed=deps.store.unpin_build(BuildId(build))))

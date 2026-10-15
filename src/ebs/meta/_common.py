@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta
 from typing import TypeVar
 
@@ -10,12 +10,15 @@ from pydantic import BaseModel, ValidationError
 
 from ebs.core.canon import canonical_json
 from ebs.core.digest import Digest
-from ebs.core.errors import CanonError, MetadataError
+from ebs.core.errors import CanonError, DigestError, MetadataError
 from ebs.meta.api import (
     FINAL_BUILD_STATUSES,
+    MAX_LEASE_TTL_S,
     TOUCH_INTERVAL_S,
     ActionRow,
     ActionUpdate,
+    BlobRef,
+    GcRun,
     ResultManifest,
     ToolchainCreate,
     check_transition,
@@ -159,3 +162,73 @@ def check_toolchain(spec: ToolchainCreate, manifest: object) -> ToolchainCreate:
             f"got {type(manifest).__name__}"
         )
     return checked
+
+
+# --- garbage collection, leases and pins (P1-09) -------------------------------------------------
+
+
+def check_blobs(blobs: Iterable[BlobRef]) -> list[BlobRef]:
+    """Re-validated blob references for `register_blobs`."""
+    return [revalidate(b, BlobRef, "register_blobs entry") for b in blobs]
+
+
+def check_lease_ttl(ttl_s: object) -> int:
+    if type(ttl_s) is not int or not 1 <= ttl_s <= MAX_LEASE_TTL_S:
+        raise MetadataError(
+            f"lease ttl_s must be a whole number of seconds from 1 to {MAX_LEASE_TTL_S}, got "
+            f"{ttl_s!r}; renew a lease on a heartbeat instead of asking for a long one"
+        )
+    return ttl_s
+
+
+def check_pin(by: object, reason: object) -> tuple[str, str]:
+    if not isinstance(by, str) or not by or len(by) > 256:
+        raise MetadataError(f"pin_build: 'by' must name who pins the build, got {by!r}")
+    if not isinstance(reason, str) or len(reason) > 4096:
+        raise MetadataError("pin_build: the reason must be text of at most 4096 characters")
+    return by, reason
+
+
+def check_run(run: GcRun) -> GcRun:
+    """A GC run record whose report is canonical JSON."""
+    try:
+        canonical_json(run.report)  # type: ignore[arg-type]  # validated here
+    except CanonError as exc:
+        raise MetadataError(f"gc_record_run: the report is not canonical JSON: {exc}") from None
+    if min(run.marked, run.swept_rows, run.swept_bytes) < 0:
+        raise MetadataError("gc_record_run: counts must not be negative")
+    return run
+
+
+def _manifest_refs(payload: object) -> tuple[list[str], str | None]:
+    if not isinstance(payload, dict):
+        return [], None
+    outputs = payload.get("outputs")
+    found = []
+    if isinstance(outputs, dict):
+        for out in outputs.values():
+            if isinstance(out, dict) and isinstance(out.get("digest"), str):
+                found.append(out["digest"])
+    log = payload.get("log")
+    return found, log if isinstance(log, str) else None
+
+
+def cache_refs(payload: object) -> tuple[tuple[Digest, ...], Digest | None]:
+    """(output content digests, log digest) of a stored result manifest (JSON form): what a
+    cache entry needs to exist. Unparseable digests are skipped (the row is invalid anyway)."""
+    outputs, log = _manifest_refs(payload)
+    parsed = sorted({d for d in (_parse(o) for o in outputs) if d is not None}, key=str)
+    return tuple(parsed), None if log is None else _parse(log)
+
+
+def attribution_digests(payload: object) -> list[Digest]:
+    """Every object a stored result manifest references: its outputs and its log."""
+    outputs, log = cache_refs(payload)
+    return [*outputs, *([log] if log is not None else [])]
+
+
+def _parse(value: str) -> Digest | None:
+    try:
+        return Digest.parse(value)
+    except DigestError:
+        return None

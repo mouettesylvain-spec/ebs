@@ -28,6 +28,7 @@ from ebs.cli.plan import FLOW_OPTION, STEPS_ARGUMENT, make_plan
 from ebs.core.errors import ConfigError, ExitCode
 from ebs.driver.build import BuildOutcome, run_build
 from ebs.driver.scheduler import DriverConfig
+from ebs.gc.access import put_registered
 from ebs.meta.api import BuildStatus, CacheMode, Event, MetadataStore
 from ebs.plan.planfile import encode, plan_digest
 from ebs.plan.types import Plan
@@ -222,7 +223,11 @@ def build_command(
             "cancelled" if isinstance(exc, KeyboardInterrupt) else "infra_failed", None, None
         )
         raise
-    view.finish(outcome.status, outcome.plan, planned.cas.put_bytes)
+    view.finish(
+        outcome.status,
+        outcome.plan,
+        lambda data: put_registered(planned.cas, tapped, outcome.plan.domain, data),
+    )
     counts = Counter[str](outcome.states.values())
     if json_mode:
         out.emit(

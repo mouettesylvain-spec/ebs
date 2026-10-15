@@ -29,6 +29,8 @@ from ebs.driver.cache_policy import CachePolicy
 from ebs.driver.events import EventLog
 from ebs.driver.retry import RetryPolicy
 from ebs.exec.api import Executor, ExecutorBusy, JobHandle, JobStatus, SubmitBatch
+from ebs.gc.access import put_registered
+from ebs.gc.leases import LeaseKeeper
 from ebs.meta.api import (
     ActionState,
     BuildId,
@@ -94,6 +96,7 @@ class Scheduler:
         clock: Clock,
         config: DriverConfig,
         retry: RetryPolicy,
+        lease: LeaseKeeper | None = None,
     ) -> None:
         self._plan = plan
         self._plan_digest: Digest | None = plan_digest  # None: refined since last stored
@@ -130,6 +133,8 @@ class Scheduler:
         self._cancel_requested = False
         self._wake = threading.Event()  # set by request_cancel: ends a real-clock wait early
         self.cancelled = False
+        self._lease = lease  # GC roots of this build (P1-09 R2)
+        self._touched: set[Digest] = set()  # cache-hit objects, touched once per pass (R1)
 
     # --- public ---------------------------------------------------------------------------------
 
@@ -151,6 +156,7 @@ class Scheduler:
         """Drive every action to a final state; returns them in plan order."""
         interval = self._config.poll_min_s
         while True:
+            self._heartbeat()
             if self._cancelling():
                 self._cancel()
                 break
@@ -236,6 +242,7 @@ class Scheduler:
             ):
                 continue
             ready.append(spec)
+        self._flush_access()
         if self._stopping:  # a failure found during this pass: start nothing new (R5)
             self._stop_sweep(busy)
             return
@@ -270,6 +277,10 @@ class Scheduler:
             return False
         action_id = spec.action_id
         self._store.record_result(self._build, action_id, hit)  # per-build manifest + provenance
+        used = self._result_objects(hit)
+        self._touched |= used  # GC access tracking (P1-09 R1)
+        if self._lease is not None:
+            self._lease.add(used)
         self._set_state(action_id, "cached", key=key, result_key=hit.action_key)
         self._events.emit("cache_hit", action_id, key=str(key), status=hit.status)
         self._final[action_id] = "cached"
@@ -344,8 +355,30 @@ class Scheduler:
     def _stored_plan(self) -> Digest:
         """The digest of the current (refined) plan, stored in the CAS for the runners."""
         if self._plan_digest is None:
-            self._plan_digest = self._cas.put_bytes(encode(self._plan))
+            self._plan_digest = put_registered(
+                self._cas, self._store, self._plan.domain, encode(self._plan)
+            )
+            if self._lease is not None:
+                self._lease.add([self._plan_digest])
         return self._plan_digest
+
+    # --- GC: access tracking and lease (P1-09) --------------------------------------------------
+
+    @staticmethod
+    def _result_objects(result: ResultManifest) -> set[Digest]:
+        found = {out.digest for out in result.outputs.values()}
+        if result.log is not None:
+            found.add(result.log)
+        return found
+
+    def _flush_access(self) -> None:
+        if self._touched:
+            self._store.touch(self._plan.domain, sorted(self._touched, key=str))
+            self._touched.clear()
+
+    def _heartbeat(self) -> None:
+        if self._lease is not None:
+            self._lease.heartbeat()
 
     # --- polling --------------------------------------------------------------------------------
 
@@ -403,6 +436,8 @@ class Scheduler:
             )
             return
         self._ensure_running(action_id, key)
+        if self._lease is not None:
+            self._lease.add(self._result_objects(result))
         if action_id in self._replacing and self._policy.writes:
             # The runner's cache_put kept the old failure (insert-if-absent): replace it.
             self._store.cache_replace_failed(self._plan.domain, result.action_key, result)
