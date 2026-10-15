@@ -38,7 +38,7 @@ from ebs.plan.planfile import decode
 from ebs.plan.types import ActionSpec, Plan
 from ebs.rules.api import RulePlugin, RuleSettings
 from ebs.rules.registry import RuleRegistry
-from ebs.runner.collect import collect_outputs, log_tail, output_paths
+from ebs.runner.collect import collect_outputs, log_tail, output_paths, stored_objects
 from ebs.runner.config import RunnerSettings
 from ebs.runner.env import build_env
 from ebs.runner.errors import (
@@ -178,6 +178,7 @@ class Runner:
             stage_inputs(spec, self._cas, scratch.work, contents)
             write_config_files(spec, scratch.work)
             verify_inputs(spec, scratch.work, contents)  # I10: before anything executes
+            self._touch_inputs(spec, contents)
             env = build_env(
                 spec,
                 toolchain_env=toolchain_env,
@@ -266,6 +267,18 @@ class Runner:
             self._out.write(json.dumps(manifest.to_json(), sort_keys=True) + "\n")
             return EXIT_OK
         try:
+            # Register every stored object first: a put is a use, and GC must see it (P1-09 R1).
+            stored = stored_objects(self._cas, collected.outputs, log_digest, log_path)
+            self._store.register_blobs(spec.domain, stored)
+            # A put of bytes that already existed kept the stored object; GC may have claimed it
+            # just before the registration (which blocks any later claim). Never post a result
+            # whose bytes are gone: the retry stores them again (I15).
+            gone = [str(r.digest) for r in stored if not self._cas.has(r.digest)]
+            if gone:
+                raise InfraError(
+                    f"outputs were garbage-collected while being stored ({', '.join(gone[:3])}); "
+                    "retrying the action stores them again"
+                )
             self._store.record_result(req.build, spec.action_id, manifest)
             if cache_mode == "write":
                 self._store.cache_put(spec.domain, key, manifest)
@@ -273,6 +286,15 @@ class Runner:
             raise InfraError(f"cannot post the result: {exc}") from exc
         log.info("result posted", action_id=spec.action_id, status=manifest.status)
         return EXIT_OK
+
+    def _touch_inputs(self, spec: ActionSpec, contents: Mapping[str, Digest]) -> None:
+        """Record the use of the staged inputs for GC (best effort: never fails the action)."""
+        if self._store is None or not contents:
+            return
+        try:
+            self._store.touch(spec.domain, sorted(set(contents.values()), key=str))
+        except MetadataError as exc:
+            log.warning("cannot record input access", action_id=spec.action_id, error=str(exc))
 
     def _keep_log(self, error: InfraError, log_path: Path) -> None:
         """Upload the tool log of a failed attempt for debugging (best effort)."""

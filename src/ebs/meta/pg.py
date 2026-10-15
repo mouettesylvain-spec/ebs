@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from typing import Annotated, ClassVar, Final
 
 import psycopg
@@ -23,9 +24,15 @@ from ebs.core.digest import Digest
 from ebs.core.errors import ConfigError, MetadataError
 from ebs.core.log import get_logger
 from ebs.meta._common import (
+    attribution_digests,
+    cache_refs,
+    check_blobs,
     check_digest,
     check_final_status,
+    check_lease_ttl,
+    check_pin,
     check_result,
+    check_run,
     check_toolchain,
     edge_rows,
     revalidate,
@@ -36,13 +43,22 @@ from ebs.meta._common import (
 from ebs.meta.api import (
     ActionRow,
     ActionState,
+    BlobRef,
     BuildCreate,
     BuildId,
     BuildStatus,
     BuildView,
+    DomainPolicy,
     Event,
+    GcAttribution,
+    GcBlob,
+    GcCacheEntry,
+    GcRoots,
+    GcRun,
+    LeaseId,
     RegisterOutcome,
     ResultManifest,
+    Tombstone,
     ToolchainCreate,
     ToolchainRecord,
     check_domain,
@@ -54,7 +70,12 @@ from ebs.meta.models import (
     builds,
     domains,
     events,
+    gc_runs,
+    lease_objects,
+    leases,
+    pins,
     provenance_edges,
+    tombstones,
     toolchain_manifests,
     toolchains,
 )
@@ -379,19 +400,15 @@ class PgMetadataStore:
             ]
             if edges:
                 conn.execute(pg_insert(provenance_edges).on_conflict_do_nothing(), edges)
-            outputs = [
-                {
-                    "domain": domain,
-                    "digest": str(out.digest),
-                    "size": out.size,
-                    "kind": out.type,
-                    "created_at": now,
-                    "last_access": now,
-                }
-                for out in checked.outputs.values()
-            ]
-            if outputs:
-                conn.execute(pg_insert(blobs).on_conflict_do_nothing(), outputs)
+            self._register(
+                conn,
+                domain,
+                [
+                    BlobRef(digest=o.digest, size=o.size, kind=o.type)
+                    for o in checked.outputs.values()
+                ],
+                now,
+            )
 
     def get_result(self, build: BuildId, action_id: str) -> ResultManifest | None:
         stmt = sa.select(actions.c.result).where(
@@ -417,6 +434,8 @@ class PgMetadataStore:
             if done is None:
                 current = self._build_status(conn, build)
                 raise MetadataError(f"build {build} is already finished ({current})")
+            # A finished build holds no lease; a pin is a separate root.
+            conn.execute(sa.delete(leases).where(leases.c.build_id == build))
 
     def get_build(self, build: BuildId) -> BuildView:
         with self._tx(f"get_build {build}") as conn:
@@ -462,7 +481,7 @@ class PgMetadataStore:
             ).scalar_one_or_none()
         return None if content is None else Digest.parse(content)
 
-    # --- access tracking, events ----------------------------------------------------------------
+    # --- access tracking -------------------------------------------------------------------------
 
     def touch(self, domain: str, digests: Iterable[Digest]) -> None:
         check_domain(domain)
@@ -480,6 +499,397 @@ class PgMetadataStore:
                 )
                 .values(last_access=now)
             )
+
+    @staticmethod
+    def _register(conn: sa.Connection, domain: str, refs: Sequence[BlobRef], now: datetime) -> None:
+        """Insert blob rows, touching known ones: storing an object again is a use (R1)."""
+        if not refs:
+            return
+        rows = {
+            str(r.digest): {
+                "domain": domain,
+                "digest": str(r.digest),
+                "size": r.size,
+                "kind": r.kind,
+                "created_at": now,
+                "last_access": now,
+            }
+            for r in refs
+        }
+        stmt = pg_insert(blobs)
+        conn.execute(
+            stmt.on_conflict_do_update(
+                index_elements=[blobs.c.domain, blobs.c.digest],
+                set_={"last_access": stmt.excluded.last_access},
+                where=blobs.c.last_access <= touch_cutoff(now),
+            ),
+            [rows[k] for k in sorted(rows)],  # one lock order for concurrent writers
+        )
+
+    @staticmethod
+    def _touch_rows(conn: sa.Connection, domain: str, keys: Iterable[str], now: datetime) -> None:
+        """Touch known blob rows in this transaction: a new lease or pin is a use, so a GC claim
+        racing with it (which locks the row first) fails (I15)."""
+        wanted = sorted(set(keys))
+        if wanted:
+            conn.execute(
+                sa.update(blobs)
+                .where(
+                    blobs.c.domain == domain,
+                    blobs.c.digest == sa.any_(sa.literal(wanted, ARRAY(sa.Text))),
+                    blobs.c.last_access <= touch_cutoff(now),
+                )
+                .values(last_access=now)
+            )
+
+    def register_blobs(self, domain: str, blobs_: Iterable[BlobRef]) -> None:
+        check_domain(domain)
+        refs = check_blobs(blobs_)
+        if not refs:
+            return
+        with self._tx(f"register_blobs {domain}") as conn:
+            self._ensure_domain(conn, domain)
+            self._register(conn, domain, refs, self._clock.now())
+
+    # --- leases and pins ------------------------------------------------------------------------
+
+    @staticmethod
+    def _add_lease_objects(conn: sa.Connection, lease: int, keys: set[str]) -> None:
+        if keys:
+            conn.execute(
+                pg_insert(lease_objects).on_conflict_do_nothing(),
+                [{"lease_id": lease, "digest": k} for k in sorted(keys)],
+            )
+
+    def acquire_lease(
+        self, domain: str, build: BuildId, digests: Iterable[Digest], ttl_s: int
+    ) -> LeaseId:
+        check_domain(domain)
+        check_lease_ttl(ttl_s)
+        keys = {str(check_digest(d, "acquire_lease digest")) for d in digests}
+        now = self._clock.now()
+        with self._tx(f"acquire_lease for build {build}") as conn:
+            found = conn.execute(
+                sa.select(builds.c.domain, builds.c.status)
+                .where(builds.c.id == build)
+                .with_for_update(read=True)
+            ).first()
+            if found is None:
+                raise MetadataError(f"no build with id {build}")
+            if found.domain != domain:
+                raise MetadataError(
+                    f"acquire_lease: build {build} is in domain {found.domain!r}, not {domain!r}"
+                )
+            if found.status != "running":
+                raise MetadataError(
+                    f"acquire_lease: build {build} is finished ({found.status}); only running "
+                    "builds hold leases"
+                )
+            lease: int = conn.execute(
+                sa.insert(leases)
+                .values(
+                    domain=domain,
+                    build_id=build,
+                    expires_at=now + timedelta(seconds=ttl_s),
+                    created_at=now,
+                )
+                .returning(leases.c.id)
+            ).scalar_one()
+            self._add_lease_objects(conn, lease, keys)
+            self._touch_rows(conn, domain, keys, now)
+        return LeaseId(lease)
+
+    def renew_lease(
+        self, build: BuildId, lease: LeaseId, ttl_s: int, *, add: Iterable[Digest] = ()
+    ) -> None:
+        check_lease_ttl(ttl_s)
+        keys = {str(check_digest(d, "renew_lease digest")) for d in add}
+        now = self._clock.now()
+        with self._tx(f"renew_lease {lease}") as conn:
+            renewed = conn.execute(
+                sa.update(leases)
+                .where(leases.c.id == lease, leases.c.build_id == build, leases.c.expires_at > now)
+                .values(expires_at=now + timedelta(seconds=ttl_s))
+                .returning(leases.c.id)
+            ).first()
+            if renewed is None:
+                raise MetadataError(
+                    f"renew_lease: build {build} holds no live lease {lease} (it expired or was "
+                    "released); acquire a new lease"
+                )
+            self._add_lease_objects(conn, lease, keys)
+            domain: str = conn.execute(
+                sa.select(leases.c.domain).where(leases.c.id == lease)
+            ).scalar_one()
+            self._touch_rows(conn, domain, keys, now)
+
+    def pin_build(self, build: BuildId, *, by: str, reason: str = "") -> None:
+        by, reason = check_pin(by, reason)
+        with self._tx(f"pin_build {build}") as conn:
+            domain: str | None = conn.execute(
+                sa.update(builds)
+                .where(builds.c.id == build)
+                .values(pinned=True)
+                .returning(builds.c.domain)
+            ).scalar_one_or_none()
+            if domain is None:
+                raise MetadataError(f"no build with id {build}")
+            conn.execute(
+                pg_insert(pins)
+                .values(
+                    domain=domain,
+                    build_id=build,
+                    pinned_by=by,
+                    reason=reason,
+                    created_at=self._clock.now(),
+                )
+                .on_conflict_do_nothing()
+            )
+            results: Iterable[object] = conn.execute(
+                sa.select(actions.c.result).where(
+                    actions.c.build_id == build, actions.c.result.is_not(None)
+                )
+            ).scalars()
+            roots = {str(self._plan_of(conn, build))}
+            for payload in results:
+                roots |= {str(d) for d in attribution_digests(payload)}
+            self._touch_rows(conn, domain, roots, self._clock.now())
+
+    @staticmethod
+    def _plan_of(conn: sa.Connection, build: BuildId) -> str:
+        plan: str = conn.execute(
+            sa.select(builds.c.plan_digest).where(builds.c.id == build)
+        ).scalar_one()
+        return plan
+
+    def unpin_build(self, build: BuildId) -> bool:
+        with self._tx(f"unpin_build {build}") as conn:
+            found = conn.execute(
+                sa.update(builds)
+                .where(builds.c.id == build)
+                .values(pinned=False)
+                .returning(builds.c.id)
+            ).first()
+            if found is None:
+                raise MetadataError(f"no build with id {build}")
+            removed = conn.execute(
+                sa.delete(pins).where(pins.c.build_id == build).returning(pins.c.build_id)
+            ).first()
+        return removed is not None
+
+    # --- garbage collection (GcStore) -----------------------------------------------------------
+
+    def gc_policy(self, domain: str) -> DomainPolicy:
+        check_domain(domain)
+        d = domains
+        with self._tx(f"gc_policy {domain}") as conn:
+            found = conn.execute(
+                sa.select(d.c.ttl_days, d.c.quota_bytes, d.c.high_water, d.c.low_water).where(
+                    d.c.name == domain
+                )
+            ).first()
+        if found is None:
+            return DomainPolicy()
+        return DomainPolicy(
+            ttl_days=int(found.ttl_days),
+            quota_bytes=None if found.quota_bytes is None else int(found.quota_bytes),
+            high_water=float(found.high_water),
+            low_water=float(found.low_water),
+        )
+
+    def gc_blobs(self, domain: str) -> list[GcBlob]:
+        check_domain(domain)
+        b = blobs
+        with self._tx(f"gc_blobs {domain}") as conn:
+            rows = conn.execute(
+                sa.select(b.c.digest, b.c.size, b.c.kind, b.c.created_at, b.c.last_access)
+                .where(b.c.domain == domain)
+                .order_by(b.c.digest)
+            ).all()
+        return [
+            GcBlob(Digest.parse(r.digest), int(r.size), str(r.kind), r.created_at, r.last_access)
+            for r in rows
+        ]
+
+    def gc_cache_entries(self, domain: str) -> list[GcCacheEntry]:
+        check_domain(domain)
+        t = action_cache
+        with self._tx(f"gc_cache_entries {domain}") as conn:
+            rows = conn.execute(
+                sa.select(t.c.key, t.c.last_access, t.c.result)
+                .where(t.c.domain == domain)
+                .order_by(t.c.key)
+            ).all()
+        return [
+            GcCacheEntry(Digest.parse(r.key), r.last_access, *cache_refs(r.result)) for r in rows
+        ]
+
+    def gc_roots(self, domain: str, now: datetime) -> GcRoots:
+        check_domain(domain)
+        with self._tx(f"gc_roots {domain}") as conn:
+            pinned_builds = conn.execute(
+                sa.select(builds.c.plan_digest, actions.c.result)
+                .select_from(pins)
+                .join(builds, builds.c.id == pins.c.build_id)
+                .outerjoin(actions, actions.c.build_id == builds.c.id)
+                .where(pins.c.domain == domain)
+            ).all()
+            leased: Sequence[str] = (
+                conn.execute(
+                    sa.select(lease_objects.c.digest)
+                    .distinct()
+                    .join(leases, leases.c.id == lease_objects.c.lease_id)
+                    .where(leases.c.domain == domain, leases.c.expires_at > now)
+                )
+                .scalars()
+                .all()
+            )
+        pinned: set[Digest] = set()
+        for plan_digest, result in pinned_builds:
+            pinned.add(Digest.parse(plan_digest))
+            pinned.update(attribution_digests(result))
+        return GcRoots(frozenset(pinned), frozenset(Digest.parse(k) for k in leased), frozenset())
+
+    def gc_tombstones(self, domain: str) -> list[Tombstone]:
+        check_domain(domain)
+        t = tombstones
+        with self._tx(f"gc_tombstones {domain}") as conn:
+            rows = conn.execute(
+                sa.select(t.c.digest, t.c.deleted_rows_at, t.c.blob_delete_after)
+                .where(t.c.domain == domain)
+                .order_by(t.c.digest)
+            ).all()
+        return [
+            Tombstone(Digest.parse(r.digest), r.deleted_rows_at, r.blob_delete_after) for r in rows
+        ]
+
+    def gc_attribution(self, domain: str) -> list[GcAttribution]:
+        check_domain(domain)
+        with self._tx(f"gc_attribution {domain}") as conn:
+            rows = conn.execute(
+                sa.select(builds.c.id, builds.c.project, actions.c.step, actions.c.result)
+                .join(actions, actions.c.build_id == builds.c.id)
+                .where(builds.c.domain == domain, actions.c.result.is_not(None))
+                .order_by(builds.c.id, actions.c.action_id.collate("C"))
+            ).all()
+        return [
+            GcAttribution(d, BuildId(int(r.id)), str(r.project), str(r.step))
+            for r in rows
+            for d in attribution_digests(r.result)
+        ]
+
+    def gc_expire_leases(self, domain: str, now: datetime) -> int:
+        check_domain(domain)
+        with self._tx(f"gc_expire_leases {domain}") as conn:
+            gone = conn.execute(
+                sa.delete(leases)
+                .where(leases.c.domain == domain, leases.c.expires_at <= now)
+                .returning(leases.c.id)
+            ).all()
+        return len(gone)
+
+    def gc_delete_cache_entries(
+        self, domain: str, keys: Iterable[Digest], *, unused_before: datetime
+    ) -> list[Digest]:
+        check_domain(domain)
+        wanted = sorted({str(check_digest(k, "gc_delete_cache_entries key")) for k in keys})
+        if not wanted:
+            return []
+        t = action_cache
+        with self._tx(f"gc_delete_cache_entries {domain}") as conn:
+            # The condition is re-checked under the row lock: a hit since the snapshot moved
+            # `last_access` past the cutoff (by more than the touch interval), so it stays.
+            deleted: Sequence[str] = (
+                conn.execute(
+                    sa.delete(t)
+                    .where(
+                        t.c.domain == domain,
+                        t.c.key == sa.any_(sa.literal(wanted, ARRAY(sa.Text))),
+                        t.c.last_access <= unused_before,
+                    )
+                    .returning(t.c.key)
+                )
+                .scalars()
+                .all()
+            )
+        return [Digest.parse(k) for k in sorted(deleted)]
+
+    def gc_tombstone(
+        self, domain: str, digests: Iterable[Digest], *, now: datetime, delete_after: datetime
+    ) -> None:
+        check_domain(domain)
+        wanted = sorted({str(check_digest(d, "gc_tombstone digest")) for d in digests})
+        if not wanted:
+            return
+        with self._tx(f"gc_tombstone {domain}") as conn:
+            self._ensure_domain(conn, domain)
+            conn.execute(
+                pg_insert(tombstones).on_conflict_do_nothing(),
+                [
+                    {
+                        "domain": domain,
+                        "digest": k,
+                        "deleted_rows_at": now,
+                        "blob_delete_after": delete_after,
+                    }
+                    for k in wanted
+                ],
+            )
+
+    def gc_drop_tombstones(self, domain: str, digests: Iterable[Digest]) -> None:
+        check_domain(domain)
+        wanted = sorted({str(check_digest(d, "gc_drop_tombstones digest")) for d in digests})
+        if not wanted:
+            return
+        with self._tx(f"gc_drop_tombstones {domain}") as conn:
+            conn.execute(
+                sa.delete(tombstones).where(
+                    tombstones.c.domain == domain,
+                    tombstones.c.digest == sa.any_(sa.literal(wanted, ARRAY(sa.Text))),
+                )
+            )
+
+    def gc_claim(self, domain: str, digest: Digest, now: datetime) -> bool:
+        check_domain(domain)
+        key = str(check_digest(digest, "gc_claim digest"))
+        t, b = tombstones, blobs
+        with self._tx(f"gc_claim {domain}/{key}") as conn:
+            # Lock the blob row first (as `touch` and `register_blobs` do), then decide: a touch
+            # either committed before (and is seen) or waits and finds the row gone.
+            touched: datetime | None = conn.execute(
+                sa.select(b.c.last_access)
+                .where(b.c.domain == domain, b.c.digest == key)
+                .with_for_update()
+            ).scalar_one_or_none()
+            stone: datetime | None = conn.execute(
+                sa.select(t.c.deleted_rows_at)
+                .where(t.c.domain == domain, t.c.digest == key, t.c.blob_delete_after <= now)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if stone is None or (touched is not None and touched >= stone):
+                return False
+            conn.execute(sa.delete(t).where(t.c.domain == domain, t.c.digest == key))
+            conn.execute(sa.delete(b).where(b.c.domain == domain, b.c.digest == key))
+        return True
+
+    def gc_record_run(self, run: GcRun) -> None:
+        checked = check_run(run)
+        with self._tx(f"gc_record_run {checked.domain}") as conn:
+            self._ensure_domain(conn, checked.domain)
+            conn.execute(
+                sa.insert(gc_runs).values(
+                    domain=checked.domain,
+                    started_at=checked.started_at,
+                    finished_at=checked.finished_at,
+                    marked=checked.marked,
+                    swept_rows=checked.swept_rows,
+                    swept_bytes=checked.swept_bytes,
+                    dry_run=checked.dry_run,
+                    report=checked.report,
+                )
+            )
+
+    # --- events ---------------------------------------------------------------------------------
 
     def emit(self, event: Event) -> None:
         checked = revalidate(event, Event, "emit")

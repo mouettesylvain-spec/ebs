@@ -21,7 +21,7 @@ from ebs.cli._records import BuildRecord, build_dir
 from ebs.cli.main import app
 from ebs.core.digest import hash_bytes
 from ebs.exec.api import Executor
-from ebs.meta.api import BuildId, Event, MetadataStore
+from ebs.meta.api import BuildId, Event, GcStore, MetadataStore
 from ebs.meta.memory import InMemoryMetadataStore
 from ebs.sources.statcache import StatCache
 from tests.helpers.driver import ScriptedExecutor, SleepRecorder
@@ -72,6 +72,11 @@ class TestServices(SiteServices):
     def store(self, *, required: bool) -> MetadataStore | None:
         if not self.with_store:
             return super().store(required=required)
+        return self.memory_store
+
+    def gc_store(self) -> GcStore:
+        if not self.with_store:
+            return super().gc_store()
         return self.memory_store
 
     @contextmanager

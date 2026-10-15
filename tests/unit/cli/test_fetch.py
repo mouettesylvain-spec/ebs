@@ -387,6 +387,8 @@ def test_read_only(site: Site) -> None:
     _ok(site, "gen", "--force", "--mode", "hardlink")
     _ok(site, "gen.model", "--mode", "symlink", "-o", "s")
     assert site.invoke(["fetch", "gone"]).exit_code == ExitCode.INFRA
-    assert store.writes == []
+    # The only store call besides reads: each successful fetch records its use for GC
+    # (P1-09 R1, deferred here by P1-13), which changes no cache, build or CAS state.
+    assert store.writes == ["touch"] * 3
     assert _snapshot(site.root / "cas") == cas_before
     assert _snapshot(site.proj / ".ebs") == builds_before

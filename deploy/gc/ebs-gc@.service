@@ -1,0 +1,32 @@
+# EBS garbage collection of one domain (P1-09); the instance name is the domain.
+#   install -m 644 ebs-gc@.service ebs-gc@.timer /etc/systemd/system/
+#   install -m 640 -g ebs-gc gc.toml.example /etc/ebs/gc.toml   # then edit it
+#   systemctl daemon-reload && systemctl enable --now ebs-gc@cpu-nda.timer
+# The ebs-gc account must be a member of the domain's group (owner of /cas/<domain>) and may
+# connect to the metadata database directly; /opt/ebs is a virtualenv with `pip install ebs`.
+
+[Unit]
+Description=EBS garbage collection of domain %i
+Documentation=https://github.com/mouettesylvain-spec/ebs/blob/main/deploy/gc/README.md
+After=network-online.target remote-fs.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ebs-gc
+Group=ebs-gc
+SupplementaryGroups=%i
+Environment=EBS_CONFIG=/etc/ebs/gc.toml
+ExecStart=/opt/ebs/bin/ebs gc --domain %i
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/cas/%i
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes

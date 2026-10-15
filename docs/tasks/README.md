@@ -44,7 +44,7 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P1-04 | Runner on grid: materialization, debug collection, cleanup | P0-13, P1-06 | 2 | todo |
 | P1-03 | Licenses, accounts/QOS, constraints | P1-02 | 3 | todo |
 | P1-05 | Infra failure classification and retries | P1-02, P0-15 | 3 | todo |
-| P1-09 | GC v1 (access tracking, pins, leases, sweep) | P0-09, P0-10, P0-15 | 3 | todo |
+| P1-09 | GC v1 (access tracking, pins, leases, sweep) | P0-09, P0-10, P0-15 | 3 | review |
 | P1-10 | `ebs debug` and `ebs reproduce` | P1-04, P0-16 | 4 | todo |
 | P1-12 | Phase 1 acceptance on the grid | all P1 | 5 | todo |
 

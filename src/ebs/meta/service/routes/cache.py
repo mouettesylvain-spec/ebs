@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Response
 from ebs.core.digest import Digest
 from ebs.core.errors import DigestError, MetadataError
 from ebs.meta.api import (
+    BlobBatch,
     CacheHits,
     Changed,
     DigestBatch,
@@ -107,4 +108,16 @@ def touch(
 ) -> Response:
     deps.authorize(caller, "cache_write", domain=domain, owner=None)
     deps.store.touch(domain, batch.digests)
+    return no_content()
+
+
+@router.post("/blobs", status_code=204, openapi_extra=json_body(BlobBatch))
+def register_blobs(
+    domain: str,
+    batch: Annotated[BlobBatch, Depends(body(BlobBatch))],
+    deps: Deps,
+    caller: Caller,
+) -> Response:
+    deps.authorize(caller, "cache_write", domain=domain, owner=None)
+    deps.store.register_blobs(domain, batch.blobs)
     return no_content()

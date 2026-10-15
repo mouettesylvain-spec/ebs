@@ -29,6 +29,7 @@ from ebs.core.errors import MetadataError
 from ebs.meta.api import (
     ActionRow,
     ActionState,
+    BlobRef,
     BuildCreate,
     BuildId,
     Event,
@@ -57,6 +58,9 @@ class Inspector(Protocol):
     def blob_last_access(self, domain: str, digest: Digest) -> datetime | None: ...
     def event_types(self, build: BuildId) -> list[tuple[str, str | None]]: ...
     def fail_edge_writes(self) -> AbstractContextManager[None]: ...
+    def leased(self, domain: str, now: datetime) -> set[Digest]: ...
+    def pinned(self, domain: str) -> set[Digest]: ...
+    def blob_size(self, domain: str, digest: Digest) -> int | None: ...
 
 
 @dataclass
@@ -93,6 +97,20 @@ class MemoryInspector:
 
     def event_types(self, build: BuildId) -> list[tuple[str, str | None]]:
         return [(e.type, e.action_id) for e in self._s._events if e.build == build]
+
+    def leased(self, domain: str, now: datetime) -> set[Digest]:
+        return set(self._s.gc_roots(domain, now).leased)
+
+    def pinned(self, domain: str) -> set[Digest]:
+        return {
+            self._s._builds[b].view.plan_digest
+            for b in self._s._pins
+            if self._s._builds[b].view.domain == domain
+        }
+
+    def blob_size(self, domain: str, digest: Digest) -> int | None:
+        blob = self._s._blobs.get((domain, str(digest)))
+        return None if blob is None else blob.size
 
     @contextmanager
     def fail_edge_writes(self) -> Iterator[None]:
@@ -157,6 +175,29 @@ class PgInspector:
             "SELECT type, action_id FROM ebs.events WHERE build_id = :b ORDER BY id", b=build
         )
         return [(r[0], r[1]) for r in rows]
+
+    def leased(self, domain: str, now: datetime) -> set[Digest]:
+        rows = self._rows(
+            "SELECT o.digest FROM ebs.lease_objects o JOIN ebs.leases l ON l.id = o.lease_id "
+            "WHERE l.domain = :d AND l.expires_at > :now",
+            d=domain,
+            now=now,
+        )
+        return {Digest.parse(r[0]) for r in rows}
+
+    def pinned(self, domain: str) -> set[Digest]:
+        rows = self._rows(
+            "SELECT b.plan_digest FROM ebs.pins p JOIN ebs.builds b ON b.id = p.build_id "
+            "WHERE p.domain = :d",
+            d=domain,
+        )
+        return {Digest.parse(r[0]) for r in rows}
+
+    def blob_size(self, domain: str, digest: Digest) -> int | None:
+        rows = self._rows(
+            "SELECT size FROM ebs.blobs WHERE domain = :d AND digest = :g", d=domain, g=str(digest)
+        )
+        return None if not rows else int(rows[0][0])
 
     @contextmanager
     def fail_edge_writes(self) -> Iterator[None]:
@@ -1074,3 +1115,109 @@ def test_validation_on_write(h: Harness, case: str) -> None:
     assert h.inspect.edges("test") == set()
     assert h.inspect.event_types(build) == []
     assert [a.action_id for a in h.store.list_actions(build)] == ["a"]
+
+
+# --- GC: blob registration, leases, pins (P1-09) ------------------------------------------------
+
+
+# P1-09 R1: register_blobs inserts rows and touches known ones with the hourly throttle.
+def test_register_blobs(h: Harness) -> None:
+    a, b = dg("blob-a"), dg("blob-b")
+    h.store.register_blobs("test", [BlobRef(digest=a, size=3, kind="file")])
+    t0 = h.clock.now()
+    assert h.inspect.blob_last_access("test", a) == t0
+    assert h.inspect.blob_size("test", a) == 3
+    h.clock.advance(30 * 60)
+    h.store.register_blobs(
+        "test", [BlobRef(digest=a, size=3, kind="file"), BlobRef(digest=b, size=0, kind="tree")]
+    )
+    assert h.inspect.blob_last_access("test", a) == t0  # throttled
+    assert h.inspect.blob_last_access("test", b) == h.clock.now()
+    h.clock.advance(31 * 60)
+    h.store.register_blobs("test", [BlobRef(digest=a, size=3, kind="file")])
+    assert h.inspect.blob_last_access("test", a) == h.clock.now()
+    assert h.inspect.blob_last_access("other", a) is None  # scoped by domain (I13)
+    h.store.register_blobs("test", [])
+    with pytest.raises(MetadataError):
+        h.store.register_blobs("bad domain", [BlobRef(digest=a, size=3, kind="file")])
+
+
+# P1-09 R2: a lease protects its digests until it expires; renewals extend and add; a finished
+# build's leases are dropped.
+def test_leases(h: Harness) -> None:
+    build = new_build(h, "a")
+    first = [dg(f"in-{i}") for i in range(3)]
+    lease = h.store.acquire_lease("test", build, first, 900)
+    assert h.inspect.leased("test", h.clock.now()) == set(first)
+    assert h.inspect.leased("other", h.clock.now()) == set()
+    h.clock.advance(600)
+    h.store.renew_lease(build, lease, 900, add=[dg("out")])
+    h.clock.advance(600)  # past the first expiry
+    assert h.inspect.leased("test", h.clock.now()) == {*first, dg("out")}
+    h.store.renew_lease(build, lease, 900)
+    h.clock.advance(901)
+    assert h.inspect.leased("test", h.clock.now()) == set()
+    with pytest.raises(MetadataError, match="no live lease"):
+        h.store.renew_lease(build, lease, 900)
+    other = new_build(h, "b")
+    again = h.store.acquire_lease("test", build, first, 900)
+    with pytest.raises(MetadataError, match="no live lease"):
+        h.store.renew_lease(other, again, 900)
+    with pytest.raises(MetadataError, match="domain"):
+        h.store.acquire_lease("elsewhere", other, first, 900)
+    for bad in (0, 86_401):
+        with pytest.raises(MetadataError, match="ttl_s"):
+            h.store.acquire_lease("test", other, first, bad)
+    h.store.finish_build(build, "passed")
+    assert h.inspect.leased("test", h.clock.now()) == set()
+    with pytest.raises(MetadataError, match="finished"):
+        h.store.acquire_lease("test", build, first, 900)
+
+
+# P1-09 R2: a lease may hold more digests than one HTTP batch.
+def test_large_lease(h: Harness) -> None:
+    build = new_build(h, "a")
+    many = [dg(f"src-{i}") for i in range(1200)]
+    lease = h.store.acquire_lease("test", build, many[:700], 900)
+    h.store.renew_lease(build, lease, 900, add=many[700:])
+    assert h.inspect.leased("test", h.clock.now()) == set(many)
+
+
+# P1-09 R2: pins are idempotent and visible on the build; unpin says whether it was pinned.
+def test_pin_unpin(h: Harness) -> None:
+    build = new_build(h, "a")
+    h.store.pin_build(build, by="alice", reason="sign-off")
+    h.store.pin_build(build, by="alice")
+    assert h.store.get_build(build).pinned is True
+    assert h.inspect.pinned("test") == {dg("plan")}
+    assert h.store.unpin_build(build) is True
+    assert h.store.unpin_build(build) is False
+    assert h.store.get_build(build).pinned is False
+    assert h.inspect.pinned("test") == set()
+    with pytest.raises(MetadataError):
+        h.store.pin_build(BuildId(999_999), by="alice")
+    with pytest.raises(MetadataError):
+        h.store.unpin_build(BuildId(999_999))
+    with pytest.raises(MetadataError):
+        h.store.pin_build(build, by="")
+
+
+# P1-09 R2 (I15): taking a lease, adding to it and pinning are uses of the objects they protect:
+# they touch the blob rows, so a GC claim racing with them fails.
+def test_leases_and_pins_touch(h: Harness) -> None:
+    leased, added = dg("leased"), dg("added")
+    h.store.register_blobs(
+        "test", [BlobRef(digest=d, size=1, kind="file") for d in (leased, added, dg("plan"))]
+    )
+    build = new_build(h, "a")
+    h.store.record_result(build, "a", make_result(dg("k")))  # registers its output `rep`
+    h.clock.advance(2 * 3600)
+    lease = h.store.acquire_lease("test", build, [leased], 900)
+    assert h.inspect.blob_last_access("test", leased) == h.clock.now()
+    assert h.inspect.blob_last_access("test", added) != h.clock.now()
+    h.store.renew_lease(build, lease, 900, add=[added])
+    assert h.inspect.blob_last_access("test", added) == h.clock.now()
+    h.clock.advance(2 * 3600)
+    h.store.pin_build(build, by="alice")
+    assert h.inspect.blob_last_access("test", dg("plan")) == h.clock.now()
+    assert h.inspect.blob_last_access("test", dg("rep")) == h.clock.now()
