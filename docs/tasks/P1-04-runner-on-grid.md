@@ -50,7 +50,9 @@ come back to NFS, live logs are visible, and node scratch never leaks — even w
 - R4: the epilog finds a job's scratch through `.ebs-job` (SLURM job id) written by the runner in
   each action dir, deletes as the job user via `setpriv`, and uses a non-empty `SLURM_JOB_COMMENT`
   that is not a UUID only as an early "not EBS" exit. FakeSlurm gained `--comment` and an `epilog`.
-- R5: `renew_lease` is a hook (None until P1-09). The runner's `running` event has `{host, job_id}`.
+- R5: after P1-09 merged, the runner holds its own GC lease on the inputs it staged (acquired
+  on the first heartbeat, renewed every `heartbeat_s`): the driver's lease id never reaches the
+  node. The runner's `running` event has `{host, job_id}`.
 
 ## Follow-ups
 - P1-02 (merged) sets `--comment=<build uuid>` and `exec`s the runner: both fit the epilog.
@@ -58,7 +60,6 @@ come back to NFS, live logs are visible, and node scratch never leaks — even w
   still exits 64, but the merged P1-02 executor submits job arrays with it: needed before arrays
   work end to end on the grid.
 - `ebs logs -f` (cli/logs.py) should tail `live.log` from the debug area while an action runs.
-- Wire `renew_lease` to the P1-09 lease API (`MetadataStore.renew_lease`).
 - Open design question (key rules): a tool that writes into a read-only staged input fails with
   EACCES and that FAILED result is cached; declaring the input `writable: true` (or changing
   `[cas].copy_threshold`) keeps the same key, so the failure stays cached until `--rerun-failed`.

@@ -2,7 +2,7 @@
 
 Tests replace it with a subclass (in-memory store, scripted executor, fake clock) passed as the
 Typer context object. Config sections read here: `[cas]`, `[scratch]`, `[metadata]`, `[rules]`,
-`[stat_cache]` (docs/design/overview.md § Site configuration).
+`[stat_cache]` (`[gc]` is read by `ebs gc`) (docs/design/overview.md § Site configuration).
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from ebs.core.clock import Clock, SystemClock
 from ebs.core.errors import ConfigError, ExecutorError, MetadataError, SourceError, ToolchainError
 from ebs.exec.api import Executor
 from ebs.exec.local import LocalExecutor
-from ebs.meta.api import MetadataStore
+from ebs.meta.api import GcStore, MetadataStore
 from ebs.rules.api import DEFAULT_LICENSE_ERROR_PATTERNS, RuleSettings
 from ebs.rules.registry import RuleRegistry
 from ebs.runner.config import RunnerSettings
@@ -184,6 +184,21 @@ class SiteServices:
 
         self._store = open_metadata_store(section, clock=self.clock)
         return self._store
+
+    def gc_store(self) -> GcStore:
+        """Direct database access for `ebs gc` (the GC service account, P1-09 R7)."""
+        section = self._section("metadata")
+        url = section.get("url")
+        if not isinstance(url, str) or not url.startswith("postgresql"):
+            raise ConfigError(
+                "ebs gc needs direct access to the metadata database: run it as the GC service "
+                "account with [metadata].url = postgresql+psycopg://… (not the HTTP service)"
+            )
+        from ebs.meta.pg import PgMetadataStore  # backend imported only when configured
+
+        store = PgMetadataStore.from_config(section, clock=self.clock)
+        self._store = store
+        return store
 
     def close(self) -> None:
         close = getattr(self._store, "close", None)

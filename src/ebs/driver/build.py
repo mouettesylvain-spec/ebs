@@ -26,6 +26,8 @@ from ebs.driver.events import EventLog
 from ebs.driver.retry import BackoffRetry, RetryPolicy
 from ebs.driver.scheduler import DriverConfig, FinalState, Refiner, Scheduler
 from ebs.exec.api import Executor
+from ebs.gc.access import put_registered
+from ebs.gc.leases import LeaseKeeper
 from ebs.meta.api import ActionRow, BuildCreate, BuildId, BuildStatus, MetadataStore
 from ebs.plan.planfile import encode
 from ebs.plan.types import Plan
@@ -73,7 +75,7 @@ def run_build(
     config = config or DriverConfig()
     clock = clock or SystemClock()
     retry = retry or BackoffRetry(max_retries=config.max_retries)
-    plan_digest = cas.put_bytes(encode(plan))
+    plan_digest = put_registered(cas, store, plan.domain, encode(plan))
     uuid = uuid4()
     git = plan.flow.git
     build = store.create_build(
@@ -93,6 +95,9 @@ def run_build(
     store.add_actions(
         build, [ActionRow(action_id=a.action_id, step=a.step, key=a.key) for a in plan.actions]
     )
+    # GC roots for the build's lifetime (P1-09 R2): the plan and every input id known so far.
+    lease = LeaseKeeper(store, plan.domain, build, clock)
+    lease.start([plan_digest, *(r.id for a in plan.actions for r in a.inputs if r.id is not None)])
     path = events_path(workdir, uuid)
     events = EventLog(store, build, path, clock)
     events.emit("build_started", uuid=str(uuid), user=user, cache_mode=config.cache_mode)
@@ -109,6 +114,7 @@ def run_build(
         clock=clock,
         config=config,
         retry=retry,
+        lease=lease,
     )
     try:
         with _cancel_on_sigint(scheduler) if handle_sigint else nullcontext():

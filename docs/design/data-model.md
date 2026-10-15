@@ -63,12 +63,17 @@ events(id bigserial PK, build_id FK, ts, type text check ~ '^[a-z][a-z0-9_]*$',
 ## Phase 1
 
 ```
-leases(id bigserial PK, domain FK, build_id FK, expires_at, created_at)
-lease_objects(lease_id FK, digest text, PRIMARY KEY(lease_id, digest))
-pins(domain FK, build_id FK, pinned_by, reason, created_at, PRIMARY KEY(domain, build_id))
-gc_runs(id, domain, started_at, finished_at, marked bigint, swept_rows bigint,
-        swept_bytes bigint, dry_run bool, report jsonb)
-tombstones(domain, digest, deleted_rows_at, blob_delete_after)   -- implements the grace period (I15)
+leases(id bigserial PK, domain FK, build_id FK builds ON DELETE CASCADE, expires_at, created_at)
+       index (domain, expires_at)                          -- P1-09, revision 0006
+lease_objects(lease_id FK leases ON DELETE CASCADE, digest text check digest,
+              PRIMARY KEY(lease_id, digest))
+pins(domain FK, build_id FK builds ON DELETE CASCADE, pinned_by, reason default '', created_at,
+     PRIMARY KEY(domain, build_id))                        -- mirrored by builds.pinned
+gc_runs(id bigserial PK, domain FK, started_at, finished_at, marked bigint, swept_rows bigint,
+        swept_bytes bigint, dry_run bool, report jsonb object)   -- report = GcReport JSON
+        index (domain, started_at)
+tombstones(domain FK, digest check digest, deleted_rows_at, blob_delete_after,
+           PRIMARY KEY(domain, digest))                    -- implements the grace period (I15)
 api_tokens(id bigserial PK, principal text, kind text check in ('user','ci','service'),
            team text null, hash text UNIQUE check digest,   -- sha256 of the token, never the token
            created_at, expires_at null, revoked_at null)

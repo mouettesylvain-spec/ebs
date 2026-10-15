@@ -313,7 +313,8 @@ the CAS; tree files are hard links when on the same filesystem, else chosen by t
 Files are read-only, directories writable; `writable=True` copies every file (0644/0755).
 Executable files are always copied (0555), because a link would share the blob's inode and mode.
 Tree symlinks are created last and must resolve inside `dest`, else `CasError`. The fs backend
-also has `blob_path`, `tree_path` and `cleanup_tmp(max_age=24h) -> int` (GC).
+also has `blob_path`, `tree_path`, `iter_objects() -> Iterator[(Digest, size, "file" | "tree")]`
+and `cleanup_tmp(max_age=24h, *, dry_run=False) -> int` (GC, P1-09; `dry_run` only counts).
 
 ## 6. Metadata — `ebs.meta.api`
 
@@ -335,8 +336,11 @@ class MetadataStore(Protocol):
     # access (P0), leases and GC (P1-09)
     def touch(self, domain: str, digests: Iterable[Digest]) -> None: ...
     def resolve_output(self, domain: str, object_id: Digest) -> Digest | None: ...   # P0-13
+    def register_blobs(self, domain: str, blobs: Iterable[BlobRef]) -> None: ...      # P1-09: every CAS put
     def acquire_lease(self, domain: str, build: BuildId, digests: Iterable[Digest], ttl_s: int) -> LeaseId: ...
-    def renew_lease(self, lease: LeaseId, ttl_s: int) -> None: ...
+    def renew_lease(self, build: BuildId, lease: LeaseId, ttl_s: int, *, add: Iterable[Digest] = ()) -> None: ...
+    def pin_build(self, build: BuildId, *, by: str, reason: str = "") -> None: ...
+    def unpin_build(self, build: BuildId) -> bool: ...
     # events
     def emit(self, event: Event) -> None: ...
     # toolchain registry (P1-07)
@@ -407,6 +411,36 @@ re-validated on write (values must also pass `canonical_json`).
   module has at most one current row. `current_toolchain` = the non-superseded row;
   `list_toolchains` orders by (module, registered_at, id); `touch_toolchain` sets
   `last_used_at` with the `touch` throttle and ignores unknown ids.
+- GC bookkeeping (P1-09, migration `0006`). `register_blobs(domain, [BlobRef{digest, size,
+  kind: file|tree}])` inserts `blobs` rows (`created_at = last_access = now`) and touches known
+  rows with the `touch` throttle: storing an object again is a use. `record_result` registers
+  its outputs the same way (it used to leave known rows alone). The runner registers every
+  object it stores (output files, output trees with all their manifests and blobs, the log) and
+  touches the inputs it stages; the driver registers the plans it stores and touches the outputs
+  and logs of cache hits (batched per scheduling pass); `ebs fetch` touches what it fetches.
+- Leases (P1-09 R2): `acquire_lease` (the build must be running and in `domain`; `1 ≤ ttl_s ≤
+  MAX_LEASE_TTL_S = 86400`) protects digests until `now + ttl_s`; `renew_lease(build, lease,
+  ttl_s, add=…)` extends a live lease of that build and adds digests, else `MetadataError`
+  (acquire a new one). `finish_build` drops the build's leases. **CONTRACT CHANGE (P1-09):**
+  `renew_lease` takes the build (so the service can authorize its owner) and `add`. The driver's
+  `ebs.gc.leases.LeaseKeeper` leases the plan and every known input id at build start, adds
+  cache-hit and produced outputs, logs and refined plans, and renews every `ttl / 3`
+  (`LEASE_TTL_S = 900`); lease errors are logged, never fatal.
+- Pins: `pin_build(build, by=, reason=)` is idempotent (the first author and reason are kept)
+  and sets `BuildView.pinned`; `unpin_build` returns whether it was pinned.
+- `GcStore` (P1-09; `PgMetadataStore` and `InMemoryMetadataStore` only: GC is a service account
+  with direct database access, never over HTTP): `gc_policy(domain) -> DomainPolicy{ttl_days,
+  quota_bytes, high_water, low_water}` (defaults without a `domains` row), `gc_blobs`,
+  `gc_cache_entries` (`GcCacheEntry{key, last_access, outputs: content digests, log}`),
+  `gc_roots(domain, now) -> GcRoots{pinned, leased, released}` (pinned: plan, outputs and logs
+  of pinned builds; leased: live leases; released: empty until P2-02), `gc_tombstones`,
+  `gc_attribution` (`GcAttribution{digest, build, project, step}` for every output and log of a
+  recorded result), `register_blobs`, `gc_expire_leases(domain, now) -> int`,
+  `gc_delete_cache_entries(domain, keys, *, unused_before) -> deleted keys` (re-checks
+  `last_access <= unused_before`), `gc_tombstone(domain, digests, *, now, delete_after)`
+  (existing tombstones kept), `gc_drop_tombstones`, `gc_claim(domain, digest, now) -> bool`
+  (atomically: a due tombstone whose blob row was not touched since `deleted_rows_at` is
+  deleted with the row; PG locks the blob row first, like `touch`), `gc_record_run(GcRun)`.
 
 ```python
 class ResultManifest(BaseModel):          # frozen
@@ -441,6 +475,7 @@ in JSON mode (`model_validate_json`):
 | `POST /domains/{d}/cache/{key}/replace-failed` | `cache_replace_failed` | `ResultManifest` → `Changed` |
 | `POST /domains/{d}/cache/lookup` | `cache_get` per key | `DigestBatch` → `CacheHits` (hits only) |
 | `POST /domains/{d}/touch` | `touch` | `DigestBatch` → 204 |
+| `POST /domains/{d}/blobs` | `register_blobs` | `BlobBatch` → 204 (P1-09, `cache_write`) |
 | `GET /domains/{d}/outputs/{id}` | `resolve_output` | → `OptionalDigest` |
 | `POST /builds` | `create_build` | `BuildCreate` → `CreatedBuild` |
 | `GET /builds/{b}` | `get_build` | → `BuildView` |
@@ -450,6 +485,10 @@ in JSON mode (`model_validate_json`):
 | `PUT /builds/{b}/actions/{a}/result` | `record_result` | `ResultManifest` → 204 |
 | `GET /builds/{b}/actions/{a}/result` | `get_result` | → `OptionalResult` |
 | `POST /builds/{b}/finish` | `finish_build` | `BuildFinish` → 204 |
+| `POST /builds/{b}/leases` | `acquire_lease` | `LeaseRequest{domain, digests, ttl_s}` → `CreatedLease` (P1-09) |
+| `POST /builds/{b}/leases/{id}/renew` | `renew_lease` | `LeaseRequest{digests, ttl_s}` → 204 |
+| `PUT /builds/{b}/pin` | `pin_build` (by = caller) | `PinRequest{reason}` → 204 |
+| `DELETE /builds/{b}/pin` | `unpin_build` | → `Changed` |
 | `POST /builds/{b}/events` | `emit` | `Event` → 204 |
 | `POST /toolchains` | `register_toolchain` | `ToolchainRegistration` (manifest base64) → `RegisterOutcome` |
 | `GET /toolchains[?module=&current_only=]` | `list_toolchains` | → `ToolchainList` |
@@ -469,10 +508,12 @@ database outage, 500 a bug. The client raises `MetadataError` with the detail.
   sending and then sends batches of 500; each batch is atomic, but a failure in a later batch
   (build finished meanwhile, an id added concurrently) leaves the earlier batches added.
   `HttpMetadataStore.cache_get_many(domain, keys)` (client only, not in the protocol yet) looks
-  keys up 500 at a time.
+  keys up 500 at a time. `register_blobs` sends `BlobBatch`es of 500; a lease of more than 500
+  digests is acquired with the first 500 and grown by renewals of 500 each (P1-09).
 - **Retries:** each request times out after 10 s (`[metadata].timeout_s`). Connect errors are
   retried for every call; 5xx and read timeouts only for idempotent calls (reads, `cache_put`,
-  `record_result`, `touch`, `cache_get_many`, `register_toolchain`, `touch_toolchain`), with exponential backoff (0.5 s doubling, capped at
+  `record_result`, `touch`, `cache_get_many`, `register_toolchain`, `touch_toolchain`,
+  `register_blobs`, `renew_lease`, `pin_build`, `unpin_build`), with exponential backoff (0.5 s doubling, capped at
   8 s, `[metadata].retries = 4`). Each attempt sends fresh credentials. A retried `cache_put`
   whose first attempt landed returns False.
 - **Authentication (D1, decided 2026-10-11):** MUNGE for users on cluster hosts, bearer tokens
@@ -776,9 +817,11 @@ Lifecycle and guarantees: architecture.md "Runner lifecycle on a node". P0-13 de
 P1-04 (grid) details:
 
 - Before the tool starts the runner emits one `running` event, `data = {host, job_id}`
-  (`job_id` = `$SLURM_JOB_ID` or null), and calls the `renew_lease` hook (`Runner(...,
-  renew_lease=None)`; P1-09 wires the build lease) then every `[runner].heartbeat_s` (60 s)
-  while the tool runs; a failing renewal is logged, never fatal. `run_tool` takes `tee`
+  (`job_id` = `$SLURM_JOB_ID` or null). With `--build` it holds its own GC lease (P1-09) on
+  the content digests it staged: `acquire_lease(domain, build, digests, LEASE_TTL_S)` on the
+  first heartbeat, then `renew_lease` every `[runner].heartbeat_s` (60 s) while the tool runs,
+  re-acquiring if the lease expired; it lapses after its TTL or at `finish_build`. Lease
+  errors are logged, never fatal. (`Runner(..., renew_lease=…)` replaces this for tests.) `run_tool` takes `tee`
   (every output chunk) and `on_poll` (each wait-loop turn, ≤ 0.25 s) hooks.
 - Debug area (`[debug].root`; none if unset): `<root>/<domain>/<build|local>/<action>/` with
   `<action>` = `ebs.runner.collect.debug_action_dir` (the action id, `/` percent-encoded).
@@ -1112,8 +1155,8 @@ ebs outputs [ACTION…] [--build B] [--step S] [--json]
 ebs fetch   ACTION[.OUTPUT]… [--build B] [-o|--output-dir DIR] [--flat] [--mode copy|hardlink|symlink] [--force] [--json]
 ```
 
-Both need `[metadata].url` and only read (no cache, store, build record or CAS writes; no
-`last_access` touch). `outputs` lists one row per output of every action of the build with a
+Both need `[metadata].url` and only read (no cache, store, build record or CAS writes); a
+successful `fetch` only `touch`es what it copied, so GC sees the use (P1-09 R1). `outputs` lists one row per output of every action of the build with a
 result (`get_result`: done, cached and test-failed actions), in plan order then by output name;
 ACTION arguments (`match_action`: id or unique prefix) and `--step` filter. The declared
 logical `path` comes from the build's `final_plan` (else `plan`) in the CAS, matched by output
@@ -1157,3 +1200,14 @@ roots, env names, module system; a drift warning with the first 20 changed files
 `check [--days N=30]` re-fingerprints, changes nothing and exits 1 if any toolchain drifted or
 could not be fingerprinted (`--json`: `{"v": 1, "days", "results": [{"id", "module", "status":
 ok|drift|error, "fingerprint", "registered_fingerprint", "changes", "error"}]}`).
+
+**`ebs gc [--dry-run] [--domain D] [--json]`** (P1-09; `ebs.gc`): collects one domain (default
+`[gc].domain`) as the GC service account; needs `[metadata].url` = a `postgresql` URL (direct
+database access, `SiteServices.gc_store()`), else exit 2. Prints the report (`ebs.gc.report.render`);
+`--json`: `GcReport` (v1: `domain, dry_run, started_at, objects, bytes, marked, kept, adopted,
+cache_rows_deleted, tombstoned, tombstoned_bytes, resurrected, deleted, deleted_bytes, tmp_removed,
+quota: null | {quota_bytes, usage_bytes, pending_bytes, high_water_bytes, low_water_bytes, evicted,
+evicted_bytes}, reclaimable: {objects, bytes, by_step, by_project, by_build}`), also stored in
+`gc_runs.report`. `--dry-run` changes nothing (stale tmp files are only counted) and reports what
+the real run would do. `ebs pin BUILD [--reason R]` / `ebs unpin BUILD` (BUILD: a UUID prefix or
+id recorded here, or any numeric build id) call `pin_build` (by = `$USER`) / `unpin_build`.

@@ -1,9 +1,8 @@
 """Build-lease heartbeat while the tool runs (P1-04 R5).
 
-The driver holds a GC lease on the build's artifacts (P1-09); a long action keeps it alive by
-renewing it from the node. Until P1-09 provides the lease API the runner passes no `renew`
-hook and the heartbeat does nothing. A failed renewal is logged and retried at the next beat:
-it never stops the tool.
+Under `--build` the runner holds a GC lease (P1-09) on the inputs it staged and renews it from
+the node through the `renew` hook (`Runner._lease_hook`). A failed renewal is logged and
+retried at the next beat: it never stops the tool.
 """
 
 from __future__ import annotations

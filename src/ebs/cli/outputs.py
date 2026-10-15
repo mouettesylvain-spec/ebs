@@ -31,7 +31,7 @@ from ebs.cli._output import Output, handle_errors, make_output
 from ebs.cli._records import BuildRecord, action_states, find_build
 from ebs.cli.logs import match_action
 from ebs.cli.plan import JSON_OPTION
-from ebs.core.errors import CasError, ConfigError, PlanError
+from ebs.core.errors import CasError, ConfigError, MetadataError, PlanError
 from ebs.meta.api import MetadataStore, OutputResult, ResultManifest
 from ebs.plan.planfile import decode
 
@@ -387,6 +387,10 @@ def fetch_command(
                 "dest": str(item.shown),
             }
         )
+    try:  # a fetch is a use: GC keeps recently used objects (P1-09 R1)
+        b.store.touch(b.record.domain, [item.row.output.digest for item in fetches])
+    except MetadataError as exc:
+        out.warn(f"could not record the use of the fetched outputs for GC: {exc}")
     if json_mode:
         out.emit(
             {"v": 1, "uuid": str(b.record.uuid), "build": int(b.record.build), "fetched": fetched}

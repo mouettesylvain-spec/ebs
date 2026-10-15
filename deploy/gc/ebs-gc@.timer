@@ -1,0 +1,12 @@
+# Nightly GC of one domain (P1-09): systemctl enable --now ebs-gc@<domain>.timer
+
+[Unit]
+Description=Nightly EBS garbage collection of domain %i
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

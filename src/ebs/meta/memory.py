@@ -9,15 +9,21 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from ebs.core.clock import Clock, SystemClock
 from ebs.core.digest import Digest
 from ebs.core.errors import MetadataError
 from ebs.meta._common import (
+    attribution_digests,
+    cache_refs,
+    check_blobs,
     check_digest,
     check_final_status,
+    check_lease_ttl,
+    check_pin,
     check_result,
+    check_run,
     check_toolchain,
     edge_rows,
     revalidate,
@@ -28,13 +34,22 @@ from ebs.meta._common import (
 from ebs.meta.api import (
     ActionRow,
     ActionState,
+    BlobRef,
     BuildCreate,
     BuildId,
     BuildStatus,
     BuildView,
+    DomainPolicy,
     Event,
+    GcAttribution,
+    GcBlob,
+    GcCacheEntry,
+    GcRoots,
+    GcRun,
+    LeaseId,
     RegisterOutcome,
     ResultManifest,
+    Tombstone,
     ToolchainCreate,
     ToolchainRecord,
     check_domain,
@@ -62,6 +77,14 @@ class _Blob:
 
 
 @dataclass
+class _Lease:
+    domain: str
+    build: int
+    expires_at: datetime
+    digests: set[str]
+
+
+@dataclass
 class _Build:
     view: BuildView
     actions: dict[str, ActionRow]
@@ -83,6 +106,12 @@ class InMemoryMetadataStore:
         self._events: list[Event] = []
         self._toolchains: dict[str, ToolchainRecord] = {}
         self._toolchain_manifests: dict[str, bytes] = {}
+        self._leases: dict[int, _Lease] = {}
+        self._next_lease = 1
+        self._pins: dict[int, tuple[str, str, datetime]] = {}  # build -> by, reason, at
+        self._tombstones: dict[tuple[str, str], Tombstone] = {}
+        self._policies: dict[str, DomainPolicy] = {}
+        self.gc_runs: list[GcRun] = []
 
     # --- action cache ---------------------------------------------------------------------------
 
@@ -208,7 +237,7 @@ class InMemoryMetadataStore:
             }
             self._write_edges(edges)
             for k, blob in blobs.items():
-                self._blobs.setdefault(k, blob)
+                self._register(k, blob, now)
             b.actions[action_id] = new_row
             b.results[action_id] = checked.to_json()
 
@@ -240,6 +269,9 @@ class InMemoryMetadataStore:
             if b.view.status != "running":
                 raise MetadataError(f"build {build} is already finished ({b.view.status})")
             b.view = b.view.model_copy(update={"status": status, "finished_at": self._clock.now()})
+            # A finished build holds no lease; a pin is a separate root.
+            for lease in [i for i, x in self._leases.items() if x.build == build]:
+                del self._leases[lease]
 
     def get_build(self, build: BuildId) -> BuildView:
         with self._lock:
@@ -256,7 +288,7 @@ class InMemoryMetadataStore:
                 (r for r in rows if state is None or r.state == state), key=lambda r: r.action_id
             )
 
-    # --- access tracking, events ----------------------------------------------------------------
+    # --- access tracking -------------------------------------------------------------------------
 
     def touch(self, domain: str, digests: Iterable[Digest]) -> None:
         check_domain(domain)
@@ -267,6 +299,226 @@ class InMemoryMetadataStore:
                 blob = self._blobs.get((domain, k))
                 if blob is not None and blob.last_access <= touch_cutoff(now):
                     blob.last_access = now
+
+    def _register(self, k: tuple[str, str], blob: _Blob, now: datetime) -> None:
+        """Insert a blob row, or touch the known one: storing an object again is a use (R1)."""
+        known = self._blobs.get(k)
+        if known is None:
+            self._blobs[k] = blob
+        elif known.last_access <= touch_cutoff(now):
+            known.last_access = now
+
+    def _touch_rows(self, domain: str, keys: Iterable[str]) -> None:
+        """Touch known blob rows (lock held): a new lease or pin is a use, so a GC claim racing
+        with it fails (I15)."""
+        now = self._clock.now()
+        for k in keys:
+            blob = self._blobs.get((domain, k))
+            if blob is not None and blob.last_access <= touch_cutoff(now):
+                blob.last_access = now
+
+    def register_blobs(self, domain: str, blobs: Iterable[BlobRef]) -> None:
+        check_domain(domain)
+        refs = check_blobs(blobs)
+        with self._lock:
+            now = self._clock.now()
+            self._domains.add(domain)
+            for ref in refs:
+                self._register((domain, str(ref.digest)), _Blob(ref.size, ref.kind, now, now), now)
+
+    # --- leases and pins ------------------------------------------------------------------------
+
+    def acquire_lease(
+        self, domain: str, build: BuildId, digests: Iterable[Digest], ttl_s: int
+    ) -> LeaseId:
+        check_domain(domain)
+        check_lease_ttl(ttl_s)
+        keys = {str(check_digest(d, "acquire_lease digest")) for d in digests}
+        with self._lock:
+            b = self._build(build)
+            if b.view.domain != domain:
+                raise MetadataError(
+                    f"acquire_lease: build {build} is in domain {b.view.domain!r}, not {domain!r}"
+                )
+            if b.view.status != "running":
+                raise MetadataError(
+                    f"acquire_lease: build {build} is finished ({b.view.status}); only running "
+                    "builds hold leases"
+                )
+            lease = self._next_lease
+            self._next_lease += 1
+            expires = self._clock.now() + timedelta(seconds=ttl_s)
+            self._leases[lease] = _Lease(domain, build, expires, keys)
+            self._touch_rows(domain, keys)
+            return LeaseId(lease)
+
+    def renew_lease(
+        self, build: BuildId, lease: LeaseId, ttl_s: int, *, add: Iterable[Digest] = ()
+    ) -> None:
+        check_lease_ttl(ttl_s)
+        keys = {str(check_digest(d, "renew_lease digest")) for d in add}
+        with self._lock:
+            now = self._clock.now()
+            found = self._leases.get(lease)
+            if found is None or found.build != build or found.expires_at <= now:
+                raise MetadataError(
+                    f"renew_lease: build {build} holds no live lease {lease} (it expired or was "
+                    "released); acquire a new lease"
+                )
+            found.expires_at = now + timedelta(seconds=ttl_s)
+            found.digests |= keys
+            self._touch_rows(found.domain, keys)
+
+    def pin_build(self, build: BuildId, *, by: str, reason: str = "") -> None:
+        by, reason = check_pin(by, reason)
+        with self._lock:
+            b = self._build(build)
+            self._pins.setdefault(build, (by, reason, self._clock.now()))
+            roots = {str(b.view.plan_digest)}
+            for payload in b.results.values():
+                roots |= {str(d) for d in attribution_digests(payload)}
+            self._touch_rows(b.view.domain, roots)
+            b.view = b.view.model_copy(update={"pinned": True})
+
+    def unpin_build(self, build: BuildId) -> bool:
+        with self._lock:
+            b = self._build(build)
+            b.view = b.view.model_copy(update={"pinned": False})
+            return self._pins.pop(build, None) is not None
+
+    # --- garbage collection (GcStore) -----------------------------------------------------------
+
+    def set_policy(self, domain: str, policy: DomainPolicy) -> None:
+        """Test hook for the `domains` row settings (P2-01 adds the admin side)."""
+        with self._lock:
+            self._policies[check_domain(domain)] = policy
+
+    def gc_policy(self, domain: str) -> DomainPolicy:
+        check_domain(domain)
+        with self._lock:
+            return self._policies.get(domain, DomainPolicy())
+
+    def gc_blobs(self, domain: str) -> list[GcBlob]:
+        check_domain(domain)
+        with self._lock:
+            return [
+                GcBlob(Digest.parse(k), b.size, b.kind, b.created_at, b.last_access)
+                for (d, k), b in sorted(self._blobs.items())
+                if d == domain
+            ]
+
+    def gc_cache_entries(self, domain: str) -> list[GcCacheEntry]:
+        check_domain(domain)
+        with self._lock:
+            rows = [
+                (k, e.last_access, e.result) for (d, k), e in self._cache.items() if d == domain
+            ]
+        return [
+            GcCacheEntry(Digest.parse(k), at, *cache_refs(payload))
+            for k, at, payload in sorted(rows, key=lambda r: r[0])
+        ]
+
+    def gc_roots(self, domain: str, now: datetime) -> GcRoots:
+        check_domain(domain)
+        pinned: set[Digest] = set()
+        with self._lock:
+            for build_id in self._pins:
+                b = self._builds[build_id]
+                if b.view.domain != domain:
+                    continue
+                pinned.add(b.view.plan_digest)
+                for payload in b.results.values():
+                    pinned.update(attribution_digests(payload))
+            leased = {
+                Digest.parse(k)
+                for lease in self._leases.values()
+                if lease.domain == domain and lease.expires_at > now
+                for k in lease.digests
+            }
+        return GcRoots(frozenset(pinned), frozenset(leased), frozenset())
+
+    def gc_tombstones(self, domain: str) -> list[Tombstone]:
+        check_domain(domain)
+        with self._lock:
+            return [t for (d, _), t in sorted(self._tombstones.items()) if d == domain]
+
+    def gc_attribution(self, domain: str) -> list[GcAttribution]:
+        check_domain(domain)
+        found: list[GcAttribution] = []
+        with self._lock:
+            for build_id, b in sorted(self._builds.items()):
+                if b.view.domain != domain:
+                    continue
+                project, build = b.view.project, BuildId(build_id)
+                for action_id, payload in sorted(b.results.items()):
+                    step = b.actions[action_id].step
+                    found.extend(
+                        GcAttribution(d, build, project, step) for d in attribution_digests(payload)
+                    )
+        return found
+
+    def gc_expire_leases(self, domain: str, now: datetime) -> int:
+        check_domain(domain)
+        with self._lock:
+            gone = [
+                i for i, x in self._leases.items() if x.domain == domain and x.expires_at <= now
+            ]
+            for i in gone:
+                del self._leases[i]
+            return len(gone)
+
+    def gc_delete_cache_entries(
+        self, domain: str, keys: Iterable[Digest], *, unused_before: datetime
+    ) -> list[Digest]:
+        check_domain(domain)
+        wanted = [check_digest(k, "gc_delete_cache_entries key") for k in keys]
+        deleted: list[Digest] = []
+        with self._lock:
+            for key in wanted:
+                entry = self._cache.get((domain, str(key)))
+                if entry is not None and entry.last_access <= unused_before:
+                    del self._cache[(domain, str(key))]
+                    deleted.append(key)
+        return deleted
+
+    def gc_tombstone(
+        self, domain: str, digests: Iterable[Digest], *, now: datetime, delete_after: datetime
+    ) -> None:
+        check_domain(domain)
+        wanted = [check_digest(d, "gc_tombstone digest") for d in digests]
+        with self._lock:
+            self._domains.add(domain)
+            for d in wanted:
+                self._tombstones.setdefault((domain, str(d)), Tombstone(d, now, delete_after))
+
+    def gc_drop_tombstones(self, domain: str, digests: Iterable[Digest]) -> None:
+        check_domain(domain)
+        wanted = [str(check_digest(d, "gc_drop_tombstones digest")) for d in digests]
+        with self._lock:
+            for k in wanted:
+                self._tombstones.pop((domain, k), None)
+
+    def gc_claim(self, domain: str, digest: Digest, now: datetime) -> bool:
+        check_domain(domain)
+        k = (domain, str(check_digest(digest, "gc_claim digest")))
+        with self._lock:
+            stone = self._tombstones.get(k)
+            if stone is None or stone.blob_delete_after > now:
+                return False
+            blob = self._blobs.get(k)
+            if blob is not None and blob.last_access >= stone.deleted_rows_at:
+                return False
+            del self._tombstones[k]
+            self._blobs.pop(k, None)
+            return True
+
+    def gc_record_run(self, run: GcRun) -> None:
+        checked = check_run(run)
+        with self._lock:
+            self._domains.add(checked.domain)
+            self.gc_runs.append(checked)
+
+    # --- events ---------------------------------------------------------------------------------
 
     def emit(self, event: Event) -> None:
         checked = revalidate(event, Event, "emit")

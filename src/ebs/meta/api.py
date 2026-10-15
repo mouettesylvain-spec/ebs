@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Annotated, Final, Literal, NewType, Protocol
 from uuid import UUID
 
@@ -39,6 +41,8 @@ __all__ = [
     "DOMAIN_PATTERN",
     "EVENT_TYPE_PATTERN",
     "FINAL_BUILD_STATUSES",
+    "LEASE_TTL_S",
+    "MAX_LEASE_TTL_S",
     "TERMINAL_STATES",
     "TOUCH_INTERVAL_S",
     "TRANSITIONS",
@@ -48,6 +52,8 @@ __all__ = [
     "ActionRow",
     "ActionState",
     "ActionUpdate",
+    "BlobBatch",
+    "BlobRef",
     "BuildCreate",
     "BuildFinish",
     "BuildId",
@@ -57,22 +63,34 @@ __all__ = [
     "CacheMode",
     "Changed",
     "CreatedBuild",
+    "CreatedLease",
     "DigestBatch",
     "DigestField",
+    "DomainPolicy",
     "ErrorBody",
     "Event",
     "EventType",
+    "GcAttribution",
+    "GcBlob",
+    "GcCacheEntry",
+    "GcRoots",
+    "GcRun",
+    "GcStore",
     "InfraReason",
+    "LeaseId",
+    "LeaseRequest",
     "MetadataStore",
     "OptionalDigest",
     "OptionalResult",
     "OutputResult",
     "PendingReason",
+    "PinRequest",
     "RegisterOutcome",
     "ResourceUsage",
     "ResultManifest",
     "RunnerInfo",
     "StateChange",
+    "Tombstone",
     "ToolchainCreate",
     "ToolchainList",
     "ToolchainManifest",
@@ -94,6 +112,13 @@ TOUCH_INTERVAL_S: Final = 3600
 """`last_access` is written at most once per key per hour (write-amplification guard, R3)."""
 
 BuildId = NewType("BuildId", int)
+LeaseId = NewType("LeaseId", int)
+
+MAX_LEASE_TTL_S: Final = 86_400
+"""Longest lease a store grants: a lease is a heartbeat-renewed root, never a permanent pin."""
+
+LEASE_TTL_S: Final = 900
+"""Lease lifetime the driver requests and renews on its heartbeat (P1-09 R2: 15 min)."""
 
 ActionState = Literal[
     "queued",
@@ -277,6 +302,16 @@ class ResultManifest(BaseModel):
         return self.model_dump(mode="json")
 
 
+class BlobRef(BaseModel):
+    """A CAS object to register in the `blobs` table (GC bookkeeping, P1-09 R1)."""
+
+    model_config = _FROZEN
+
+    digest: DigestField
+    size: _NonNegative
+    kind: Literal["file", "tree"]
+
+
 class BuildCreate(BaseModel):
     """Everything known about a build when it starts."""
 
@@ -401,10 +436,7 @@ class RegisterOutcome(BaseModel):
 
 
 class MetadataStore(Protocol):
-    """Shared build state. Every method is one short transaction; errors raise MetadataError.
-
-    The lease methods of interfaces.md § 6 (`acquire_lease`, `renew_lease`) arrive with GC (P1-09).
-    """
+    """Shared build state. Every method is one short transaction; errors raise MetadataError."""
 
     # action cache
     def cache_get(self, domain: str, key: Digest) -> ResultManifest | None:
@@ -464,6 +496,35 @@ class MetadataStore(Protocol):
     def touch(self, domain: str, digests: Iterable[Digest]) -> None:
         """Mark known blobs as used now (at most once per hour each); unknown digests are
         ignored."""
+        ...
+
+    def register_blobs(self, domain: str, blobs: Iterable[BlobRef]) -> None:
+        """Record CAS objects just stored (P1-09 R1): new rows get `created_at = last_access =
+        now`; known rows are touched like `touch` (at most once per hour)."""
+        ...
+
+    # leases and pins (P1-09 R2)
+    def acquire_lease(
+        self, domain: str, build: BuildId, digests: Iterable[Digest], ttl_s: int
+    ) -> LeaseId:
+        """Protect `digests` (and, through trees, everything below them) from GC until
+        `now + ttl_s`. The build must be in `domain` and running."""
+        ...
+
+    def renew_lease(
+        self, build: BuildId, lease: LeaseId, ttl_s: int, *, add: Iterable[Digest] = ()
+    ) -> None:
+        """Extend a live lease of `build` to `now + ttl_s` and add `add` to it. An unknown or
+        expired lease (GC may already have dropped it) raises MetadataError: acquire a new one."""
+        ...
+
+    def pin_build(self, build: BuildId, *, by: str, reason: str = "") -> None:
+        """Make the build's plan, outputs and logs GC roots (idempotent; the first pin's author
+        and reason are kept)."""
+        ...
+
+    def unpin_build(self, build: BuildId) -> bool:
+        """Remove the pin; True if the build was pinned."""
         ...
 
     # events
@@ -614,9 +675,168 @@ class ToolchainManifest(BaseModel):
     manifest_b64: StrictStr | None
 
 
+class BlobBatch(BaseModel):
+    """Body of `register_blobs`: at most `BATCH_MAX` objects."""
+
+    model_config = _WIRE
+
+    blobs: Annotated[list[BlobRef], Field(max_length=BATCH_MAX)]
+
+
+class LeaseRequest(BaseModel):
+    """Body of `acquire_lease` and `renew_lease` (whose `digests` are added to the lease)."""
+
+    model_config = _WIRE
+
+    domain: _Domain | None = None  # acquire only
+    digests: Annotated[list[DigestField], Field(max_length=BATCH_MAX)] = Field(default_factory=list)
+    ttl_s: Annotated[StrictInt, Field(ge=1, le=MAX_LEASE_TTL_S)]
+
+
+class CreatedLease(BaseModel):
+    model_config = _WIRE
+
+    id: StrictInt
+
+
+class PinRequest(BaseModel):
+    """Body of `pin_build`; the pin's author is the authenticated caller."""
+
+    model_config = _WIRE
+
+    reason: _Text = ""
+
+
 class ToolchainList(BaseModel):
     """Response of the toolchain reads; `get` and `current` hold zero or one record."""
 
     model_config = _WIRE
 
     toolchains: list[ToolchainRecord]
+
+
+# --- garbage collection (P1-09) ------------------------------------------------------------------
+# `GcStore` is the GC's view of the metadata database. Only the PostgreSQL and in-memory stores
+# implement it: GC runs as a service account with direct database access (R7), never over HTTP.
+
+
+@dataclass(frozen=True, slots=True)
+class DomainPolicy:
+    """The GC settings of a domain (`domains` table; defaults when the domain has no row)."""
+
+    ttl_days: int = 30
+    quota_bytes: int | None = None
+    high_water: float = 0.85
+    low_water: float = 0.75
+
+
+@dataclass(frozen=True, slots=True)
+class GcBlob:
+    """A `blobs` row."""
+
+    digest: Digest
+    size: int
+    kind: str
+    created_at: datetime
+    last_access: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class GcCacheEntry:
+    """An action-cache row as GC sees it: what it references and when it was last used."""
+
+    key: Digest
+    last_access: datetime
+    outputs: tuple[Digest, ...]  # content digests
+    log: Digest | None
+
+
+@dataclass(frozen=True, slots=True)
+class GcRoots:
+    """Digests GC must never delete (with everything below them, I15)."""
+
+    pinned: frozenset[Digest]  # plan, outputs and logs of pinned builds
+    leased: frozenset[Digest]  # objects of live leases
+    released: frozenset[Digest]  # release outputs (P2-02; empty until the table exists)
+
+
+@dataclass(frozen=True, slots=True)
+class Tombstone:
+    """An object scheduled for deletion: its cache rows went at `deleted_rows_at` (or it was
+    unreachable then); its bytes may go after `blob_delete_after` if still unused (I15)."""
+
+    digest: Digest
+    deleted_rows_at: datetime
+    blob_delete_after: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class GcAttribution:
+    """An object recorded as a plan, output or log of an action of a build (for reports)."""
+
+    digest: Digest
+    build: BuildId
+    project: str
+    step: str
+
+
+@dataclass(frozen=True, slots=True)
+class GcRun:
+    """One `gc_runs` row."""
+
+    domain: str
+    started_at: datetime
+    finished_at: datetime
+    marked: int
+    swept_rows: int
+    swept_bytes: int
+    dry_run: bool
+    report: dict[str, object]  # canonical JSON
+
+
+class GcStore(Protocol):
+    """What GC reads and changes in the metadata database. Writes re-check their condition in
+    the same transaction, so a build running concurrently always wins (R7)."""
+
+    def gc_policy(self, domain: str) -> DomainPolicy: ...
+
+    def gc_blobs(self, domain: str) -> list[GcBlob]: ...
+
+    def gc_cache_entries(self, domain: str) -> list[GcCacheEntry]: ...
+
+    def gc_roots(self, domain: str, now: datetime) -> GcRoots:
+        """Pins, releases and the leases still live at `now`."""
+        ...
+
+    def gc_tombstones(self, domain: str) -> list[Tombstone]: ...
+
+    def gc_attribution(self, domain: str) -> list[GcAttribution]: ...
+
+    def register_blobs(self, domain: str, blobs: Iterable[BlobRef]) -> None: ...
+
+    def gc_expire_leases(self, domain: str, now: datetime) -> int:
+        """Delete leases expired at `now`; returns how many."""
+        ...
+
+    def gc_delete_cache_entries(
+        self, domain: str, keys: Iterable[Digest], *, unused_before: datetime
+    ) -> list[Digest]:
+        """Delete the entries among `keys` whose `last_access` is still at or before
+        `unused_before` (a hit since the snapshot keeps the row); returns the deleted keys."""
+        ...
+
+    def gc_tombstone(
+        self, domain: str, digests: Iterable[Digest], *, now: datetime, delete_after: datetime
+    ) -> None:
+        """Tombstone `digests`; an existing tombstone is kept as it is."""
+        ...
+
+    def gc_drop_tombstones(self, domain: str, digests: Iterable[Digest]) -> None: ...
+
+    def gc_claim(self, domain: str, digest: Digest, now: datetime) -> bool:
+        """Atomically: if `digest` has a tombstone due at `now` and its blob row was not touched
+        since the tombstone, delete both and return True (the caller then deletes the bytes);
+        else False."""
+        ...
+
+    def gc_record_run(self, run: GcRun) -> None: ...

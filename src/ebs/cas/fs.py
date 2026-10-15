@@ -287,7 +287,13 @@ class FsCAS:
             _unlink_quietly(path)
 
     def iter_digests(self) -> Iterator[tuple[Digest, int]]:
-        for area in ("blobs", "trees"):
+        for digest, size, _ in self.iter_objects():
+            yield digest, size
+
+    def iter_objects(self) -> Iterator[tuple[Digest, int, ObjectKind]]:
+        """Every stored object with its size and kind (`file` blob or `tree` manifest)."""
+        areas: tuple[tuple[_Area, ObjectKind], ...] = (("blobs", "file"), ("trees", "tree"))
+        for area, kind in areas:
             suffix = ".json" if area == "trees" else ""
             for algo in _subdirs(self._base / area):
                 if algo not in ALGOS:
@@ -295,7 +301,10 @@ class FsCAS:
                     continue
                 for ab in _subdirs(self._base / area / algo):
                     for cd in _subdirs(self._base / area / algo / ab):
-                        yield from self._iter_shard(self._base / area / algo / ab / cd, suffix)
+                        for digest, size in self._iter_shard(
+                            self._base / area / algo / ab / cd, suffix
+                        ):
+                            yield digest, size, kind
 
     def _iter_shard(self, shard: Path, suffix: str) -> Iterator[tuple[Digest, int]]:
         algo, ab, cd = shard.parts[-3:]
@@ -311,8 +320,9 @@ class FsCAS:
                 continue
             yield Digest(algo, hex_), st.st_size  # type: ignore[arg-type]  # checked above
 
-    def cleanup_tmp(self, max_age: timedelta = _TMP_MAX_AGE) -> int:
-        """Remove staging files older than `max_age` (abandoned uploads); returns the count."""
+    def cleanup_tmp(self, max_age: timedelta = _TMP_MAX_AGE, *, dry_run: bool = False) -> int:
+        """Remove staging files older than `max_age` (abandoned uploads); returns the count.
+        With `dry_run`, only count them (`ebs gc --dry-run`)."""
         cutoff = self._clock.now().timestamp() - max_age.total_seconds()
         removed = 0
         for entry in _scandir(self._tmp):
@@ -320,6 +330,9 @@ class FsCAS:
             try:
                 st = entry.stat(follow_symlinks=False)
                 if st.st_mtime >= cutoff:
+                    continue
+                if dry_run:
+                    removed += 1
                     continue
                 if stat.S_ISDIR(st.st_mode):
                     shutil.rmtree(path, ignore_errors=True)
@@ -333,7 +346,7 @@ class FsCAS:
                     f"that the GC account can write {self._tmp}"
                 ) from exc
             removed += 1
-        if removed:
+        if removed and not dry_run:
             _log.info("cas.tmp_cleaned", domain=self.domain, removed=removed)
         return removed
 

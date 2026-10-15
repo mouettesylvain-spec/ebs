@@ -309,3 +309,67 @@ def test_renews_and_flushes_while_running(cas: FsCAS, tmp_path: Path) -> None:
     assert manifest is not None
     assert manifest.exit_code == 1  # saw its output in the live log while running
     assert len(renewals) >= 2
+
+
+# R5 (with P1-09): without an injected hook the runner leases the inputs it staged.
+def test_runner_leases_its_inputs(cas: FsCAS, tmp_path: Path) -> None:
+    from tests.helpers.runner import source_file
+
+    h = Harness(tmp_path, cas)
+    src = source_file(cas, "in.txt", b"input")
+    code, _ = h.run(shell_spec("true", inputs=[src]))
+    assert code == EXIT_OK
+    roots = h.store.gc_roots("test", h.store._clock.now())
+    assert src.id in roots.leased
+
+
+# R5: an expired lease is acquired again at the next beat.
+def test_runner_lease_reacquired(cas: FsCAS, tmp_path: Path) -> None:
+    import dataclasses
+
+    from ebs.core.errors import MetadataError
+    from ebs.runner.main import Runner, RunRequest
+    from tests.helpers.runner import new_build, source_file, store_plan
+
+    h = Harness(tmp_path, cas)
+    calls: list[str] = []
+    real_acquire, real_renew = h.store.acquire_lease, h.store.renew_lease
+
+    def acquire(*a: object, **k: object) -> object:
+        calls.append("acquire")
+        return real_acquire(*a, **k)  # type: ignore[arg-type]
+
+    def renew(*a: object, **k: object) -> None:
+        calls.append("renew")
+        raise MetadataError("lease expired")
+
+    h.store.acquire_lease = acquire  # type: ignore[method-assign,assignment]
+    h.store.renew_lease = renew  # type: ignore[method-assign]
+    del real_renew
+    src = source_file(cas, "in.txt", b"input")
+    spec = shell_spec("true", inputs=[src])
+    runner: Runner = h.runner()
+    hook = runner._lease_hook(
+        RunRequest(store_plan(cas, spec), "s", new_build(h.store, "s", cache_mode="read")),
+        dataclasses.replace(spec),
+        {"in.txt": src.id},  # type: ignore[dict-item]
+    )
+    assert hook is not None
+    hook()
+    hook()
+    assert calls == ["acquire", "renew", "acquire"]
+
+
+# R5: nothing to lease without a build (no store to post to).
+def test_no_lease_without_build(cas: FsCAS, tmp_path: Path) -> None:
+    from ebs.core.digest import hash_bytes
+    from ebs.runner.main import RunRequest
+
+    h = Harness(tmp_path, cas)
+    spec = shell_spec("true")
+    assert (
+        h.runner()._lease_hook(
+            RunRequest(hash_bytes(b"p"), "s", None), spec, {"a": hash_bytes(b"a")}
+        )
+        is None
+    )

@@ -1,4 +1,4 @@
-"""PostgreSQL schema of the metadata store, phase 0 (docs/design/data-model.md).
+"""PostgreSQL schema of the metadata store (docs/design/data-model.md).
 
 SQLAlchemy Core tables in schema `ebs`. The Alembic revisions under `migrations/` must produce
 exactly this schema (tests/integration/meta/test_migrations.py::test_no_model_drift). CHECK
@@ -32,8 +32,13 @@ __all__ = [
     "builds",
     "domains",
     "events",
+    "gc_runs",
+    "lease_objects",
+    "leases",
     "metadata",
+    "pins",
     "provenance_edges",
+    "tombstones",
     "toolchain_manifests",
     "toolchains",
 ]
@@ -251,4 +256,67 @@ api_tokens = sa.Table(  # bearer tokens of the metadata service (P1-06); only th
     sa.CheckConstraint("kind IN ('user', 'ci', 'service')", name="kind_valid"),
     _digest_check("hash"),
     sa.Index(None, "principal"),
+)
+
+# --- Phase 1: garbage collection (P1-09, revision 0006) ------------------------------------------
+
+leases = sa.Table(  # roots held by running builds; renewed by the driver heartbeat
+    "leases",
+    metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    _domain_fk(),
+    sa.Column(
+        "build_id", sa.BigInteger, sa.ForeignKey("builds.id", ondelete="CASCADE"), nullable=False
+    ),
+    sa.Column("expires_at", _TS, nullable=False),
+    sa.Column("created_at", _TS, nullable=False),
+    sa.Index(None, "domain", "expires_at"),
+)
+
+lease_objects = sa.Table(
+    "lease_objects",
+    metadata,
+    sa.Column(
+        "lease_id", sa.BigInteger, sa.ForeignKey("leases.id", ondelete="CASCADE"), primary_key=True
+    ),
+    sa.Column("digest", sa.Text, primary_key=True),
+    _digest_check("digest"),
+)
+
+pins = sa.Table(  # `ebs pin BUILD`: the build's plan, outputs and logs are GC roots
+    "pins",
+    metadata,
+    sa.Column("domain", sa.Text, sa.ForeignKey("domains.name"), primary_key=True),
+    sa.Column(
+        "build_id", sa.BigInteger, sa.ForeignKey("builds.id", ondelete="CASCADE"), primary_key=True
+    ),
+    sa.Column("pinned_by", sa.Text, nullable=False),
+    sa.Column("reason", sa.Text, nullable=False, server_default=sa.text("''")),
+    sa.Column("created_at", _TS, nullable=False),
+)
+
+gc_runs = sa.Table(
+    "gc_runs",
+    metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    _domain_fk(),
+    sa.Column("started_at", _TS, nullable=False),
+    sa.Column("finished_at", _TS, nullable=False),
+    sa.Column("marked", sa.BigInteger, nullable=False),
+    sa.Column("swept_rows", sa.BigInteger, nullable=False),
+    sa.Column("swept_bytes", sa.BigInteger, nullable=False),
+    sa.Column("dry_run", sa.Boolean, nullable=False),
+    sa.Column("report", JSONB, nullable=False),
+    sa.CheckConstraint("jsonb_typeof(report) = 'object'", name="report_object"),
+    sa.Index(None, "domain", "started_at"),
+)
+
+tombstones = sa.Table(  # the grace period between deleting cache rows and their blobs (I15)
+    "tombstones",
+    metadata,
+    sa.Column("domain", sa.Text, sa.ForeignKey("domains.name"), primary_key=True),
+    sa.Column("digest", sa.Text, primary_key=True),
+    sa.Column("deleted_rows_at", _TS, nullable=False),
+    sa.Column("blob_delete_after", _TS, nullable=False),
+    _digest_check("digest"),
 )

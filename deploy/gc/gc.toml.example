@@ -1,0 +1,13 @@
+# /etc/ebs/gc.toml for the ebs-gc service account (P1-09). Per-domain TTL and quota live in the
+# `domains` table of the metadata database (ttl_days, quota_bytes, high_water, low_water).
+
+[cas]
+root = "/cas"
+
+[metadata]
+# Direct database access (never the HTTP service): GC re-checks every deletion in a transaction.
+url = "postgresql+psycopg://ebs_gc@ebs-db.example.invalid/ebs"
+
+[gc]
+grace_hours = 24        # cache rows go first; their bytes only after this (invariant I15)
+tmp_max_age_hours = 24  # abandoned uploads in <cas>/<domain>/tmp/

@@ -36,7 +36,16 @@ from ebs.core.clock import Clock, SystemClock
 from ebs.core.digest import Digest, hash_bytes
 from ebs.core.errors import CasError, ConfigError, DigestError, EbsError, MetadataError, PlanError
 from ebs.core.log import get_logger
-from ebs.meta.api import BuildId, CacheMode, Event, InfraReason, MetadataStore, RunnerInfo
+from ebs.meta.api import (
+    LEASE_TTL_S,
+    BuildId,
+    CacheMode,
+    Event,
+    InfraReason,
+    LeaseId,
+    MetadataStore,
+    RunnerInfo,
+)
 from ebs.plan.planfile import decode
 from ebs.plan.types import ActionSpec, Plan
 from ebs.rules.api import RulePlugin, RuleSettings
@@ -47,6 +56,7 @@ from ebs.runner.collect import (
     log_tail,
     make_debug_dir,
     output_paths,
+    stored_objects,
     wants_debug,
 )
 from ebs.runner.config import RunnerSettings
@@ -222,6 +232,7 @@ class Runner:
             )
             write_config_files(spec, scratch.work)
             verify_inputs(spec, scratch.work, contents)  # I10: before anything executes
+            self._touch_inputs(spec, contents)
             env = build_env(
                 spec,
                 toolchain_env=toolchain_env,
@@ -231,7 +242,9 @@ class Runner:
             )
             attempt.env = env
             self._emit_running(req, spec, job_id)
-            beat = Heartbeat(self._clock, self._settings.heartbeat_s, self._renew_lease)
+            beat = Heartbeat(
+                self._clock, self._settings.heartbeat_s, self._lease_hook(req, spec, contents)
+            )
             beat.tick()
             live = None if attempt.debug is None else attempt.debug.live
 
@@ -330,6 +343,18 @@ class Runner:
             self._out.write(json.dumps(manifest.to_json(), sort_keys=True) + "\n")
             return EXIT_OK, status
         try:
+            # Register every stored object first: a put is a use, and GC must see it (P1-09 R1).
+            stored = stored_objects(self._cas, collected.outputs, log_digest, log_path)
+            self._store.register_blobs(spec.domain, stored)
+            # A put of bytes that already existed kept the stored object; GC may have claimed it
+            # just before the registration (which blocks any later claim). Never post a result
+            # whose bytes are gone: the retry stores them again (I15).
+            gone = [str(r.digest) for r in stored if not self._cas.has(r.digest)]
+            if gone:
+                raise InfraError(
+                    f"outputs were garbage-collected while being stored ({', '.join(gone[:3])}); "
+                    "retrying the action stores them again"
+                )
             self._store.record_result(req.build, spec.action_id, manifest)
             if cache_mode == "write":
                 self._store.cache_put(spec.domain, key, manifest)
@@ -438,6 +463,45 @@ class Runner:
             scratch.remove()
         except Interrupted:  # the first SIGTERM landed mid-removal; repeats are now ignored
             scratch.remove()
+
+    def _lease_hook(
+        self, req: RunRequest, spec: ActionSpec, contents: Mapping[str, Digest]
+    ) -> Callable[[], None] | None:
+        """What the heartbeat calls (R5): the injected hook, else this action's own GC lease.
+
+        The driver's lease (P1-09 `LeaseKeeper`) lives in the driver; the runner holds a lease
+        of its own on the inputs it staged, which large inputs are read through as links into
+        the CAS, so they stay GC roots while the tool runs even if the driver stalls. It is
+        acquired on the first beat and renewed on each later one (re-acquired if it expired);
+        it lapses after `LEASE_TTL_S` or when the build finishes.
+        """
+        if self._renew_lease is not None:
+            return self._renew_lease
+        store, build = self._store, req.build
+        digests = sorted(set(contents.values()), key=str)
+        if store is None or build is None or not digests:
+            return None
+        held: list[LeaseId] = []
+
+        def renew() -> None:
+            if held:
+                try:
+                    store.renew_lease(build, held[0], LEASE_TTL_S)
+                    return
+                except MetadataError:  # expired or dropped: acquire a new one
+                    held.clear()
+            held.append(store.acquire_lease(spec.domain, build, digests, LEASE_TTL_S))
+
+        return renew
+
+    def _touch_inputs(self, spec: ActionSpec, contents: Mapping[str, Digest]) -> None:
+        """Record the use of the staged inputs for GC (best effort: never fails the action)."""
+        if self._store is None or not contents:
+            return
+        try:
+            self._store.touch(spec.domain, sorted(set(contents.values()), key=str))
+        except MetadataError as exc:
+            log.warning("cannot record input access", action_id=spec.action_id, error=str(exc))
 
     def _keep_log(self, error: InfraError, log_path: Path) -> None:
         """Upload the tool log of a failed attempt for debugging (best effort)."""
