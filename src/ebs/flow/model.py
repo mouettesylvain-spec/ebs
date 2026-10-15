@@ -363,6 +363,20 @@ Cpus = Annotated[
 """CPU count, or a deferred `${…}` string."""
 
 
+def _max_parallel(value: object) -> int:
+    if isinstance(value, int) and _is_int(value) and value > 0:
+        return value
+    _fail("flow_max_parallel", f"max_parallel must be a positive integer, got {value!r}")
+
+
+MaxParallel = Annotated[
+    int,
+    PlainValidator(_max_parallel),
+    WithJsonSchema({"type": "integer", "minimum": 1}),
+]
+"""Tasks of one job array running at once (SLURM `--array=…%N`); a literal (P1-02)."""
+
+
 # --- models ------------------------------------------------------------------------------------
 
 
@@ -389,6 +403,7 @@ class Resources(_Model):
     cpus: Cpus | None = None
     mem: Memory | None = None
     time: Duration | None = None
+    max_parallel: MaxParallel | None = None  # array throttle; overrides [slurm].array_throttle
 
 
 class ToolchainRef(_Model):

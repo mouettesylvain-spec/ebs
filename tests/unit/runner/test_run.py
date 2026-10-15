@@ -22,10 +22,11 @@ def _alive(pid: int) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    # A zombie (exited, not yet reaped by its new parent) counts as dead.
+    # A zombie (exited, not yet reaped by its new parent) counts as dead. The process can be
+    # reaped while we read: open() then fails with ENOENT, or read() with ESRCH.
     try:
         return Path(f"/proc/{pid}/stat").read_text().split()[2] != "Z"
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return False
 
 

@@ -1,7 +1,7 @@
 """Executor contract (interfaces.md § 8): every executor passes this suite.
 
 Each case provides an executor whose runner is the scripted fake (`tests/helpers/fake_runner.py`).
-The FakeSlurm-backed executor joins in P1-02.
+The SLURM executor runs against FakeSlurm (P1-02), with a cluster of CAPACITY cpus.
 """
 
 from __future__ import annotations
@@ -12,10 +12,14 @@ from pathlib import Path
 
 import pytest
 
+from ebs.cas.fs import FsCAS
 from ebs.exec.api import Executor
 from ebs.exec.local import LocalExecutor
+from ebs.exec.slurm.executor import SlurmExecutor, SlurmSettings
 from ebs.runner.errors import format_infra_line
+from tests.fakes.slurm import FakeSlurm
 from tests.helpers.executor import FakeRunner, batch, wait_states
+from tests.helpers.runner import DOMAIN
 from tests.helpers.wait import wait_until
 
 CAPACITY = 2  # each case runs at most this many single-cpu actions at once
@@ -42,12 +46,37 @@ def _local(tmp_path: Path, fake: FakeRunner) -> Iterator[Callable[[], Executor]]
         ex.close(grace_s=2)
 
 
+def _slurm(tmp_path: Path, fake: FakeRunner) -> Iterator[Callable[[], Executor]]:
+    slurm = FakeSlurm.install(tmp_path / "fakeslurm", cpus=CAPACITY)
+    fake.cas_root = tmp_path / "cas"
+    cas = FsCAS(fake.cas_root, DOMAIN)
+
+    def start() -> Executor:
+        return SlurmExecutor(
+            cli=slurm.cli(),
+            cas=cas,
+            settings=SlurmSettings(debug_root=tmp_path / "debug"),
+            runner_argv=fake.argv,
+            env=fake.env(),
+        )
+
+    yield start
+    slurm.shutdown()
+
+
 FACTORIES: dict[str, Callable[[Path, FakeRunner], Iterator[Callable[[], Executor]]]] = {
-    "local": _local
+    "local": _local,
+    "slurm": _slurm,
 }
 
 
-@pytest.fixture(params=sorted(FACTORIES))
+@pytest.fixture(
+    params=[
+        "local",
+        # FakeSlurm runs jobs through detached supervisor processes.
+        pytest.param("slurm", marks=pytest.mark.integration),
+    ]
+)
 def case(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Case]:
     fake = FakeRunner(tmp_path / "fake")
     gen = FACTORIES[request.param](tmp_path, fake)

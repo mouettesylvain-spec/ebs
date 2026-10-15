@@ -129,9 +129,10 @@ default_partition = ""
 max_array_size = 1000
 array_throttle = 200
 max_pending_jobs = 2000        # in-flight jobs, array tasks counted individually (D5)
-max_submits_per_min = 60
-poll_min_s = 5
+max_submits_per_min = 60      # sbatch calls in any 60 s window (P1-02)
+poll_min_s = 5                 # also how long a batch refused for max_pending_jobs waits
 poll_max_s = 60
+# bin_dir = "/opt/slurm/bin"   # where sbatch & co live; default: PATH
 ```
 
 ## Glossary

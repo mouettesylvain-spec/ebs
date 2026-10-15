@@ -12,10 +12,11 @@ Action layout (one object per action, in plan order):
                                                 | {"type": "output", "action", "output"}
                                                 | {"type": "import", "name", "path"}}],
      "outputs": [{"name", "path", "type", "deterministic", "optional"}],
-     "config_files": {...}, "resources": {"cpus", "mem", "time"}, "licenses": {...},
-     "debug": {"collect", "max_size", "on_success"}, "domain", "key"}
+     "config_files": {...}, "resources": {"cpus", "mem", "time"[, "max_parallel"]},
+     "licenses": {...}, "debug": {"collect", "max_size", "on_success"}, "domain", "key"}
 
-Resources are integers (count, bytes, seconds) or null.
+Resources are integers (count, bytes, seconds) or null. `max_parallel` (P1-02, a positive
+integer) is present only when set, so plans that do not use it encode exactly as before.
 """
 
 from __future__ import annotations
@@ -116,7 +117,12 @@ def spec_to_json(spec: ActionSpec) -> JsonValue:
             for o in spec.outputs
         ],
         "config_files": dict(spec.config_files),
-        "resources": {"cpus": res.cpus, "mem": res.mem, "time": res.time},
+        "resources": {
+            "cpus": res.cpus,
+            "mem": res.mem,
+            "time": res.time,
+            **({} if res.max_parallel is None else {"max_parallel": res.max_parallel}),
+        },
         "licenses": dict(spec.licenses),
         "debug": {
             "collect": list(spec.debug.collect),
@@ -304,11 +310,17 @@ def _toolchain(value: object, path: str) -> ToolchainRef | None:
 
 def _resources(value: object, path: str) -> Resources:
     doc = _obj(value, path)
+    max_parallel = None
+    if "max_parallel" in doc:
+        max_parallel = _int(doc["max_parallel"], f"{path}.max_parallel")
+        if max_parallel < 1:
+            raise _fail(f"{path}.max_parallel", "a positive integer", max_parallel)
     return Resources.model_construct(
-        _fields_set={"cpus", "mem", "time"},
+        _fields_set={"cpus", "mem", "time", "max_parallel"},
         cpus=_get(doc, "cpus", path, _opt_int),
         mem=_get(doc, "mem", path, _opt_int),
         time=_get(doc, "time", path, _opt_int),
+        max_parallel=max_parallel,
     )
 
 

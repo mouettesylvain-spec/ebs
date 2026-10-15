@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from ebs.exec.slurm.cli import (
     sbatch_argv,
     write_env_file,
 )
-from ebs.exec.slurm.models import ArrayTaskId, JobId, SlurmJobInfo
+from ebs.exec.slurm.models import ArrayTaskId, JobId, JobRef, SlurmJobInfo
 
 FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "slurm" / "26.05"
 
@@ -188,6 +189,24 @@ SCRIPT = Path("/w/job.sh")
             ],
             id="array-single-requeue",
         ),
+        pytest.param(  # P1-02 R4: the build UUID travels in the comment field
+            SbatchOptions(
+                job_name="ebs:0f1e2d3c:sim",
+                comment="0f1e2d3c-0000-4000-8000-000000000000",
+                workdir=Path("/w"),
+            ),
+            [
+                "sbatch",
+                "--parsable",
+                "--job-name=ebs:0f1e2d3c:sim",
+                "--chdir=/w",
+                "--comment=0f1e2d3c-0000-4000-8000-000000000000",
+                "--export=NONE",
+                "--no-requeue",
+                "/w/job.sh",
+            ],
+            id="comment",
+        ),
     ],
 )
 def test_sbatch_argv(opts: SbatchOptions, expected: list[str]) -> None:
@@ -229,6 +248,8 @@ def test_no_shell(monkeypatch: pytest.MonkeyPatch) -> None:
         {"job_name": "x", "cpus_per_task": 0},
         {"job_name": "x", "mem_mb": 0},
         {"job_name": "x", "time_limit_s": 0},
+        {"job_name": "x", "comment": ""},
+        {"job_name": "x", "comment": "a\nb"},
     ],
 )
 def test_invalid_options_rejected(bad: dict[str, Any]) -> None:
@@ -657,3 +678,87 @@ def test_cancel_mixed_harmless_and_transient_retries() -> None:
     make_cli(runner, clock).cancel([JobId("12"), JobId("13")])
     assert len(runner.calls) == 2
     assert clock.monotonic() == 1.0
+
+
+# P1-02 R5: one poll of a whole regression stays linear in the number of array tasks (records are
+# indexed, not scanned once per reference).
+@pytest.mark.perf
+def test_query_scales_to_large_arrays() -> None:
+    tasks = 4000
+    records = [
+        {
+            "job_id": 20000 + t,
+            "job_state": ["RUNNING"],
+            "array_job_id": {"set": True, "infinite": False, "number": 10000},
+            "array_task_id": {"set": True, "infinite": False, "number": t},
+        }
+        for t in range(tasks - 1000)
+    ]
+    records.append(  # the last 1000 tasks are still one pending record
+        {
+            "job_id": 10000,
+            "job_state": ["PENDING"],
+            "state_reason": "JobArrayTaskLimit",
+            "array_job_id": {"set": True, "infinite": False, "number": 10000},
+            "array_task_id": {"set": False, "infinite": False, "number": 0},
+            "array_task_string": f"{tasks - 1000}-{tasks - 1}%64",
+        }
+    )
+    runner = FakeRunner(squeue=[ok(json.dumps({"jobs": records}))])
+    refs = [ArrayTaskId(JobId("10000"), t) for t in range(tasks)]
+    start = time.perf_counter()
+    result = make_cli(runner).query(refs)
+    elapsed = time.perf_counter() - start
+    assert len(result) == tasks
+    assert result[refs[0]].state == "RUNNING"
+    assert result[refs[-1]].state == "PENDING"
+    assert elapsed < 1.0, f"query of {tasks} array tasks took {elapsed:.2f} s"
+
+
+def _pending(job: int, spec: str, reason: str) -> dict[str, Any]:
+    return {
+        "job_id": job,
+        "job_state": ["PENDING"],
+        "state_reason": reason,
+        "array_job_id": {"set": True, "infinite": False, "number": job},
+        "array_task_id": {"set": False, "infinite": False, "number": 0},
+        "array_task_string": spec,
+    }
+
+
+# P1-02: when several records answer one reference, the later one wins (as before the index).
+def test_query_later_pending_record_wins() -> None:
+    records = [_pending(50, "0-3", "Priority"), _pending(50, "2-3", "JobArrayTaskLimit")]
+    runner = FakeRunner(squeue=[ok(json.dumps({"jobs": records}))])
+    refs = [ArrayTaskId(JobId("50"), 2), ArrayTaskId(JobId("50"), 0)]
+    result = make_cli(runner).query(refs)
+    assert result[refs[0]].reason == "JobArrayTaskLimit"
+    assert result[refs[1]].reason == "Priority"
+
+
+def test_query_later_duplicate_record_wins() -> None:
+    def rec(job: int, state: str, array: int | None = None, task: int | None = None) -> object:
+        return {
+            "job_id": job,
+            "state": {"current": [state], "reason": "None"},
+            "array": {
+                "job_id": array or 0,
+                "task_id": {"set": task is not None, "infinite": False, "number": task or 0},
+                "task": "",
+            },
+        }
+
+    jobs = [
+        rec(7, "FAILED"),
+        rec(7, "RUNNING"),
+        rec(61, "PENDING", 60, 1),
+        rec(62, "RUNNING", 60, 1),
+    ]
+    runner = FakeRunner(
+        squeue=[err("slurm_load_jobs error: Invalid job id specified")],
+        sacct=[ok(json.dumps({"jobs": jobs}))],
+    )
+    refs: list[JobRef] = [JobId("7"), ArrayTaskId(JobId("60"), 1)]
+    result = make_cli(runner).query(refs)
+    assert result[refs[0]].state == "RUNNING"
+    assert result[refs[1]].state == "RUNNING"

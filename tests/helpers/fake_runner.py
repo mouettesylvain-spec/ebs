@@ -10,6 +10,9 @@ Under `$EBS_FAKE_RUNNER_RECORD` it leaves:
 - `cleaned/<id>`: written when SIGTERM arrives, before it exits 75 (like the real runner).
 
 `<id>` is the SHA-1 of the action id (`record_name`).
+
+With `--array-map <digest>` (a SLURM array task, P1-02) the action is entry
+`$SLURM_ARRAY_TASK_ID` of the map, read from the fs CAS under `$EBS_FAKE_RUNNER_CAS`.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from types import FrameType
 
 SCRIPT_ENV = "EBS_FAKE_RUNNER_SCRIPT"
 RECORD_ENV = "EBS_FAKE_RUNNER_RECORD"
+CAS_ENV = "EBS_FAKE_RUNNER_CAS"
 PATH = Path(__file__).resolve()
 
 
@@ -33,7 +37,15 @@ def record_name(action_id: str) -> str:
 
 
 def _action(argv: list[str]) -> str:
-    return argv[argv.index("--action") + 1]
+    if "--array-map" not in argv:
+        return argv[argv.index("--action") + 1]
+    algo, _, hexdigest = argv[argv.index("--array-map") + 1].partition(":")
+    domain = argv[argv.index("--domain") + 1]
+    blob = Path(
+        os.environ[CAS_ENV], domain, "blobs", algo, hexdigest[:2], hexdigest[2:4], hexdigest
+    )
+    actions: list[str] = json.loads(blob.read_bytes())["actions"]
+    return actions[int(os.environ["SLURM_ARRAY_TASK_ID"])]
 
 
 def _cpus(path: Path) -> int:

@@ -24,6 +24,7 @@ from ebs.runner.errors import EXIT_INFRA, EXIT_OK, EXIT_VERIFY
 __all__ = [
     "TERMINAL_JOB_STATES",
     "Executor",
+    "ExecutorBusy",
     "JobHandle",
     "JobState",
     "JobStatus",
@@ -34,6 +35,18 @@ __all__ = [
 JobState = Literal["pending", "running", "done", "infra_failed", "cancelled"]
 
 TERMINAL_JOB_STATES: Final[frozenset[str]] = frozenset({"done", "infra_failed", "cancelled"})
+
+
+class ExecutorBusy(ExecutorError):
+    """`submit` refused a batch for now (rate limit, too many jobs in flight); nothing started.
+
+    Not a failure of the actions: the driver keeps the batch queued and offers it again after
+    `retry_after_s` seconds (P1-02 R8).
+    """
+
+    def __init__(self, message: str, *, retry_after_s: float) -> None:
+        super().__init__(message)
+        self.retry_after_s = max(0.0, retry_after_s)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +118,10 @@ class Executor(Protocol):
     name: str
 
     def submit(self, batch: SubmitBatch) -> list[JobHandle]:
-        """Start or queue every action of `batch`; one handle per action, in batch order."""
+        """Start or queue every action of `batch`; one handle per action, in batch order.
+
+        Raises `ExecutorBusy` (and starts nothing) when the backend cannot take it right now.
+        """
         ...
 
     def poll(self, handles: Sequence[JobHandle]) -> dict[JobHandle, JobStatus]:
