@@ -97,7 +97,13 @@ def test_format_inverse() -> None:
 # R5
 def test_resources_dump_round_trips() -> None:
     res = Resources.model_validate({"cpus": 2, "mem": "8GiB", "time": "90:00"})
-    assert res.model_dump() == {"cpus": 2, "mem": "8G", "time": "90m", "max_parallel": None}
+    assert res.model_dump() == {
+        "cpus": 2,
+        "mem": "8G",
+        "time": "90m",
+        "max_parallel": None,
+        "constraint": None,
+    }
     assert Resources.model_validate(res.model_dump()) == res
 
 
@@ -204,6 +210,24 @@ def test_resources_default_empty() -> None:
     assert Resources() == Resources(cpus=None, mem=None, time=None)
 
 
+# P1-03 R2: license names are checked when the flow loads, not only at submission.
+def test_license_names() -> None:
+    ok = {"msimhdlsim": 1, "feat.v2-x@lm_1.site": 2, "_x": 1}
+    assert StepDef.model_validate({"kind": "shell", "licenses": ok}).licenses == ok
+    for bad in ("feat@", "a@b@c", "feat@@x", "@srv", "a b", "a:1", ""):
+        with pytest.raises(ValidationError):
+            StepDef.model_validate({"kind": "shell", "licenses": {bad: 1}})
+
+
+# P1-03 R4: node features the step needs, ANDed with [slurm].os_constraint; a literal.
+def test_resources_constraint() -> None:
+    assert Resources.model_validate({"constraint": "avx512&bigmem"}).constraint == "avx512&bigmem"
+    assert Resources().constraint is None
+    for value in ("", "a b", "a|b", "a&&b", 3, "${row.os}", "(a)"):
+        with pytest.raises(ValidationError, match="constraint"):
+            Resources.model_validate({"constraint": value})
+
+
 # P1-02 R2: per-step array throttle; a literal positive integer.
 def test_resources_max_parallel() -> None:
     assert Resources.model_validate({"max_parallel": 8}).max_parallel == 8
@@ -213,6 +237,7 @@ def test_resources_max_parallel() -> None:
         "mem": None,
         "time": None,
         "max_parallel": 3,
+        "constraint": None,  # P1-03
     }
     for value in (0, -1, True, "4", "${row.n}", 1.5):
         with pytest.raises(ValidationError, match="max_parallel"):

@@ -1,6 +1,6 @@
 # P1-03 — Licenses, accounts/QOS, constraints
 
-Status: todo · Phase: 1 · Depends on: P1-02 · Size: S
+Status: review · Phase: 1 · Depends on: P1-02 · Size: S
 
 ## Goal
 Jobs start only when their EDA licenses are available, run under the right team account and QOS, and land
@@ -40,4 +40,21 @@ on nodes with the right OS image.
 | `tests/integration/slurm/test_pending_licenses.py` | R6 | integration |
 
 ## Done when
-- [ ] `make check-all` passes
+- [x] `make check-all` passes
+
+## Notes
+- Started while P1-02 was still `review` in the index; its code was already merged to main (PR #16).
+- R3 interpretation: an empty `[slurm.account_map]` sends no `--account` (SLURM's user default);
+  once a map is configured, an unmapped project is a ConfigError listing the known projects.
+  An unset `qos.ci`/`qos.release` falls back to `qos.default`; all unset sends no `--qos`.
+- R4: step constraints are the new flow field `resources.constraint` (features joined by `&`; no
+  OR/brackets/counts yet). Toolchain and step constraints are ANDed in the planner, then ANDed with
+  `[slurm].os_constraint` by the executor. CONTRACT CHANGE (flow schema, plan.json key written
+  only when set, so existing plans and keys are unchanged).
+- R2: `LICENSE_PATTERN` tightened to `feature[@server]` so bad names fail at `ebs plan`; the
+  executor validates again before sbatch. The planner now merges licenses per feature
+  (`merge_licenses`), so a step's `simfeat` replaces a toolchain's `simfeat@lm2`.
+- Follow-up (whoever wires the SLURM executor into `ebs build`, P1-12/P2-07/P2-08): pass
+  `project=plan.project` and `build_kind` (`ci` for `--ci`, `release` for release builds);
+  without `project`, a site with an account map gets a ConfigError at executor construction.
+- Follow-up: OR / matching-OR constraint expressions if a site needs them.

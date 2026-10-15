@@ -57,6 +57,7 @@ class ScriptedSlurm:
     calls: list[list[str]] = field(default_factory=list)
     scripts: list[str] = field(default_factory=list)  # job script text, per sbatch call
     fail_sbatch_after: int | None = None  # sbatch calls that succeed before failures start
+    sbatch_error: str | None = None  # every sbatch call fails with this message (exit 1)
 
     def cli(self) -> SlurmCli:
         return SlurmCli(runner=self)
@@ -82,6 +83,8 @@ class ScriptedSlurm:
         raise AssertionError(f"unexpected command {argv}")
 
     def _sbatch(self, argv: list[str]) -> CommandResult:
+        if self.sbatch_error is not None:
+            return CommandResult(1, "", self.sbatch_error)
         if self.fail_sbatch_after is not None and self.count("sbatch") > self.fail_sbatch_after:
             return CommandResult(1, "", "sbatch: error: Batch job submission failed: QOS limit")
         self.scripts.append(Path(argv[-1]).read_text())

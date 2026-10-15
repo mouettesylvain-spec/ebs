@@ -206,6 +206,7 @@ def _resources(name: str, resources: Resources, scope: Scope) -> Resources:
         mem=mem,
         time=time,
         max_parallel=resources.max_parallel,
+        constraint=resources.constraint,
     )
 
 

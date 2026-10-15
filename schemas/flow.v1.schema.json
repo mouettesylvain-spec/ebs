@@ -346,6 +346,19 @@
           ],
           "default": null,
           "title": "Max Parallel"
+        },
+        "constraint": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9_.:-]+(&[A-Za-z0-9_.:-]+)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Constraint"
         }
       },
       "title": "Resources",
@@ -454,13 +467,14 @@
             "cpus": null,
             "mem": null,
             "time": null,
-            "max_parallel": null
+            "max_parallel": null,
+            "constraint": null
           }
         },
         "licenses": {
           "default": {},
           "patternProperties": {
-            "^[A-Za-z0-9_][A-Za-z0-9_.@-]*$": {
+            "^[A-Za-z0-9_.-]+(@[A-Za-z0-9_.-]+)?$": {
               "exclusiveMinimum": 0,
               "type": "integer"
             }
@@ -569,7 +583,7 @@
         "licenses": {
           "default": {},
           "patternProperties": {
-            "^[A-Za-z0-9_][A-Za-z0-9_.@-]*$": {
+            "^[A-Za-z0-9_.-]+(@[A-Za-z0-9_.-]+)?$": {
               "exclusiveMinimum": 0,
               "type": "integer"
             }
@@ -584,7 +598,8 @@
             "cpus": null,
             "mem": null,
             "time": null,
-            "max_parallel": null
+            "max_parallel": null,
+            "constraint": null
           }
         }
       },

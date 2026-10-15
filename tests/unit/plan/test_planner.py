@@ -15,6 +15,7 @@ from ebs.cas.fs import FsCAS
 from ebs.core.clock import FakeClock
 from ebs.core.digest import Digest, hash_bytes
 from ebs.core.errors import PlanError
+from ebs.exec.slurm.licenses import license_request
 from ebs.plan.keys import compute_key, nondeterministic_output_id
 from ebs.plan.planner import Planner, Snapshotter
 from ebs.plan.types import (
@@ -419,6 +420,39 @@ def test_toolchain_defaults_merge_with_step(cas: FsCAS, tmp_path: Path) -> None:
     step["resources"] = {"max_parallel": 2}
     (action,) = p.plan(flow({"s": step}, toolchains=toolchains), base=tmp_path).actions
     assert action.resources.max_parallel == 2  # the step wins
+    assert action.resources.constraint is None
+
+    # P1-03 R4: the toolchain's node constraint applies; a step's is ANDed to it.
+    toolchains["questa"]["resources"] = {"constraint": "avx512"}
+    (action,) = p.plan(flow({"s": step}, toolchains=toolchains), base=tmp_path).actions
+    assert action.resources.constraint == "avx512"
+    step["resources"] = {"constraint": "bigmem&avx512"}
+    (action,) = p.plan(flow({"s": step}, toolchains=toolchains), base=tmp_path).actions
+    assert action.resources.constraint == "avx512&bigmem"
+
+
+# P1-03 R1: the step overrides the toolchain per feature, also when a server is pinned.
+@pytest.mark.parametrize(
+    ("toolchain", "step", "expected"),
+    [
+        ({"simfeat@other": 1}, {"simfeat": 2}, {"simfeat": 2}),
+        ({"simfeat": 1}, {"simfeat@other": 2}, {"simfeat@other": 2}),
+        ({"simfeat@flexlm": 1, "qvip": 1}, {"simfeat": 3}, {"qvip": 1, "simfeat": 3}),
+    ],
+)
+def test_license_merge_per_feature(
+    cas: FsCAS,
+    tmp_path: Path,
+    toolchain: dict[str, int],
+    step: dict[str, int],
+    expected: dict[str, int],
+) -> None:
+    toolchains = {"questa": {"module": "questa/2025.2", "licenses": toolchain}}
+    s = {"kind": "shell", "toolchain": "questa", "command": ["x"], "licenses": step}
+    p, _ = planner(cas, RTL)
+    (action,) = p.plan(flow({"s": s}, toolchains=toolchains), base=tmp_path).actions
+    assert action.licenses == expected
+    license_request(action.licenses, server="flexlm", fuzzy=False)  # one entry per license
 
 
 def test_unknown_kind_is_a_plan_error(cas: FsCAS, tmp_path: Path) -> None:

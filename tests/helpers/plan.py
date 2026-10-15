@@ -292,12 +292,17 @@ def sample_spec(**overrides: Any) -> ActionSpec:
 
 
 def resources(
-    cpus: int | None, mem: int | None, time: int | None, max_parallel: int | None = None
+    cpus: int | None,
+    mem: int | None,
+    time: int | None,
+    max_parallel: int | None = None,
+    constraint: str | None = None,
 ) -> Resources:
     return Resources.model_construct(
-        _fields_set={"cpus", "mem", "time", "max_parallel"},
+        _fields_set={"cpus", "mem", "time", "max_parallel", "constraint"},
         cpus=cpus,
         mem=mem,
         time=time,
         max_parallel=max_parallel,
+        constraint=constraint,
     )

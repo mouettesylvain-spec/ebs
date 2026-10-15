@@ -64,7 +64,13 @@ def test_table() -> None:
         {"table": "regression.csv"},
         params={"test": "${row.test}", "seed": "${row.seed}", "plusargs": "${row.plusargs}"},
         env={"SEED": "${params.seed}"},
-        resources={"cpus": 1, "mem": "4G", "time": "${row.timeout}", "max_parallel": 2},
+        resources={
+            "cpus": 1,
+            "mem": "4G",
+            "time": "${row.timeout}",
+            "max_parallel": 2,
+            "constraint": "avx512",
+        },
     )
     assert step.matrix is not None
     tables = load_matrix_tables(step.matrix, FIXTURES)
@@ -79,6 +85,7 @@ def test_table() -> None:
     assert dict(last.env) == {"SEED": "17"}
     assert (last.resources.cpus, last.resources.mem, last.resources.time) == (1, 4 << 30, 3600)
     assert last.resources.max_parallel == 2  # P1-02 R2: kept through expansion
+    assert last.resources.constraint == "avx512"  # P1-03 R4: likewise
     assert last.step is step
     assert last.row_origin == "regression.csv:6"
     assert last.resources.model_fields_set == step.resources.model_fields_set
