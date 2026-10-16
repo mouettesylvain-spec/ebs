@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from tests.fakes.slurm.core import (
+    NODE,
     RELEASE,
     TERMINAL,
     State,
@@ -159,6 +160,7 @@ def sbatch(st: State, argv: Sequence[str]) -> str:
     p.add_argument("-t", "--time")
     p.add_argument("-L", "--licenses")
     p.add_argument("-C", "--constraint", default="")
+    p.add_argument("-x", "--exclude", default="")
     p.add_argument("-a", "--array")
     p.add_argument("-o", "--output")
     p.add_argument("-e", "--error")
@@ -192,7 +194,7 @@ def sbatch(st: State, argv: Sequence[str]) -> str:
     for name, n in licenses.items():
         if n > int(cfg["licenses"].get(name, 0)):
             raise SlurmError(fail + "Invalid license specification")
-    if a.cpus_per_task > int(cfg["cpus"]):
+    if a.cpus_per_task > int(cfg["cpus"]) or NODE in a.exclude.split(","):
         raise SlurmError(fail + "Requested node configuration is not available")
     time_s = parse_time(a.time) if a.time else None
     mem_mb = parse_mem(a.mem) if a.mem else None

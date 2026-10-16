@@ -5,7 +5,10 @@ action cache, and submitted on a miss, only once every producer has succeeded an
 known. Cache hits cost no executor call. Results arrive through `executor.poll` (state) and the
 MetadataStore (`get_result`: the manifest the runner posted); their output ids feed
 `Planner.refine`, which completes downstream keys (deterministic outputs give early cutoff).
-Infrastructure failures are retried by a `RetryPolicy` and never cached (I12).
+Infrastructure failures are retried by a `RetryPolicy` and never cached (I12). Each attempt is
+numbered in the events (`submitted`, `infra_failed`), and an action's final `finished` event
+lists the reasons of its failed attempts (P1-05 R2). A node with `NODE_FAIL_LIMIT` node
+failures in this build is excluded from every later submission (R3).
 
 Action states follow `ebs.meta.api.TRANSITIONS`. `skipped` = never started, because a producer
 did not succeed or the build stopped after a failure (no `keep_going`); `cancelled` = the user
@@ -16,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import threading
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Literal, NoReturn, Protocol, TypeAlias
@@ -27,6 +31,7 @@ from ebs.core.errors import ConfigError, ExecutorError
 from ebs.core.log import get_logger
 from ebs.driver.cache_policy import CachePolicy
 from ebs.driver.events import EventLog
+from ebs.driver.resources_tuning import UsageSample
 from ebs.driver.retry import RetryPolicy
 from ebs.exec.api import Executor, ExecutorBusy, JobHandle, JobStatus, SubmitBatch
 from ebs.gc.access import put_registered
@@ -48,6 +53,15 @@ FinalState: TypeAlias = Literal["done", "failed", "infra_failed", "cached", "ski
 
 MAX_MISSED_POLLS = 10
 """Polls in a row that may omit a submitted job before the driver counts it as lost."""
+
+NODE_FAIL_LIMIT = 2
+"""`node_fail`s on one node, in one build, after which the build stops using it (P1-05 R3)."""
+
+INPUT_VERIFICATION_HINT = (
+    "staged inputs did not match their digests (see `reasons` for every attempt): the CAS "
+    "object is probably corrupt, or the NFS view stale; check it with `ebs fetch` of the "
+    "inputs, and report it to the CAS administrators"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +147,12 @@ class Scheduler:
         self._cancel_requested = False
         self._wake = threading.Event()  # set by request_cancel: ends a real-clock wait early
         self.cancelled = False
+        self._reasons: dict[str, list[InfraReason]] = {}  # failed attempts' reasons (R2)
+        self._submissions: Counter[str] = Counter()  # attempts submitted, per action
+        self.usage: list[UsageSample] = []  # of actions that ran and passed (P1-05 R4)
+        self._node_fails: Counter[str] = Counter()  # node_fail per node (R3)
+        self._excluded: set[str] = set()  # nodes this build no longer uses (R3)
+        self._avoid: dict[str, set[str]] = {}  # per action: nodes its retries avoid
         self._lease = lease  # GC roots of this build (P1-09 R2)
         self._touched: set[Digest] = set()  # cache-hit objects, touched once per pass (R1)
 
@@ -298,6 +318,7 @@ class Scheduler:
                 spec.step,
                 spec.resources.model_dump_json(),
                 tuple(sorted(spec.licenses.items())),
+                tuple(sorted(self._avoid.get(spec.action_id, ()))),
             )
             groups.setdefault(group_key, []).append(spec)
         size = self._config.max_batch
@@ -312,11 +333,13 @@ class Scheduler:
             if self._store_state[action_id] == "infra_failed":
                 self._set_state(action_id, "queued")  # infra_failed -> queued: the retry
             del self._retry_at[action_id]
+        avoid = set().union(*(self._avoid.get(s.action_id, set()) for s in specs))
         batch = SubmitBatch(
             plan=self._stored_plan(),
             domain=self._plan.domain,
             build=self._build,
             actions=tuple(specs),
+            exclude_nodes=tuple(sorted(self._excluded | avoid)),
         )
         try:
             handles = self._executor.submit(batch)
@@ -343,6 +366,7 @@ class Scheduler:
             )
         for spec, handle in zip(specs, handles, strict=True):
             self._inflight[handle] = spec.action_id
+            self._submissions[spec.action_id] += 1
             self._events.emit(
                 "submitted",
                 spec.action_id,
@@ -422,7 +446,10 @@ class Scheduler:
         elif status.state == "infra_failed":
             del self._inflight[handle]
             self._infra_failed(
-                action_id, status.infra_reason or "other", exit_code=status.exit_code
+                action_id,
+                status.infra_reason or "other",
+                exit_code=status.exit_code,
+                node=status.node,
             )
         else:  # cancelled without our asking (e.g. by an admin): an infrastructure failure
             del self._inflight[handle]
@@ -432,7 +459,10 @@ class Scheduler:
         result = self._store.get_result(self._build, action_id)
         if result is None:
             self._infra_failed(
-                action_id, "runner_crash", detail="the job ended but no result was posted"
+                action_id,
+                "runner_crash",
+                detail="the job ended but no result was posted",
+                node=status.node,
             )
             return
         self._ensure_running(action_id, key)
@@ -450,9 +480,13 @@ class Scheduler:
             state=state,
             exit_code=result.exit_code,
             job_exit=status.exit_code,
+            **self._history(action_id),
         )
         if state == "done":
-            self._succeeded(self._plan.action(action_id), result)
+            spec = self._plan.action(action_id)
+            use = result.resources
+            self.usage.append(UsageSample(spec.step, use.max_rss_kb, use.cpu_s, use.wall_s))
+            self._succeeded(spec, result)
         else:
             self._failed(action_id)
 
@@ -463,32 +497,67 @@ class Scheduler:
         *,
         exit_code: int | None = None,
         detail: str | None = None,
+        node: str | None = None,
     ) -> None:
         self._set_state(action_id, "infra_failed", infra_reason=reason)
         self._retry_reason[action_id] = reason
-        data: dict[str, object] = {"reason": reason}
+        earlier = tuple(self._reasons.get(action_id, ()))
+        self._reasons.setdefault(action_id, []).append(reason)
+        attempt = self._attempts[action_id] = self._attempts.get(action_id, 0) + 1
+        data: dict[str, object] = {"reason": reason, "attempt": attempt}
         if exit_code is not None:
             data["exit_code"] = exit_code
         if detail is not None:
             data["detail"] = detail[:1000]
+        if node is not None:
+            data["node"] = node
+            if reason == "node_fail" and self._count_node_fail(node):
+                data["excluded_node"] = node
         self._events.emit("infra_failed", action_id, **data)
-        attempt = self._attempts[action_id] = self._attempts.get(action_id, 0) + 1
         spec = self._plan.action(action_id)
-        decision = None if self._stopping else self._retry.decide(spec, attempt, reason)
+        decision = (
+            None if self._stopping else self._retry.decide(spec, attempt, reason, earlier=earlier)
+        )
         if decision is None:
             if not self._stopping:
                 self.infra_exhausted.add(action_id)  # retries really used up: build exits 3
             self._final[action_id] = "infra_failed"
-            self._events.emit("finished", action_id, state="infra_failed", attempts=attempt)
+            final: dict[str, object] = {}
+            if reason == "input_verification" and not self._stopping:
+                final["hint"] = INPUT_VERIFICATION_HINT
+                _log.error("driver.input_verification_failed", action=action_id, attempts=attempt)
+            self._events.emit(
+                "finished", action_id, state="infra_failed", **self._history(action_id), **final
+            )
             self._failed(action_id)
             return
         # The action stays infra_failed until it is resubmitted (or abandoned if the build stops).
+        if decision.avoid_node and node is not None:
+            self._avoid.setdefault(action_id, set()).add(node)
         if decision.resources is not None and decision.resources != spec.resources:
             self._replace(dataclasses.replace(spec, resources=decision.resources))
         self._retry_at[action_id] = self._clock.monotonic() + decision.delay_s
         self._events.emit(
             "retrying", action_id, attempt=attempt + 1, delay_ms=round(decision.delay_s * 1000)
         )
+
+    def _count_node_fail(self, node: str) -> bool:
+        """Count a node failure; True when it makes the build exclude `node` (R3)."""
+        self._node_fails[node] += 1
+        if node in self._excluded or self._node_fails[node] < NODE_FAIL_LIMIT:
+            return False
+        self._excluded.add(node)
+        _log.warning("driver.node_excluded", node=node, node_fails=self._node_fails[node])
+        return True
+
+    def _history(self, action_id: str) -> dict[str, object]:
+        """`attempts` and `reasons` for a `finished` event, if any attempt failed (R2)."""
+        reasons = self._reasons.get(action_id)
+        if not reasons:
+            return {}
+        # A failed submit counts as an attempt without a submission.
+        attempts = max(self._submissions.get(action_id, 0), self._attempts.get(action_id, 0))
+        return {"attempts": attempts, "reasons": list(reasons)}
 
     # --- outcomes -------------------------------------------------------------------------------
 
@@ -523,8 +592,8 @@ class Scheduler:
             "finished",
             action_id,
             state="infra_failed",
-            attempts=self._attempts[action_id],
             reason="retry abandoned: build stopped",
+            **self._history(action_id),
         )
 
     def _skip(self, action_id: str, blocked_by: list[str]) -> None:
@@ -578,7 +647,9 @@ class Scheduler:
                     self._set_state(action_id, "queued")
                 self._set_state(action_id, "cancelled")
                 self._final[action_id] = "cancelled"
-                self._events.emit("finished", action_id, state="cancelled")
+                self._events.emit(
+                    "finished", action_id, state="cancelled", **self._history(action_id)
+                )
         self._inflight.clear()
         self._retry_at.clear()
 

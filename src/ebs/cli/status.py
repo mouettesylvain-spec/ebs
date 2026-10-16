@@ -2,7 +2,8 @@
 
 States come from the driver's events (`.ebs/builds/<uuid>/events.jsonl`), so status works
 without the metadata store; pending actions are split by reason (`pending: licenses`,
-`pending: resources`, …). `--watch` redraws until the build finishes.
+`pending: resources`, …). Actions with infrastructure failures are listed with every attempt's
+reason and node (P1-05 R2). `--watch` redraws until the build finishes.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from ebs.cli._output import Output, handle_errors, make_output
 from ebs.cli._records import BuildRecord, action_states, build_status, find_build
 from ebs.cli.plan import JSON_OPTION
 from ebs.driver.events import Event
+from ebs.driver.retry import attempt_history
 
 __all__ = ["status_command"]
 
@@ -42,6 +44,16 @@ def status_document(record: BuildRecord, events: list[Event]) -> dict[str, Any]:
     for action_id, state in states.items():
         per_step.setdefault(record.actions.get(action_id, "?"), Counter())[state] += 1
     totals = Counter(states.values())
+    history = attempt_history(events)
+    retries = [
+        {
+            "action_id": action_id,
+            "state": states.get(action_id, "?"),
+            "attempts": [a.to_json() for a in attempts],
+        }
+        for action_id, attempts in history.items()
+        if any(a.reason is not None for a in attempts)
+    ]
     return {
         "v": 1,
         "uuid": str(record.uuid),
@@ -54,6 +66,7 @@ def status_document(record: BuildRecord, events: list[Event]) -> dict[str, Any]:
             for step, c in per_step.items()
         ],
         "totals": _sorted(totals),
+        "retries": retries,
     }
 
 
@@ -71,6 +84,21 @@ def _print(out: Output, doc: dict[str, Any]) -> None:
             step["step"], str(step["actions"]), *(str(step["states"].get(s, 0)) for s in columns)
         )
     out.out.print(table)
+    if doc["retries"]:
+        out.line("infrastructure failures:")
+    for entry in doc["retries"]:
+        attempts = entry["attempts"]
+        failures = ", ".join(_failure(a) for a in attempts if a["reason"] is not None)
+        plural = "s" if len(attempts) != 1 else ""
+        out.line(
+            f"  {entry['action_id']}: {entry['state']} after {len(attempts)} attempt{plural} "
+            f"({failures})"
+        )
+
+
+def _failure(attempt: dict[str, Any]) -> str:
+    node = attempt["node"]
+    return attempt["reason"] if node is None else f"{attempt['reason']} on {node}"
 
 
 @handle_errors

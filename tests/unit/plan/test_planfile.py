@@ -98,6 +98,28 @@ def test_constraint_only_when_set() -> None:
             spec_from_json(bad)
 
 
+# P1-05 R1: retry_on_timeout is written only when set, and is not in the key.
+def test_retry_on_timeout_only_when_set() -> None:
+    spec = with_key(dataclasses.replace(shell_spec("true\n"), resources=resources(2, None, 60)))
+    plain = spec_to_json(spec)
+    assert isinstance(plain, dict)
+    assert plain["resources"] == {"cpus": 2, "mem": None, "time": 60}
+    for value in (True, False):
+        retried = dataclasses.replace(
+            spec, resources=resources(2, None, 60, retry_on_timeout=value)
+        )
+        doc = spec_to_json(retried)
+        assert isinstance(doc, dict)
+        assert doc["resources"] == {"cpus": 2, "mem": None, "time": 60, "retry_on_timeout": value}
+        assert spec_from_json(json.loads(canonical_json(doc))) == retried
+        assert with_key(dataclasses.replace(retried, key=None)).key == spec.key
+    for bad_value in ("yes", 1, None):
+        bad = json.loads(canonical_json(spec_to_json(retried)))
+        bad["resources"]["retry_on_timeout"] = bad_value
+        with pytest.raises(PlanError, match="retry_on_timeout"):
+            spec_from_json(bad)
+
+
 # R8
 def test_roundtrip(cas: FsCAS, tmp_path: Path) -> None:
     p, _ = planner(cas, RTL)

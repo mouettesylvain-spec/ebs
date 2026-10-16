@@ -430,6 +430,15 @@ def test_toolchain_defaults_merge_with_step(cas: FsCAS, tmp_path: Path) -> None:
     (action,) = p.plan(flow({"s": step}, toolchains=toolchains), base=tmp_path).actions
     assert action.resources.constraint == "avx512&bigmem"
 
+    # P1-05 R1: retry_on_timeout is a default of the toolchain the step may override.
+    assert action.resources.retry_on_timeout is None
+    toolchains["questa"]["resources"] = {"retry_on_timeout": True}
+    (action,) = p.plan(flow({"s": step}, toolchains=toolchains), base=tmp_path).actions
+    assert action.resources.retry_on_timeout is True
+    step["resources"] = {"retry_on_timeout": False}
+    (action,) = p.plan(flow({"s": step}, toolchains=toolchains), base=tmp_path).actions
+    assert action.resources.retry_on_timeout is False
+
 
 # P1-03 R1: the step overrides the toolchain per feature, also when a server is pinned.
 @pytest.mark.parametrize(

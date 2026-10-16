@@ -448,6 +448,8 @@ class Resources(_Model):
     time: Duration | None = None
     max_parallel: MaxParallel | None = None  # array throttle; overrides [slurm].array_throttle
     constraint: Constraint | None = None  # node features (SLURM --constraint), ANDed (P1-03)
+    # P1-05: retry after a time-limit kill (usually a hang, so not by default; [retry] default)
+    retry_on_timeout: StrictBool | None = None
 
 
 class ToolchainRef(_Model):

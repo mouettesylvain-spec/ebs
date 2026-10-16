@@ -27,6 +27,7 @@ from ebs.cli._records import BuildRecord, action_states, build_dir
 from ebs.cli.plan import FLOW_OPTION, STEPS_ARGUMENT, make_plan
 from ebs.core.errors import ConfigError, ExitCode
 from ebs.driver.build import BuildOutcome, run_build
+from ebs.driver.retry import ReasonRetry, RetrySettings
 from ebs.driver.scheduler import DriverConfig
 from ebs.gc.access import put_registered
 from ebs.meta.api import BuildStatus, CacheMode, Event, MetadataStore
@@ -192,6 +193,7 @@ def build_command(
     store = services.store(required=True)
     if store is None:  # pragma: no cover - required=True raises instead
         raise ConfigError("no metadata store")
+    retry = ReasonRetry(RetrySettings.from_config(services.config()))  # bad [retry]: fail early
     planned = make_plan(services, out, flow_file, targets=steps or (), rehash=rehash)
     view = _View(out, planned.plan, services, planned.path)
     tapped = cast(MetadataStore, _Tap(store, view.on_event))
@@ -216,6 +218,7 @@ def build_command(
                     cache_mode=mode, rerun_failed=rerun_failed, keep_going=keep_going
                 ),
                 clock=services.clock,
+                retry=retry,
                 handle_sigint=True,
             )
     except BaseException as exc:

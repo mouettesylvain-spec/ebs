@@ -297,12 +297,14 @@ def resources(
     time: int | None,
     max_parallel: int | None = None,
     constraint: str | None = None,
+    retry_on_timeout: bool | None = None,
 ) -> Resources:
     return Resources.model_construct(
-        _fields_set={"cpus", "mem", "time", "max_parallel", "constraint"},
+        _fields_set={"cpus", "mem", "time", "max_parallel", "constraint", "retry_on_timeout"},
         cpus=cpus,
         mem=mem,
         time=time,
         max_parallel=max_parallel,
         constraint=constraint,
+        retry_on_timeout=retry_on_timeout,
     )

@@ -12,12 +12,13 @@ Action layout (one object per action, in plan order):
                                                 | {"type": "output", "action", "output"}
                                                 | {"type": "import", "name", "path"}}],
      "outputs": [{"name", "path", "type", "deterministic", "optional"}],
-     "config_files": {...}, "resources": {"cpus", "mem", "time"[, "max_parallel"][, "constraint"]},
+     "config_files": {...}, "resources": {"cpus", "mem", "time"[, "max_parallel"][, "constraint"]
+                    [, "retry_on_timeout"]},
      "licenses": {...}, "debug": {"collect", "max_size", "on_success"}, "domain", "key"}
 
 Resources are integers (count, bytes, seconds) or null. `max_parallel` (P1-02, a positive
-integer) and `constraint` (P1-03, node features joined by `&`) are present only when set, so
-plans that do not use them encode exactly as before.
+integer), `constraint` (P1-03, node features joined by `&`) and `retry_on_timeout` (P1-05, a
+boolean) are present only when set, so plans that do not use them encode exactly as before.
 """
 
 from __future__ import annotations
@@ -119,6 +120,7 @@ def spec_to_json(spec: ActionSpec) -> JsonValue:
             "time": res.time,
             **({} if res.max_parallel is None else {"max_parallel": res.max_parallel}),
             **({} if res.constraint is None else {"constraint": res.constraint}),
+            **({} if res.retry_on_timeout is None else {"retry_on_timeout": res.retry_on_timeout}),
         },
         "licenses": dict(spec.licenses),
         "debug": {
@@ -330,13 +332,17 @@ def _resources(value: object, path: str) -> Resources:
         constraint = doc["constraint"]
         if not isinstance(constraint, str) or _CONSTRAINT_RE.fullmatch(constraint) is None:
             raise _fail(f"{path}.constraint", "node features joined by '&'", constraint)
+    retry_on_timeout = None
+    if "retry_on_timeout" in doc:
+        retry_on_timeout = _bool(doc["retry_on_timeout"], f"{path}.retry_on_timeout")
     return Resources.model_construct(
-        _fields_set={"cpus", "mem", "time", "max_parallel", "constraint"},
+        _fields_set={"cpus", "mem", "time", "max_parallel", "constraint", "retry_on_timeout"},
         cpus=_get(doc, "cpus", path, _opt_int),
         mem=_get(doc, "mem", path, _opt_int),
         time=_get(doc, "time", path, _opt_int),
         max_parallel=max_parallel,
         constraint=constraint,
+        retry_on_timeout=retry_on_timeout,
     )
 
 

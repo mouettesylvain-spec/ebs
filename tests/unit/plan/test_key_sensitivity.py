@@ -185,6 +185,10 @@ EXCLUDED: dict[str, Mutation] = {
     "resources.constraint": lambda s, d: _replace(
         s, resources=resources(None, None, None, constraint=d.draw(st.sampled_from(CONSTRAINTS)))
     ),
+    # P1-05 R1: how infrastructure failures are retried never reaches the key either.
+    "resources.retry_on_timeout": lambda s, d: _replace(
+        s, resources=resources(None, None, None, retry_on_timeout=d.draw(st.booleans()))
+    ),
     "debug": lambda s, d: _replace(s, debug=DebugSpec(("*.log",), 1 << 20, True)),
     "domain": lambda s, d: _replace(s, domain="other-nda"),
     "runtime_env": lambda s, d: _replace(s, runtime_env={"MAKEFLAGS": "-j8"}),

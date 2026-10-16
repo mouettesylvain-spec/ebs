@@ -192,3 +192,52 @@ def _exited_pid() -> int:
     proc = subprocess.Popen(["true"])
     proc.wait()
     return proc.pid
+
+
+# P1-05 R2: the final status shows the reason history of retried actions.
+def test_retry_history(site: Site) -> None:
+    events = [
+        ("submitted", "sim[test=a]", {"job_id": "1", "attempt": 1, "batch_size": 1}),
+        ("infra_failed", "sim[test=a]", {"reason": "node_fail", "attempt": 1, "node": "n1"}),
+        ("retrying", "sim[test=a]", {"attempt": 2, "delay_ms": 10000}),
+        ("submitted", "sim[test=a]", {"job_id": "2", "attempt": 2, "batch_size": 1}),
+        ("infra_failed", "sim[test=a]", {"reason": "oom", "attempt": 2, "node": "n2"}),
+        ("retrying", "sim[test=a]", {"attempt": 3, "delay_ms": 20000}),
+        ("submitted", "sim[test=a]", {"job_id": "3", "attempt": 3, "batch_size": 1}),
+        (
+            "finished",
+            "sim[test=a]",
+            {"state": "done", "attempts": 3, "reasons": ["node_fail", "oom"]},
+        ),
+        ("submitted", "sim[test=b]", {"job_id": "4", "attempt": 1, "batch_size": 1}),
+        ("infra_failed", "sim[test=b]", {"reason": "timeout", "attempt": 1}),
+        (
+            "finished",
+            "sim[test=b]",
+            {"state": "infra_failed", "attempts": 1, "reasons": ["timeout"]},
+        ),
+        ("submitted", "sim[test=c]", {"job_id": "5", "attempt": 1, "batch_size": 1}),
+        ("finished", "sim[test=c]", {"state": "done"}),
+    ]
+    write_build(site.proj, U1, ACTIONS, events)
+    doc = json.loads(site.invoke(["status", "--json"]).stdout)
+    assert doc["retries"] == [
+        {
+            "action_id": "sim[test=a]",
+            "state": "done",
+            "attempts": [
+                {"attempt": 1, "job_id": "1", "node": "n1", "reason": "node_fail"},
+                {"attempt": 2, "job_id": "2", "node": "n2", "reason": "oom"},
+                {"attempt": 3, "job_id": "3", "node": None, "reason": None},
+            ],
+        },
+        {
+            "action_id": "sim[test=b]",
+            "state": "infra_failed",
+            "attempts": [{"attempt": 1, "job_id": "4", "node": None, "reason": "timeout"}],
+        },
+    ]
+    out = site.invoke(["status"]).stdout
+    assert "sim[test=a]: done after 3 attempts (node_fail on n1, oom on n2)" in out
+    assert "sim[test=b]: infra_failed after 1 attempt (timeout)" in out
+    assert "sim[test=c]" not in out.split("infrastructure failures:")[-1]

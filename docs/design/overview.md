@@ -126,6 +126,18 @@ grace_hours = 24               # cache rows go first, their bytes this much late
 tmp_max_age_hours = 24         # abandoned uploads in <cas root>/<domain>/tmp/
 # TTL and quota are per domain, in the `domains` table (ttl_days, quota_bytes, *_water)
 
+[retry]                        # P1-05: infrastructure failures (I12); test failures never retry
+max_retries = 2                # retries per action, whatever the reason
+backoff_s = 10                 # wait backoff_s * backoff_factor^(n-1), at most backoff_max_s
+backoff_factor = 2
+backoff_max_s = 300
+oom_mem_factor = 1.5           # oom: next attempt asks for mem x this (rounded up to a MiB)
+# max_mem = "256G"             # oom: never ask for more; at the cap the OOM is final
+license_backoff_s = 60         # license: wait this x attempt number
+retry_on_timeout = false       # timeout: default for steps without resources.retry_on_timeout
+input_verification_retries = 1 # runner exit 76: retries, each on another node; then it fails
+# A node with 2 node_fail in one build is excluded (--exclude) for the rest of that build.
+
 [slurm]                        # P1
 default_partition = ""
 max_array_size = 1000

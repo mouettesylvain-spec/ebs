@@ -56,11 +56,18 @@ def _signed_exit(info: SlurmJobInfo) -> int | None:
 
 
 def job_status(info: SlurmJobInfo, *, infra_reason: InfraReason | None = None) -> JobStatus:
-    """The executor-level status of a SLURM job.
+    """The executor-level status of a SLURM job, with the node it ran on when SLURM says.
 
     `infra_reason` is the runner's own reason, parsed by the caller from the runner's stderr
     (interfaces.md § 9); it only matters for runner exit 75.
     """
+    status = _status(info, infra_reason)
+    if info.node is not None and status.state != "pending":
+        return status.model_copy(update={"node": info.node})
+    return status
+
+
+def _status(info: SlurmJobInfo, infra_reason: InfraReason | None) -> JobStatus:
     state = info.state
     if state in _PENDING_STATES:
         return JobStatus(state="pending", pending_reason=pending_reason(info.reason))

@@ -103,6 +103,7 @@ def test_resources_dump_round_trips() -> None:
         "time": "90m",
         "max_parallel": None,
         "constraint": None,
+        "retry_on_timeout": None,
     }
     assert Resources.model_validate(res.model_dump()) == res
 
@@ -228,6 +229,15 @@ def test_resources_constraint() -> None:
             Resources.model_validate({"constraint": value})
 
 
+# P1-05 R1: a step (or its toolchain) may ask for timeouts to be retried.
+def test_resources_retry_on_timeout() -> None:
+    assert Resources.model_validate({"retry_on_timeout": True}).retry_on_timeout is True
+    assert Resources().retry_on_timeout is None
+    for value in ("yes", 1, "${row.retry}"):
+        with pytest.raises(ValidationError, match="retry_on_timeout"):
+            Resources.model_validate({"retry_on_timeout": value})
+
+
 # P1-02 R2: per-step array throttle; a literal positive integer.
 def test_resources_max_parallel() -> None:
     assert Resources.model_validate({"max_parallel": 8}).max_parallel == 8
@@ -238,6 +248,7 @@ def test_resources_max_parallel() -> None:
         "time": None,
         "max_parallel": 3,
         "constraint": None,  # P1-03
+        "retry_on_timeout": None,  # P1-05
     }
     for value in (0, -1, True, "4", "${row.n}", 1.5):
         with pytest.raises(ValidationError, match="max_parallel"):

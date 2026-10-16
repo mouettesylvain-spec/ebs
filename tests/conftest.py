@@ -11,6 +11,7 @@ from collections.abc import Generator
 from pathlib import Path
 
 import pytest
+import structlog
 
 from ebs.cas.fs import FsCAS
 from ebs.core.clock import FakeClock
@@ -155,6 +156,15 @@ def pytest_make_collect_report(
 ) -> Generator[None, pytest.CollectReport, None]:
     outcome = yield
     _escalate(outcome.get_result(), collector.path)
+
+
+@pytest.fixture(autouse=True)
+def _restore_logging_config() -> Generator[None, None, None]:
+    """Undo a test's `configure_logging` (every CLI invocation calls it): its level filter would
+    otherwise outlive the test and hide log lines from later `capture_logs` assertions."""
+    saved = structlog.get_config()
+    yield
+    structlog.configure(**saved)
 
 
 @pytest.fixture

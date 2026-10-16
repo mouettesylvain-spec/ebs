@@ -117,7 +117,10 @@ def write_site(root: Path, *, flow: str = FLOW, config_extra: str = "") -> None:
     (root / "config.toml").write_text(
         f'[cas]\nroot = "{root / "cas"}"\n'
         f'[scratch]\ndir = "{root / "scratch"}"\n'
-        f'[stat_cache]\npath = "{root / "statcache.sqlite"}"\n' + config_extra
+        f'[stat_cache]\npath = "{root / "statcache.sqlite"}"\n'
+        # No random audit of stat-cache hits (1 % by default): CLI tests must be deterministic,
+        # and test_plan's poisoned-cache control would fail whenever the audit picked it.
+        "audit_fraction = 0\n" + config_extra
     )
 
 

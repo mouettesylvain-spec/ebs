@@ -207,6 +207,7 @@ def _resources(name: str, resources: Resources, scope: Scope) -> Resources:
         time=time,
         max_parallel=resources.max_parallel,
         constraint=resources.constraint,
+        retry_on_timeout=resources.retry_on_timeout,
     )
 
 

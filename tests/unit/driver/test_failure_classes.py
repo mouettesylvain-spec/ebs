@@ -68,7 +68,11 @@ def test_test_failure_cached_not_retried(env: Env) -> None:
 def test_retry_hook_can_change_resources(env: Env) -> None:
     class MoreMemory:
         def decide(
-            self, spec: ActionSpec, attempt: int, reason: InfraReason
+            self,
+            spec: ActionSpec,
+            attempt: int,
+            reason: InfraReason,
+            earlier: tuple[InfraReason, ...] = (),
         ) -> RetryDecision | None:
             if attempt > 1:
                 return None

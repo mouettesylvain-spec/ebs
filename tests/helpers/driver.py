@@ -144,6 +144,7 @@ class Script:
     outputs: dict[str, bytes] = field(default_factory=dict)  # content per output name
     omit: frozenset[str] = frozenset()  # outputs the "tool" does not produce
     ignores_cancel: bool = False  # the job finishes anyway (it was already ending)
+    nodes: list[str] = field(default_factory=list)  # node of each attempt; the last one repeats
 
 
 @dataclass
@@ -153,6 +154,7 @@ class _Job:
     build: BuildId | None
     outcome: Outcome
     script: Script
+    node: str | None = None
     polls: int = 0
     status: JobStatus = field(
         default_factory=lambda: JobStatus(state="pending", pending_reason="resources")
@@ -195,6 +197,7 @@ class ScriptedExecutor:
         outputs: Mapping[str, bytes] | None = None,
         omit: Iterable[str] = (),
         ignores_cancel: bool = False,
+        nodes: Sequence[str] = (),
     ) -> None:
         self._scripts[action_id] = Script(
             list(outcomes) or [self._default],
@@ -203,6 +206,7 @@ class ScriptedExecutor:
             dict(outputs or {}),
             frozenset(omit),
             ignores_cancel,
+            list(nodes),
         )
 
     @property
@@ -233,8 +237,10 @@ class ScriptedExecutor:
             self._attempts[spec.action_id] = attempt + 1
             script = self._scripts.get(spec.action_id) or Script([self._default])
             outcome = script.outcomes[min(attempt, len(script.outcomes) - 1)]
+            node = script.nodes[min(attempt, len(script.nodes) - 1)] if script.nodes else None
+            assert node is None or node not in batch.exclude_nodes, f"{node} is excluded"
             handle = JobHandle(self.name, f"{spec.action_id}#{attempt + 1}", spec.action_id)
-            self._jobs[handle] = _Job(handle, spec, batch.build, outcome, script)
+            self._jobs[handle] = _Job(handle, spec, batch.build, outcome, script, node)
             self.submitted.append(spec.action_id)
             self.submitted_specs.append(spec)
             handles.append(handle)
@@ -269,7 +275,9 @@ class ScriptedExecutor:
         elif job.outcome == "hang" or job.polls <= script.pending_polls + script.running_polls:
             job.status = JobStatus(state="running")
         elif isinstance(job.outcome, tuple):
-            job.status = JobStatus(state="infra_failed", infra_reason=job.outcome[1], exit_code=75)
+            job.status = JobStatus(
+                state="infra_failed", infra_reason=job.outcome[1], exit_code=75, node=job.node
+            )
         elif job.outcome == "vanished":
             job.status = JobStatus(state="cancelled")
         elif job.outcome == "lost":
