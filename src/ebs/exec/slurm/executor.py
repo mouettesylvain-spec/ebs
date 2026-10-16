@@ -23,9 +23,10 @@ Job logs (runner stdout+stderr, including its infra line) go to
 the job scripts and env files sit next to them in `jobs/`. Job names are
 `ebs:<first 8 hex of the build UUID|local>:<step>`, the comment field holds the build UUID.
 
-Licenses, accounts, QOS and constraints are P1-03; this executor sets the partition, cpus,
-memory and time limit (the action's `resources.time` plus `JOB_TIME_GRACE_S`, so the runner's
-own timeout fires first and it can still clean up and report).
+Each sbatch call sets the partition, cpus, memory and time limit (the action's `resources.time`
+plus `JOB_TIME_GRACE_S`, so the runner's own timeout fires first and it can still clean up and
+report), and (P1-03) the licenses (`licenses`), the account and QOS of the build's project and
+kind, and the node constraint (`accounts`). None of them is part of the action key.
 """
 
 from __future__ import annotations
@@ -51,9 +52,25 @@ from ebs.exec.api import (
     JobStatus,
     SubmitBatch,
 )
+from ebs.exec.slurm.accounts import (
+    BuildKind,
+    JobPolicy,
+    QosSettings,
+    job_constraint,
+    parse_account_map,
+    parse_os_constraint,
+    parse_qos,
+)
 from ebs.exec.slurm.arrays import JobPlan, plan_jobs, store_array_map
 from ebs.exec.slurm.cli import ArraySpec, SbatchOptions, SlurmCli, write_env_file
 from ebs.exec.slurm.jobscript import render_jobscript, runner_arguments
+from ebs.exec.slurm.licenses import (
+    DEFAULT_LICENSE_SERVER,
+    batch_licenses,
+    check_license_server,
+    license_error,
+    license_request,
+)
 from ebs.exec.slurm.models import ArrayTaskId, JobId, JobRef, SlurmJobInfo
 from ebs.exec.slurm.states import job_status
 from ebs.meta.api import BuildId, MetadataStore
@@ -86,6 +103,11 @@ _SLURM_KEYS: Final = frozenset(
         "poll_min_s",
         "poll_max_s",
         "bin_dir",
+        "license_server",
+        "license_fuzzy",
+        "account_map",
+        "qos",
+        "os_constraint",
     }
 )
 
@@ -120,6 +142,11 @@ class SlurmSettings:
     poll_min_s: float = 5.0  # also how long a batch refused for too many jobs should wait
     poll_max_s: float = 60.0
     bin_dir: Path | None = None  # where sbatch & co live; None: on PATH
+    license_server: str = DEFAULT_LICENSE_SERVER  # remote licenses are `<feature>@<server>`
+    license_fuzzy: bool = False  # request `<feature>` only (RemoteFuzzyMatch)
+    account_map: Mapping[str, str] = field(default_factory=dict)  # project -> account
+    qos: QosSettings = field(default_factory=QosSettings)
+    os_constraint: str | None = None  # node feature of the OS image the toolchains need
 
     def __post_init__(self) -> None:
         for name in ("max_array_size", "array_throttle", "max_pending_jobs", "max_submits_per_min"):
@@ -148,6 +175,9 @@ class SlurmSettings:
             not isinstance(bin_dir, str) or not Path(bin_dir).is_absolute()
         ):
             raise ConfigError(f"[slurm].bin_dir must be an absolute path, got {bin_dir!r}")
+        fuzzy = section.get("license_fuzzy", False)
+        if not isinstance(fuzzy, bool):
+            raise ConfigError(f"[slurm].license_fuzzy must be true or false, got {fuzzy!r}")
         debug_root = config.get("debug", {}).get("root", "/debug")
         if not isinstance(debug_root, str) or not Path(debug_root).is_absolute():
             raise ConfigError(f"[debug].root must be an absolute path, got {debug_root!r}")
@@ -161,6 +191,13 @@ class SlurmSettings:
             poll_min_s=_seconds_key(section, "poll_min_s", 5.0),
             poll_max_s=_seconds_key(section, "poll_max_s", 60.0),
             bin_dir=Path(bin_dir) if bin_dir is not None else None,
+            license_server=check_license_server(
+                section.get("license_server", DEFAULT_LICENSE_SERVER)
+            ),
+            license_fuzzy=fuzzy,
+            account_map=parse_account_map(section.get("account_map")),
+            qos=parse_qos(section.get("qos")),
+            os_constraint=parse_os_constraint(section.get("os_constraint")),
         )
 
 
@@ -185,7 +222,11 @@ class _Submitted:
 
 
 class SlurmExecutor:
-    """Runs each action as `<runner_argv> --plan … (--action …|--array-map …) --domain …`."""
+    """Runs each action as `<runner_argv> --plan … (--action …|--array-map …) --domain …`.
+
+    `project` (the plan's) picks the SLURM account from `[slurm.account_map]` and `build_kind`
+    the QOS; both are resolved here, so a project without an account fails before any job.
+    """
 
     name = "slurm"
 
@@ -199,12 +240,21 @@ class SlurmExecutor:
         runner_argv: Sequence[str] = ("ebs-runner",),
         env: Mapping[str, str] | None = None,
         clock: Clock | None = None,
+        project: str | None = None,
+        build_kind: BuildKind = "dev",
     ) -> None:
         if not runner_argv:
             raise ExecutorError("runner_argv is empty: give the ebs-runner command to start")
         self._cli = cli
         self._cas = cas
         self._settings = settings
+        self._policy = JobPolicy.resolve(
+            account_map=settings.account_map,
+            qos=settings.qos,
+            os_constraint=settings.os_constraint,
+            project=project,
+            build_kind=build_kind,
+        )
         self._store = store
         self._runner_argv = list(runner_argv)
         if env is None:
@@ -352,19 +402,37 @@ class SlurmExecutor:
             array = None
         script = self._write_script(log_dir, batch.step, render_jobscript(argv))
         cpus, mem, time = _resources(job.actions)
+        licenses = license_request(
+            batch_licenses(job.actions),
+            server=self._settings.license_server,
+            fuzzy=self._settings.license_fuzzy,
+        )
         opts = SbatchOptions(
             job_name=f"ebs:{uuid.hex[:8] if uuid else 'local'}:{batch.step}",
             partition=self._settings.default_partition,
+            account=self._policy.account,
+            qos=self._policy.qos,
             cpus_per_task=cpus,
             mem_mb=None if mem is None else max(1, math.ceil(mem / _MIB)),
             time_limit_s=None if time is None else time + JOB_TIME_GRACE_S,
+            licenses=licenses,
+            constraint=job_constraint(
+                self._policy.os_constraint,
+                sorted({c for a in job.actions if (c := a.resources.constraint) is not None}),
+            ),
             array=array,
             output=output,
             workdir=log_dir,
             export_file=env_file,
             comment=None if uuid is None else str(uuid),
         )
-        job_id = self._cli.submit(script, opts)
+        try:
+            job_id = self._cli.submit(script, opts)
+        except ExecutorError as exc:
+            surfaced = license_error(exc, licenses, step=batch.step)
+            if surfaced is None:
+                raise
+            raise surfaced from exc
         self._submit_times.append(self._clock.monotonic())
         done.job_ids.append(job_id)
         if job.is_array:

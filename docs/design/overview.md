@@ -135,6 +135,17 @@ max_submits_per_min = 60      # sbatch calls in any 60 s window (P1-02)
 poll_min_s = 5                 # also how long a batch refused for max_pending_jobs waits
 poll_max_s = 60
 # bin_dir = "/opt/slurm/bin"   # where sbatch & co live; default: PATH
+license_server = "flexlm"      # P1-03: remote licenses are `<feature>@<server>`
+license_fuzzy = false          # true: request `<feature>` only (LicenseParameters=RemoteFuzzyMatch)
+os_constraint = ""             # node feature of the OS image, e.g. "rhel9" (--constraint)
+
+[slurm.account_map]            # P1-03: flow project => SLURM account; empty: user's default
+# rv32x-cpu = "cpu-team"
+
+[slurm.qos]                    # P1-03: per build kind; empty: SLURM default (ci/release: default)
+default = ""
+ci = ""                        # `ebs build --ci`
+release = ""
 ```
 
 ## Glossary

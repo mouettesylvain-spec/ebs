@@ -40,7 +40,9 @@ from ebs.flow.model import (
     OutputDef,
     Resources,
     StepDef,
+    and_constraints,
     input_texts,
+    merge_licenses,
     parse_memory,
 )
 from ebs.plan.graph import StepGraph
@@ -390,7 +392,7 @@ class _Run:
             outputs=outputs,
             config_files=config_files,
             resources=_merge_resources(inst.resources, tc_ref.resources if tc_ref else None, where),
-            licenses={**(tc_ref.licenses if tc_ref else {}), **step.licenses},
+            licenses=merge_licenses(tc_ref.licenses if tc_ref else {}, step.licenses),
             debug=self._debug(step, inst, where),
             domain=self._flow.domain,
             key=None,
@@ -639,7 +641,10 @@ def _check_overlaps(
 
 
 def _merge_resources(step: Resources, toolchain: Resources | None, where: str) -> Resources:
-    values: dict[str, int | None] = {}
+    # Constraints add up (both are needed on the node); the other resources are defaults.
+    values: dict[str, int | str | None] = {
+        "constraint": and_constraints(toolchain.constraint if toolchain else None, step.constraint)
+    }
     for attr in ("cpus", "mem", "time", "max_parallel"):
         value = getattr(step, attr)
         if value is None and toolchain is not None:

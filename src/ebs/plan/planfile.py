@@ -12,16 +12,18 @@ Action layout (one object per action, in plan order):
                                                 | {"type": "output", "action", "output"}
                                                 | {"type": "import", "name", "path"}}],
      "outputs": [{"name", "path", "type", "deterministic", "optional"}],
-     "config_files": {...}, "resources": {"cpus", "mem", "time"[, "max_parallel"]},
+     "config_files": {...}, "resources": {"cpus", "mem", "time"[, "max_parallel"][, "constraint"]},
      "licenses": {...}, "debug": {"collect", "max_size", "on_success"}, "domain", "key"}
 
 Resources are integers (count, bytes, seconds) or null. `max_parallel` (P1-02, a positive
-integer) is present only when set, so plans that do not use it encode exactly as before.
+integer) and `constraint` (P1-03, node features joined by `&`) are present only when set, so
+plans that do not use them encode exactly as before.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from typing import TypeVar
 
@@ -29,7 +31,7 @@ from ebs.core.canon import canonical_json
 from ebs.core.digest import Digest, hash_bytes
 from ebs.core.errors import DigestError, PlanError
 from ebs.core.types import JsonValue
-from ebs.flow.model import Resources
+from ebs.flow.model import CONSTRAINT_PATTERN, Resources
 from ebs.plan.keys import KEY_SCHEMA_VERSION, with_key
 from ebs.plan.types import (
     PLAN_FORMAT_VERSION,
@@ -62,6 +64,8 @@ __all__ = [
 ]
 
 T = TypeVar("T")
+
+_CONSTRAINT_RE = re.compile(CONSTRAINT_PATTERN, re.ASCII)
 
 
 # --- encoding ----------------------------------------------------------------------------------
@@ -114,6 +118,7 @@ def spec_to_json(spec: ActionSpec) -> JsonValue:
             "mem": res.mem,
             "time": res.time,
             **({} if res.max_parallel is None else {"max_parallel": res.max_parallel}),
+            **({} if res.constraint is None else {"constraint": res.constraint}),
         },
         "licenses": dict(spec.licenses),
         "debug": {
@@ -320,12 +325,18 @@ def _resources(value: object, path: str) -> Resources:
         max_parallel = _int(doc["max_parallel"], f"{path}.max_parallel")
         if max_parallel < 1:
             raise _fail(f"{path}.max_parallel", "a positive integer", max_parallel)
+    constraint = None
+    if "constraint" in doc:
+        constraint = doc["constraint"]
+        if not isinstance(constraint, str) or _CONSTRAINT_RE.fullmatch(constraint) is None:
+            raise _fail(f"{path}.constraint", "node features joined by '&'", constraint)
     return Resources.model_construct(
-        _fields_set={"cpus", "mem", "time", "max_parallel"},
+        _fields_set={"cpus", "mem", "time", "max_parallel", "constraint"},
         cpus=_get(doc, "cpus", path, _opt_int),
         mem=_get(doc, "mem", path, _opt_int),
         time=_get(doc, "time", path, _opt_int),
         max_parallel=max_parallel,
+        constraint=constraint,
     )
 
 

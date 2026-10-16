@@ -81,6 +81,23 @@ def test_max_parallel_only_when_set() -> None:
         spec_from_json(bad)
 
 
+# P1-03 R4: constraint is written only when set, so plans without it encode as before.
+def test_constraint_only_when_set() -> None:
+    spec = with_key(dataclasses.replace(shell_spec("true\n"), resources=resources(2, None, 60)))
+    pinned = dataclasses.replace(spec, resources=resources(2, None, 60, constraint="avx512"))
+    doc = spec_to_json(pinned)
+    assert isinstance(doc, dict)
+    assert doc["resources"] == {"cpus": 2, "mem": None, "time": 60, "constraint": "avx512"}
+    assert spec_from_json(json.loads(canonical_json(doc))) == pinned
+    # R5: not in the key.
+    assert with_key(dataclasses.replace(pinned, key=None)).key == spec.key
+    for value in ("a b", "", 3, "a|b"):
+        bad = json.loads(canonical_json(doc))
+        bad["resources"]["constraint"] = value
+        with pytest.raises(PlanError, match="constraint"):
+            spec_from_json(bad)
+
+
 # R8
 def test_roundtrip(cas: FsCAS, tmp_path: Path) -> None:
     p, _ = planner(cas, RTL)

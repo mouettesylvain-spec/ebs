@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import difflib
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Annotated, Any, NoReturn
 
 from pydantic import (
@@ -61,12 +61,16 @@ IDENT_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*$"
 
 KIND_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$"
 PROJECT_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,63}$"
-LICENSE_PATTERN = r"^[A-Za-z0-9_][A-Za-z0-9_.@-]*$"
+LICENSE_PATTERN = r"^[A-Za-z0-9_.-]+(@[A-Za-z0-9_.-]+)?$"
+"""A license feature, optionally pinned to a server: `feature` or `feature@server` (P1-03 R2)."""
+CONSTRAINT_PATTERN = r"^[A-Za-z0-9_.:-]+(&[A-Za-z0-9_.:-]+)*$"
+"""SLURM node features joined by `&` (P1-03): `--constraint` ANDs them with the OS image."""
 IMPORT_FROM_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)+$"
 
 _NAME_RE = re.compile(NAME_PATTERN, re.ASCII)
 _IDENT_RE = re.compile(IDENT_PATTERN, re.ASCII)
 _KIND_RE = re.compile(KIND_PATTERN, re.ASCII)
+_CONSTRAINT_RE = re.compile(CONSTRAINT_PATTERN, re.ASCII)
 
 _MAX_JSON_INT = 2**53 - 1  # canonical JSON range (interfaces.md § 1)
 
@@ -372,6 +376,42 @@ def _max_parallel(value: object) -> int:
     _fail("flow_max_parallel", f"max_parallel must be a positive integer, got {value!r}")
 
 
+def _constraint(value: object) -> str:
+    if isinstance(value, str) and _CONSTRAINT_RE.fullmatch(value):
+        return value
+    _fail(
+        "flow_constraint",
+        f"constraint must be node features joined by '&' (e.g. 'avx512&bigmem'), got {value!r}",
+    )
+
+
+Constraint = Annotated[
+    str,
+    PlainValidator(_constraint),
+    WithJsonSchema({"type": "string", "pattern": CONSTRAINT_PATTERN}),
+]
+"""SLURM node features the step needs, ANDed with `[slurm].os_constraint`; a literal (P1-03)."""
+
+
+def and_constraints(*exprs: str | None) -> str | None:
+    """`exprs` (each features joined by `&`) ANDed into one, in order, without repeats."""
+    features: list[str] = []
+    for expr in exprs:
+        if expr:
+            features.extend(f for f in expr.split("&") if f not in features)
+    return "&".join(features) or None
+
+
+def merge_licenses(toolchain: Mapping[str, int], step: Mapping[str, int]) -> dict[str, int]:
+    """The toolchain's licenses, overridden and extended per feature by the step's, sorted.
+
+    A feature is the name before `@`: a step's `simfeat` replaces a toolchain's `simfeat@lm2`.
+    """
+    merged = {name.split("@", 1)[0]: (name, n) for name, n in toolchain.items()}
+    merged.update({name.split("@", 1)[0]: (name, n) for name, n in step.items()})
+    return dict(sorted(merged.values()))
+
+
 MaxParallel = Annotated[
     int,
     PlainValidator(_max_parallel),
@@ -407,6 +447,7 @@ class Resources(_Model):
     mem: Memory | None = None
     time: Duration | None = None
     max_parallel: MaxParallel | None = None  # array throttle; overrides [slurm].array_throttle
+    constraint: Constraint | None = None  # node features (SLURM --constraint), ANDed (P1-03)
 
 
 class ToolchainRef(_Model):

@@ -14,7 +14,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from ebs.core.digest import hash_bytes
-from ebs.plan.keys import compute_key
+from ebs.plan.keys import action_key_document, compute_key
 from ebs.plan.types import (
     ActionSpec,
     DebugSpec,
@@ -37,6 +37,7 @@ from tests.helpers.plan_strategies import (
 )
 
 Mutation = Callable[[ActionSpec, st.DataObject], ActionSpec]
+CONSTRAINTS = ("rhel9", "rhel9&avx512", "gpu")
 
 
 def _replace(spec: ActionSpec, **changes: Any) -> ActionSpec:
@@ -177,6 +178,13 @@ EXCLUDED: dict[str, Mutation] = {
         s, resources=resources(d.draw(st.integers(1, 64)), d.draw(st.integers(1, 1 << 40)), 7)
     ),
     "licenses": lambda s, d: _replace(s, licenses={**s.licenses, "feature": 9}),
+    # P1-03 R5: SLURM scheduling choices never reach the key.
+    "licenses.server": lambda s, d: _replace(
+        s, licenses={"feature@lmsrv": d.draw(st.integers(1, 9))}
+    ),
+    "resources.constraint": lambda s, d: _replace(
+        s, resources=resources(None, None, None, constraint=d.draw(st.sampled_from(CONSTRAINTS)))
+    ),
     "debug": lambda s, d: _replace(s, debug=DebugSpec(("*.log",), 1 << 20, True)),
     "domain": lambda s, d: _replace(s, domain="other-nda"),
     "runtime_env": lambda s, d: _replace(s, runtime_env={"MAKEFLAGS": "-j8"}),
@@ -206,6 +214,20 @@ def test_included_fields_change_key(field: str, spec: ActionSpec, data: st.DataO
 def test_excluded_fields_do_not(field: str, spec: ActionSpec, data: st.DataObject) -> None:
     mutated = EXCLUDED[field](spec, data)
     assert compute_key(mutated) == compute_key(spec), field
+
+
+# P1-03 R5: account, QOS, licenses and constraints are not even named in the key document.
+@given(spec=specs())
+def test_scheduling_fields_not_in_key_document(spec: ActionSpec) -> None:
+    def keys(value: object) -> set[str]:
+        if isinstance(value, dict):
+            return set(value) | {k for v in value.values() for k in keys(v)}
+        if isinstance(value, list):
+            return {k for v in value for k in keys(v)}
+        return set()
+
+    found = keys(action_key_document(spec))
+    assert not found & {"account", "qos", "constraint", "licenses", "resources", "partition"}
 
 
 @given(spec=specs())

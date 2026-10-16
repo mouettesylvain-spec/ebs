@@ -95,6 +95,9 @@ Model details (P0-04):
 - YAML lists become tuples (`command`, `debug.collect`, `matrix.cross`/`zip_`/`id`).
 - Python names differ where YAML keys are keywords or builtins: `ImportDef.from_` (`from`) and `MatrixDef.zip_` (`zip`). `MatrixDef.tables` returns the table paths in order.
 - Steps also have `licenses: dict[str, int]`, and `ToolchainRef` has `licenses` and `resources`.
+  License names match `LICENSE_PATTERN = ^[A-Za-z0-9_.-]+(@[A-Za-z0-9_.-]+)?$` (`feature` or
+  `feature@server`; tightened in P1-03). The planner merges them with
+  `ebs.flow.model.merge_licenses(toolchain, step)`: per feature (the name before `@`), the step wins.
 - `debug` is a `DebugDef(collect, max_size, on_success)`.
 - `OutputDef(file | dir, deterministic=True, optional=False)` accepts the short form `name: path`.
 - `StepDef.inputs` values (`InputValue`) are a pattern or `${…}` reference, a list of them, or (P1-04)
@@ -103,6 +106,11 @@ Model details (P0-04):
   `(field path, text)` pairs of any form (`inputs.x`, `inputs.x[1]`, `inputs.x.from[0]`).
 - `Resources.cpus`, `mem` and `time` are an `int` (count, bytes, seconds) or, when the value holds a `${…}` reference, the verbatim string.
 - `Resources.max_parallel` (P1-02) is a literal positive `int`: the SLURM array throttle (`%N`) for the step's job arrays, overriding `[slurm].array_throttle`; a toolchain's `resources.max_parallel` is a default like `cpus`. Like all resources it is not in the action key.
+- `Resources.constraint` (P1-03) is a literal string of SLURM node features joined by `&`
+  (`CONSTRAINT_PATTERN = ^[A-Za-z0-9_.:-]+(&[A-Za-z0-9_.:-]+)*$`, e.g. `avx512&bigmem`). The
+  planner ANDs a toolchain's and the step's (`ebs.flow.model.and_constraints(*exprs)`: in order,
+  no repeats); the SLURM executor ANDs the result with `[slurm].os_constraint`.
+  plan.json writes it only when set. Not in the action key.
 - The planner parses a resolved resource string with `ebs.flow.model.parse_memory` / `parse_duration`.
 - `model_dump()` emits the YAML spelling again (`8G`, `30m`, `from`, `zip`), so the result re-validates.
 - `ebs.flow.model.check_ref_syntax(s) -> str | None` validates the grammar below without resolving anything.
@@ -703,10 +711,13 @@ SLURM executor (P1-02, `ebs.exec.slurm.executor`):
 
 ```python
 SlurmSettings(debug_root=Path("/debug"), default_partition=None, max_array_size=1000, array_throttle=200,
-              max_pending_jobs=2000, max_submits_per_min=60, poll_min_s=5.0, poll_max_s=60.0, bin_dir=None)
+              max_pending_jobs=2000, max_submits_per_min=60, poll_min_s=5.0, poll_max_s=60.0, bin_dir=None,
+              license_server="flexlm", license_fuzzy=False, account_map={}, qos=QosSettings(),
+              os_constraint=None)                       # last five: P1-03
 SlurmSettings.from_config(config) -> SlurmSettings      # [slurm] (D5 defaults) + [debug].root; ConfigError
 SlurmExecutor(*, cli: SlurmCli, cas: CAS, settings: SlurmSettings, store: MetadataStore | None = None,
-              runner_argv=("ebs-runner",), env: Mapping[str, str] | None = None, clock: Clock | None = None)
+              runner_argv=("ebs-runner",), env: Mapping[str, str] | None = None, clock: Clock | None = None,
+              project: str | None = None, build_kind: BuildKind = "dev")   # P1-03; ConfigError if unmapped
     .submit / .poll / .cancel                         # the Executor protocol; name = "slurm"
     .job_ref(handle) -> JobId | ArrayTaskId           # the SLURM job behind a handle
     .in_flight() -> int                               # unfinished jobs, array tasks counted one by one
@@ -714,6 +725,21 @@ SlurmExecutor(*, cli: SlurmCli, cas: CAS, settings: SlurmSettings, store: Metada
 plan_jobs(actions, *, max_array_size, throttle) -> list[JobPlan(actions, is_array, throttle)]
 array_throttle(actions, default) -> int               # strictest resources.max_parallel, else default
 store_array_map(cas, plan, action_ids) -> Digest;  load_array_map(cas, d) / decode_array_map(bytes) -> ArrayMap
+# ebs.exec.slurm.licenses (P1-03)
+merge_licenses(toolchain, step) -> dict[str, int]     # re-export of ebs.flow.model.merge_licenses
+FEATURE_PATTERN = r"^[A-Za-z0-9_.-]+$";  DEFAULT_LICENSE_SERVER = "flexlm"
+check_license_server(server) -> str                   # ConfigError unless FEATURE_PATTERN
+license_request(licenses, *, server, fuzzy) -> dict[str, int]   # {"feat@server"|"feat": n}; validates
+render_licenses(request) -> str                       # "a@flexlm:1,b@flexlm:2", sorted
+batch_licenses(actions) -> dict[str, int]             # largest count per license over a job's actions
+license_error(exc, request, *, step) -> ExecutorError | None    # names the features SLURM rejected
+# ebs.exec.slurm.accounts (P1-03)
+BuildKind = Literal["dev", "ci", "release"];  BUILD_KINDS;  QosSettings(default=None, ci=None, release=None)
+parse_account_map(v) / parse_qos(v) / parse_os_constraint(v)   # [slurm] parsing; ConfigError names the key
+resolve_account(account_map, project) -> str | None   # None if no map; ConfigError lists known projects
+select_qos(qos, kind) -> str | None                   # ci ⇒ qos.ci, release ⇒ qos.release, else/unset ⇒ default
+job_constraint(os_constraint, step_constraints) -> str | None   # features ANDed, no repeats
+JobPolicy.resolve(*, account_map, qos, os_constraint, project, build_kind) -> JobPolicy(account, qos, os_constraint)
 # ebs.exec.slurm.jobscript
 runner_arguments(runner_argv, *, plan, domain, build, action=None | array_map=None) -> list[str]
 render_jobscript(argv) -> str                         # fixed template, every value shlex.quote'd
@@ -730,7 +756,11 @@ render_jobscript(argv) -> str                         # fixed template, every va
   files sit in its `jobs/` subdirectory. Job name `ebs:<build uuid[:8]|local>:<step>`, comment
   the build UUID. Partition, cpus, memory (MiB, rounded up) and time (`resources.time` +
   `JOB_TIME_GRACE_S` = 120 s, so the runner's own timeout fires first) come from the batch's
-  largest request; licenses, account, QOS and constraints are P1-03.
+  largest request. P1-03: `--licenses` is `license_request(batch_licenses(actions))` (feature names
+  `^[A-Za-z0-9_.-]+$`, an explicit `feat@server` kept as written); `--account`/`--qos` come from
+  the executor's `project`/`build_kind`; `--constraint` is `os_constraint` ANDed with the
+  actions' `resources.constraint`. An sbatch failure mentioning licenses is re-raised naming the
+  requested features. None of these is in the action key (I3).
 - R7: before `submit` returns, each job id is recorded with
   `set_action_state(build, action, "pending", slurm_job_id=…)`; a build needs a store. If an
   sbatch call or a record fails, the batch's jobs already submitted are scancelled and `submit`
