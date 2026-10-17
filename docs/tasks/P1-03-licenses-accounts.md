@@ -1,6 +1,6 @@
 # P1-03 — Licenses, accounts/QOS, constraints
 
-Status: review · Phase: 1 · Depends on: P1-02 · Size: S
+Status: done · Phase: 1 · Depends on: P1-02 · Size: S
 
 ## Goal
 Jobs start only when their EDA licenses are available, run under the right team account and QOS, and land
