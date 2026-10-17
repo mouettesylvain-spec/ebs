@@ -20,7 +20,7 @@ import pwd
 import re
 import subprocess
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final, Literal, Protocol
 
 from ebs.core.errors import MetadataError
@@ -39,6 +39,7 @@ __all__ = [
     "MungeAuthenticator",
     "MungeIdentity",
     "MungeVerifier",
+    "NotFoundError",
     "Operation",
     "PermissionDeniedError",
     "Policy",
@@ -67,14 +68,22 @@ class PermissionDeniedError(MetadataError):
     """An authenticated principal may not do this (HTTP 403)."""
 
 
+class NotFoundError(MetadataError):
+    """No such object, or one the caller may not know about (HTTP 404, P2-01 R2)."""
+
+
 @dataclass(frozen=True)
 class Principal:
-    """Who is calling: a Unix user proven by MUNGE, or the holder of a bearer token."""
+    """Who is calling: a Unix user proven by MUNGE, or the holder of a bearer token.
+
+    `authorized` records the operations authorized during the request (`ServiceDeps.check`); the
+    service refuses to send a success that none was (fail closed, P2-01 R1)."""
 
     name: str
     via: Literal["munge", "token"]
     token_kind: TokenKind | None = None
     team: str | None = None
+    authorized: list[str] = field(default_factory=list, compare=False, repr=False, hash=False)
 
 
 @dataclass(frozen=True)

@@ -102,6 +102,7 @@ def make_plan(
     """Load the flow and expand it into a plan (sources snapshotted into the CAS)."""
     path = _flow_path(services, flow_file)
     flow = load_flow(path)
+    services.check_domain_access(flow.domain)  # before anything is hashed (P2-01 R3)
     cas = services.cas(flow.domain)
     warnings: list[str] = []
 

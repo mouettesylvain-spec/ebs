@@ -1,6 +1,6 @@
 # P2-01 — Domains and authorization
 
-Status: todo · Phase: 2 · Depends on: P1-06 · Size: L
+Status: review · Phase: 2 · Depends on: P1-06 · Size: L
 
 ## Goal
 NDA boundaries enforced end to end: each domain has its own CAS root, debug area and cache namespace;
@@ -43,3 +43,16 @@ users only see domains whose Unix group they belong to, through every interface.
   domain and `to_domain` on the server (the CLI's `UnixGroupAccess` check is client side, and the
   route only records the export); consider also requiring every output digest to be registered
   in `to_domain`'s `blobs` before `record_export` succeeds.
+- Done (P2-01): `[[domains]]` (keyed by name by the config loader) drive per-domain CAS and
+  debug roots in the CLI, runner and SLURM executor. The service's `DomainPolicy` requires
+  `[meta_service].domains`; bearer principals use `[meta_service].token_domains`, else NSS.
+  Non-members get 403 (domain in the path or body), 404 for builds/releases by id (unknown
+  ids are 404 too, CONTRACT CHANGE), and cache reads are misses. Exports check both domains.
+  The CLI guard (R3) is advisory: user config can override `[[domains]]`; the filesystem modes
+  and the service enforce membership.
+- Follow-ups: `FsCAS` creates shard directories (`blobs/sha256/ab/cd`) with the user's umask
+  (often 2755), so a second member cannot add shards: create them 2770 explicitly. The
+  fail-closed middleware stops a response, not the writes of a route that forgot `check()`.
+  `ResultManifest.summary.first_error` (a log line) is the one place log text reaches the
+  database; decide whether NDA sites must redact it. Release reads by name (`list_releases`,
+  channels) use the domain in the request; `ebs fetch`/`logs` rely on file permissions only.

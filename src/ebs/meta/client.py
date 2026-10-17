@@ -104,6 +104,7 @@ __all__ = [
     "CredentialSource",
     "HttpMetadataConfig",
     "HttpMetadataStore",
+    "MetadataHttpError",
     "MungeCredential",
     "munge_payload",
 ]
@@ -121,6 +122,15 @@ _BACKOFF_CAP_S: Final = 8.0
 
 _M = TypeVar("_M", bound=BaseModel)
 _T = TypeVar("_T")
+
+
+class MetadataHttpError(MetadataError):
+    """The service refused a request (4xx); `status` is the HTTP status (P2-01: 403 not a
+    member, 404 no such object, 409 a store rule)."""
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class CredentialSource(Protocol):
@@ -393,7 +403,10 @@ class HttpMetadataStore:
                     return response
                 detail = self._detail(response)
                 if response.status_code not in _RETRY_STATUS:
-                    raise MetadataError(self._client_error(what, response.status_code, detail))
+                    raise MetadataHttpError(
+                        self._client_error(what, response.status_code, detail),
+                        response.status_code,
+                    )
                 problem = f"HTTP {response.status_code}: {detail}"
                 retry = idempotent
             if not retry or attempt >= self._retries:

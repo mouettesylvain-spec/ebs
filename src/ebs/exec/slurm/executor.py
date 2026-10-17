@@ -45,6 +45,7 @@ from ebs.cas.api import CAS
 from ebs.core.clock import Clock, SystemClock
 from ebs.core.errors import ConfigError, EbsError, ExecutorError
 from ebs.core.log import get_logger
+from ebs.domains import Domains
 from ebs.exec.api import (
     TERMINAL_JOB_STATES,
     ExecutorBusy,
@@ -135,6 +136,7 @@ class SlurmSettings:
 
     debug_root: Path = Path("/debug")
     default_partition: str | None = None  # None: the cluster's default partition
+    domains: Domains = field(default_factory=lambda: Domains({}))  # P2-01: per-domain debug roots
     max_array_size: int = 1000
     array_throttle: int = 200
     max_pending_jobs: int = 2000
@@ -183,6 +185,7 @@ class SlurmSettings:
             raise ConfigError(f"[debug].root must be an absolute path, got {debug_root!r}")
         return cls(
             debug_root=Path(debug_root),
+            domains=Domains.from_config(config),
             default_partition=partition or None,
             max_array_size=_int_key(section, "max_array_size", 1000),
             array_throttle=_int_key(section, "array_throttle", 200),
@@ -478,7 +481,9 @@ class SlurmExecutor:
 
     def _log_dir(self, batch: SubmitBatch) -> Path:
         build = "local" if batch.build is None else str(batch.build)
-        path = self._settings.debug_root / batch.domain / build / "slurm"
+        root = self._settings.domains.debug_root(batch.domain, self._settings.debug_root)
+        assert root is not None  # the default is a path
+        path = root / batch.domain / build / "slurm"
         try:
             (path / "jobs").mkdir(parents=True, exist_ok=True)
         except OSError as exc:

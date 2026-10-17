@@ -50,6 +50,8 @@ def load_config(paths: Sequence[Path]) -> Config:
         except tomllib.TOMLDecodeError as exc:
             raise ConfigError(f"invalid TOML in config file {path}: {exc}") from exc
         for name, section in data.items():
+            if name == "domains" and isinstance(section, list):
+                section = _domain_tables(section, path)
             if not isinstance(section, dict):
                 raise ConfigError(
                     f"config file {path}: {name!r} must be a section ([{name}]), "
@@ -57,3 +59,16 @@ def load_config(paths: Sequence[Path]) -> Config:
                 )
             merged.setdefault(name, {}).update(section)
     return merged
+
+
+def _domain_tables(tables: list[object], path: Path) -> dict[str, object]:
+    """`[[domains]]` (P2-01, D7) keyed by `name`, so files merge per domain like sections."""
+    keyed: dict[str, object] = {}
+    for i, table in enumerate(tables):
+        name = table.get("name") if isinstance(table, dict) else None
+        if not isinstance(name, str) or not name:
+            raise ConfigError(f"config file {path}: [[domains]] entry {i + 1} needs a name")
+        if name in keyed:
+            raise ConfigError(f"config file {path}: domain {name!r} is listed twice")
+        keyed[name] = table
+    return keyed

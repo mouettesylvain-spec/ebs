@@ -47,7 +47,7 @@ Lower layers never import higher ones.
 
 ```
 L0  core
-L1  config, flow, cas, toolchain(fingerprint only)
+L1  config, domains, flow, cas, toolchain(fingerprint only)
 L2  sources, plan, rules, meta(store/models)
 L3  exec, runner, sandbox, gc, release, toolchain(registry)
 L4  driver, meta(service)
@@ -101,6 +101,17 @@ unmunge = "unmunge"
 audience = "ebs-meta.example"      # required with munge: the host[:port] clients use
 bearer = true                      # accept bearer tokens (api_tokens)
 toolchain_admins = []              # users who may register toolchains (service tokens may too)
+domains = ["cpu-nda"]              # P2-01: required; the served domains (each in [[domains]])
+token_domains = {}                 # P2-01: bearer principal => domains, e.g. {"ci-cpu" = ["cpu-nda"]}
+group_ttl_s = 60                   # P2-01: NSS group lookups cached this long
+
+[[domains]]                        # P2-01 (D7): one per NDA scope; none = unrestricted (dev)
+name = "cpu-nda"
+unix_group = "cpu-nda"             # members see the domain; owns <cas>/<name> and <debug>/<name>
+# cas_root = "/cas"                # default [cas].root; objects under <cas_root>/<name>/
+# debug_root = "/debug"            # default [debug].root
+# ttl_days = 30                    # shown by `ebs domain list` (GC reads the domains table)
+# quota = "50T"
 
 [scratch]
 dir = "${TMPDIR}/ebs"
@@ -122,6 +133,7 @@ license_error_patterns = []    # regexes on the log tail => INFRA("license"); re
 
 [gc]                           # P1-09: `ebs gc`, as the GC service account
 domain = ""                    # default for --domain (one domain per run)
+domains = []                   # P2-01: the other domains this account may collect (R5)
 grace_hours = 24               # cache rows go first, their bytes this much later (I15)
 tmp_max_age_hours = 24         # abandoned uploads in <cas root>/<domain>/tmp/
 # TTL and quota are per domain, in the `domains` table (ttl_days, quota_bytes, *_water)

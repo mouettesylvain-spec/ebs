@@ -24,7 +24,7 @@ layers =
     ebs.exec : ebs.runner : ebs.sandbox : ebs.gc : ebs.release
     ebs.plan
     ebs.sources : ebs.rules
-    ebs.config : ebs.flow : ebs.cas
+    ebs.config : ebs.domains : ebs.flow : ebs.cas
     ebs.core
 
 [importlinter:contract:core-is-l0]
@@ -60,6 +60,7 @@ name = L0-L1 do not import meta (L2)
 type = forbidden
 source_modules =
     ebs.config
+    ebs.domains
     ebs.flow
     ebs.cas
     ebs.toolchain.fingerprint

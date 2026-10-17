@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import string
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
 from ebs.cas.api import DEFAULT_COPY_THRESHOLD
 from ebs.core.errors import ConfigError
+from ebs.domains import Domains
 from ebs.flow.model import parse_memory
 from ebs.rules.api import DEFAULT_LICENSE_ERROR_PATTERNS
 
@@ -43,6 +44,15 @@ class RunnerSettings:
     debug_root: Path | None = None  # None: no debug collection nor live log
     debug_max_size: int = DEFAULT_DEBUG_MAX_SIZE
     heartbeat_s: float = DEFAULT_HEARTBEAT_S  # lease renewal period while the tool runs
+    domains: Domains = field(default_factory=lambda: Domains({}))  # P2-01: per-domain roots
+
+    def cas_root_for(self, domain: str) -> Path:
+        """The root holding `<domain>/` of the domain's CAS (`[[domains]]`, else [cas].root)."""
+        return self.domains.cas_root(domain, self.cas_root)
+
+    def debug_root_for(self, domain: str) -> Path | None:
+        """The root holding `<domain>/` of the domain's debug area, or None."""
+        return self.domains.debug_root(domain, self.debug_root)
 
     @classmethod
     def from_config(
@@ -101,6 +111,7 @@ class RunnerSettings:
             heartbeat_s=_positive_seconds(
                 runner.get("heartbeat_s", DEFAULT_HEARTBEAT_S), "[runner].heartbeat_s"
             ),
+            domains=Domains.from_config(config),
         )
 
 

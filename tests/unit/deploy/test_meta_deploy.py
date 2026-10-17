@@ -8,8 +8,12 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from ebs.config import load_config
+from ebs.domains import Domains
 from ebs.meta.pg import MetadataConfig
 from ebs.meta.service.app import ServiceConfig
+from ebs.meta.service.auth import Policy
+from ebs.meta.service.authz import DomainPolicy, NssGroups
 
 REPO = Path(__file__).resolve().parents[3]
 META = REPO / "deploy" / "meta"
@@ -43,5 +47,11 @@ def test_systemd_unit() -> None:
 def test_example_config_is_valid() -> None:
     config = tomllib.loads((META / "config.toml.example").read_text())
     MetadataConfig.from_mapping(config["metadata"])
-    ServiceConfig.from_mapping(config["meta_service"])
+    service = ServiceConfig.from_mapping(config["meta_service"])
+    # P2-01: the served domains are configured, so the deployed policy builds.
+    policy = DomainPolicy(
+        Policy(), Domains.from_config(load_config([META / "config.toml.example"])),
+        service.domains, NssGroups(), service.token_domains,
+    )  # fmt: skip
+    assert policy.served == {"cpu-nda"}
     assert "deploy/meta/config.toml" in (REPO / ".gitignore").read_text().splitlines()
