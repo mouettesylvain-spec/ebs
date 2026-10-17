@@ -1,6 +1,6 @@
 # P1-10 — `ebs debug` and `ebs reproduce`
 
-Status: todo · Phase: 1 · Depends on: P1-04, P0-16 · Size: M
+Status: review · Phase: 1 · Depends on: P1-04, P0-16 · Size: M
 
 ## Goal
 Any failing action can be inspected and re-run bit-for-bit from a login node, including interactively
@@ -36,4 +36,33 @@ Any failing action can be inspected and re-run bit-for-bit from a login node, in
 | `test_reproduce.py::test_missing_inputs_message` | R5 | unit |
 
 ## Done when
-- [ ] `make check-all` passes
+- [x] `make check-all` passes (P1-10 session: unit + perf + integration with Postgres; only the
+  nightly real-Verilator e2e tests skipped)
+
+## Notes
+- **R4 decision (user, 2026-10-17):** builds have no `kind` field, so reproduce creates no build
+  and writes nothing to the metadata store (no build, result, cache entry, event, lease or
+  touch). The sandbox's `repro.json` records `kind: "repro"`, `cache_mode: "off"`, the build,
+  action, plan and key. No `BuildCreate` contract change. If a stored `kind=repro` build is
+  wanted later (e.g. for the dashboard), it needs a migration and a CONTRACT CHANGE.
+- **`--salloc` decision (user):** `salloc <job opts> srun --pty ebs reproduce … --build <uuid>
+  --run|--interactive`, so the sandbox is built on the node. The default sandbox carries the
+  `.ebs-job` marker under SLURM, so the epilog cleans it when the allocation ends (I16).
+- Shared runner code for R2: `resolve_content`, `prepare_work`, `remove_tree`
+  (`ebs.runner.stage`) and `toolchain_env` (`ebs.runner.env`); `Runner._run` uses them too.
+- Default sandboxes go to a new `<[scratch].dir>/repro-<uid>/<action dir>-<random>` (0700) each
+  time, so a kept sandbox is never replaced and other users' are never touched.
+- Follow-ups:
+  - `salloc_argv` renders options itself, mirroring `ebs.exec.slurm.cli.sbatch_argv`; a shared
+    option renderer (built from `SbatchOptions`, with its validators) would keep them in step.
+  - `--salloc` uses the action's own time limit (+ grace); an interactive GUI session may need a
+    `--time` override.
+  - `ebs reproduce --run` exits 0 whatever the comparison; a non-zero exit when outputs differ
+    would let CI use R3 directly.
+  - Reproduce holds no GC lease on the inputs it links from the CAS (leases need a running
+    build); a sweep during a long interactive session could remove linked blobs.
+  - A build that did not finish has no `final_plan`; reproduce then fills unset input ids from
+    the action's recorded result only, so an infra-failed action of an interrupted build may not
+    be reproducible.
+  - `ebs build` still only offers the local executor (`cli/_context.py` `EXECUTORS`); P1-12
+    needs the SLURM executor wired into the CLI.

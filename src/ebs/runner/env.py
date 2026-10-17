@@ -12,11 +12,12 @@ import fnmatch
 from collections.abc import Mapping, Sequence
 from typing import Final
 
-from ebs.plan.types import ActionSpec
+from ebs.plan.types import ActionSpec, Plan
 from ebs.rules.api import expand_runtime_env
+from ebs.runner.errors import UsageError
 from ebs.runner.stage import Scratch
 
-__all__ = ["DEFAULT_PATH", "HOME_PLACEHOLDER", "build_env", "passthrough"]
+__all__ = ["DEFAULT_PATH", "HOME_PLACEHOLDER", "build_env", "passthrough", "toolchain_env"]
 
 HOME_PLACEHOLDER: Final = "$HOME"
 """How captured toolchain env spells the home directory (`ebs.toolchain.env`)."""
@@ -32,6 +33,20 @@ def passthrough(caller_env: Mapping[str, str], patterns: Sequence[str]) -> dict[
         for name, value in caller_env.items()
         if any(fnmatch.fnmatchcase(name, p) for p in patterns)
     }
+
+
+def toolchain_env(plan: Plan, spec: ActionSpec) -> Mapping[str, str]:
+    """The captured env of the action's toolchain (empty without one), from the plan."""
+    if spec.toolchain is None:
+        return {}
+    planned = plan.toolchains.get(spec.toolchain.name)
+    if planned is None or planned.id != spec.toolchain.id:
+        raise UsageError(
+            f"action {spec.action_id!r} uses toolchain {spec.toolchain.name!r} "
+            f"({spec.toolchain.id}) but the plan's toolchains do not record that id, so "
+            "its env is unknown; re-plan"
+        )
+    return planned.env
 
 
 def build_env(

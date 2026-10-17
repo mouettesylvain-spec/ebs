@@ -12,6 +12,7 @@ import getpass
 import os
 import shutil
 import stat
+import subprocess
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -280,6 +281,23 @@ class SiteServices:
             return (str(beside),)
         found = shutil.which("ebs-runner", path=self.environ.get("PATH"))
         return (found or "ebs-runner",)
+
+    def ebs_argv(self) -> Sequence[str]:
+        """How to start this `ebs` again (e.g. inside `salloc`, P1-10)."""
+        beside = Path(sys.executable).parent / "ebs"
+        if beside.exists():
+            return (str(beside),)
+        found = shutil.which("ebs", path=self.environ.get("PATH"))
+        return (found or "ebs",)
+
+    def run_foreground(
+        self, argv: Sequence[str], *, cwd: Path | None, env: Mapping[str, str] | None
+    ) -> int:
+        """Run `argv` on this terminal (stdin/stdout/stderr inherited) and return its exit code;
+        `env` None inherits ours. `ebs reproduce --interactive`/`--salloc` (P1-10)."""
+        return subprocess.run(
+            list(argv), cwd=cwd, env=None if env is None else dict(env), check=False
+        ).returncode
 
     @contextmanager
     def open_executor(self, name: str, *, domain: str, log_dir: Path) -> Iterator[Executor]:

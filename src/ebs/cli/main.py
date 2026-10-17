@@ -9,7 +9,8 @@ from typing import TextIO, cast
 import typer
 
 from ebs import __version__
-from ebs.cli import build, gc, logs, outputs, plan, rules, seeds, status, toolchain
+from ebs.cli import build, gc, logs, outputs, plan, reproduce, rules, seeds, status, toolchain
+from ebs.cli import debug as debug_cli
 from ebs.cli._context import SiteServices
 from ebs.cli._output import DEBUG_KEY
 from ebs.core.log import configure_logging
@@ -68,6 +69,8 @@ app.command("plan")(plan.plan_command)
 app.command("build")(build.build_command)
 app.command("status")(status.status_command)
 app.command("logs")(logs.logs_command)
+app.command("debug")(debug_cli.debug_command)
+app.command("reproduce")(reproduce.reproduce_command)
 app.command("outputs")(outputs.outputs_command)
 app.command("fetch")(outputs.fetch_command)
 app.command("gc")(gc.gc_command)

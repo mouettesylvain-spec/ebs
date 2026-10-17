@@ -32,6 +32,9 @@ __all__ = [
     "JOB_MARKER",
     "Scratch",
     "action_dir_name",
+    "prepare_work",
+    "remove_tree",
+    "resolve_content",
     "resolve_contents",
     "stage_inputs",
     "verify_inputs",
@@ -93,6 +96,11 @@ class Scratch:
             self.root.parent.rmdir()
 
 
+def remove_tree(path: Path) -> None:
+    """Delete `path` (a file, link or tree), also read-only directories a tool left behind."""
+    _rmtree(path)
+
+
 def _rmtree(path: Path) -> None:
     if not os.path.lexists(path):
         return
@@ -120,20 +128,38 @@ def resolve_contents(
     """
     contents: dict[str, Digest] = {}
     for ref in spec.inputs:
-        if ref.id is None:
-            raise UsageError(
-                f"input {ref.logical_path!r} of action {spec.action_id!r} has no id yet: the "
-                "driver must refine the plan with its producer's result before running it"
+        content = resolve_content(plan, spec, ref, store)
+        if content is None:
+            raise InfraError(
+                f"input {ref.logical_path!r} ({ref.id}) has no recorded result in domain "
+                f"{spec.domain!r}; its producer's result is missing (not yet posted, or collected)"
             )
-        if isinstance(ref.source, ImportInput):
-            raise UsageError(
-                f"input {ref.logical_path!r} imports a release; imports arrive with P2-03"
-            )
-        if isinstance(ref.source, ActionOutputInput) and not _deterministic(plan, ref.source):
-            contents[ref.logical_path] = _resolve(spec, ref, ref.id, store)
-        else:
-            contents[ref.logical_path] = ref.id
+        contents[ref.logical_path] = content
     return contents
+
+
+def resolve_content(
+    plan: Plan, spec: ActionSpec, ref: InputRef, store: MetadataStore | None
+) -> Digest | None:
+    """The content digest of one input; None if a nondeterministic producer's result is gone."""
+    if ref.id is None:
+        raise UsageError(
+            f"input {ref.logical_path!r} of action {spec.action_id!r} has no id yet: the "
+            "driver must refine the plan with its producer's result before running it"
+        )
+    if isinstance(ref.source, ImportInput):
+        raise UsageError(f"input {ref.logical_path!r} imports a release; imports arrive with P2-03")
+    if not isinstance(ref.source, ActionOutputInput) or _deterministic(plan, ref.source):
+        return ref.id
+    if store is None:
+        raise UsageError(
+            f"input {ref.logical_path!r} is a nondeterministic output; finding its bytes needs "
+            "the metadata store: configure [metadata].url"
+        )
+    try:
+        return store.resolve_output(spec.domain, ref.id)
+    except MetadataError as exc:
+        raise InfraError(f"cannot resolve input {ref.logical_path!r}: {exc}") from exc
 
 
 def _deterministic(plan: Plan, source: ActionOutputInput) -> bool:
@@ -144,24 +170,6 @@ def _deterministic(plan: Plan, source: ActionOutputInput) -> bool:
             f"the plan has no output {source.output!r} of action {source.action_id!r}, "
             "which an input refers to; the plan is inconsistent: re-plan"
         ) from None
-
-
-def _resolve(spec: ActionSpec, ref: InputRef, ident: Digest, store: MetadataStore | None) -> Digest:
-    if store is None:
-        raise UsageError(
-            f"input {ref.logical_path!r} is a nondeterministic output; finding its bytes needs "
-            "the metadata store: configure [metadata].url"
-        )
-    try:
-        content = store.resolve_output(spec.domain, ident)
-    except MetadataError as exc:
-        raise InfraError(f"cannot resolve input {ref.logical_path!r}: {exc}") from exc
-    if content is None:
-        raise InfraError(
-            f"input {ref.logical_path!r} ({ident}) has no recorded result in domain "
-            f"{spec.domain!r}; its producer's result is missing (not yet posted, or collected)"
-        )
-    return content
 
 
 def stage_inputs(
@@ -190,6 +198,24 @@ def stage_inputs(
             )
         except CasError as exc:
             raise InfraError(f"cannot stage input {ref.logical_path!r}: {exc}") from exc
+
+
+def prepare_work(
+    spec: ActionSpec,
+    cas: CAS,
+    work: Path,
+    contents: Mapping[str, Digest],
+    *,
+    copy_threshold: int,
+) -> None:
+    """Stage the inputs, write the config files and verify every input digest (I10).
+
+    The runner and `ebs reproduce` (P1-10) both build an action's work dir with this, so a
+    reproduced sandbox holds exactly what the tool saw on the node.
+    """
+    stage_inputs(spec, cas, work, contents, copy_threshold=copy_threshold)
+    write_config_files(spec, work)
+    verify_inputs(spec, work, contents)
 
 
 def write_config_files(spec: ActionSpec, work: Path) -> None:
