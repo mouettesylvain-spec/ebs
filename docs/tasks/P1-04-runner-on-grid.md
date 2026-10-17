@@ -1,6 +1,6 @@
 # P1-04 — Runner on the grid: materialization, debug collection, cleanup
 
-Status: review · Phase: 1 · Depends on: P0-13, P1-06 · Size: M
+Status: done · Phase: 1 · Depends on: P0-13, P1-06 · Size: M
 
 ## Goal
 The runner behaves well on shared compute nodes: large inputs are never copied needlessly, debug files

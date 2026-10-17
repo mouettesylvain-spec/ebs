@@ -1,6 +1,6 @@
 # P1-05 — Infrastructure failure classification and retries
 
-Status: review · Phase: 1 · Depends on: P1-02, P0-15 · Size: S
+Status: done · Phase: 1 · Depends on: P1-02, P0-15 · Size: S
 
 ## Goal
 Infrastructure problems (OOM, node failure, preemption, license checkout errors, tool crashes) are retried

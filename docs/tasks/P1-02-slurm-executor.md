@@ -1,6 +1,6 @@
 # P1-02 — SLURM executor (sbatch, job arrays, polling, cancel)
 
-Status: review · Phase: 1 · Depends on: P1-01, P0-14 · Size: L
+Status: done · Phase: 1 · Depends on: P1-01, P0-14 · Size: L
 
 ## Goal
 Run actions on the grid: one job per heavy action, one job array per batch of similar actions, a single

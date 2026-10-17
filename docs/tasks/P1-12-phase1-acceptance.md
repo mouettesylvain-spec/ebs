@@ -7,10 +7,21 @@ Demonstrate the phase 1 exit criterion on the real cluster and make it a recurri
 
 ## Read first
 - docs/architecture.md § "Roadmap and tech stack" (phase 1 row), § "Risks" (NFS load, submission limits)
+- docs/design/testing.md § CI pipeline; `.github/workflows/nightly.yml` (CI is GitHub Actions, decision D3)
+- `tests/grid/test_slurm_real.py` (existing grid test: `EBS_GRID_PARTITION`, `EBS_GRID_ACCOUNT`,
+  `EBS_GRID_QOS`, shared `--basetemp`); reuse its conventions
+
+## Prerequisites (site, outside the repo)
+- Site config with real `[slurm]` values (D5: limits, partition), `account_map`/`qos` (P1-03), the license
+  server name, and a registered Questa toolchain (P1-07). It stays in site config, never in the repo.
+- Self-hosted GitHub Actions runners labelled `slurm` (login node with the SLURM client) and
+  `eda-licensed` (Questa licenses), as `nightly.yml` expects.
 
 ## Scope (files)
 - create `tests/grid/test_phase1_exit.py`, `tests/grid/README.md`, `scripts/grid_metrics.py`
-- enable nightly `grid` and `vendor` jobs in `.gitlab-ci.yml`
+- `.github/workflows/nightly.yml`: enable the `schedule:` (resolve its `TODO(P1-12)`), run `grid` and
+  `vendor` on the self-hosted runners, and move mutmut's paths to `[tool.mutmut]` in `pyproject.toml`
+  (the other `TODO(P1-12)` there)
 - write `docs/ops/phase1-report.md` with measured numbers
 
 ## Requirements
@@ -35,3 +46,7 @@ Demonstrate the phase 1 exit criterion on the real cluster and make it a recurri
 
 ## Done when
 - [ ] human reviews the report; phase 1 marked done in docs/tasks/README.md
+
+## Notes
+- The report and the JSON artifact are committed to an open-source repo: no real hostnames, node names,
+  partition/account names, license server names or design names (invariants). Use placeholders.
