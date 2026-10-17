@@ -60,7 +60,7 @@ from ebs.runner.collect import (
     wants_debug,
 )
 from ebs.runner.config import RunnerSettings
-from ebs.runner.env import build_env
+from ebs.runner.env import build_env, toolchain_env
 from ebs.runner.errors import (
     EXIT_INFRA,
     EXIT_INTERNAL,
@@ -78,13 +78,7 @@ from ebs.runner.heartbeat import Heartbeat
 from ebs.runner.livelog import LiveLog
 from ebs.runner.result import make_manifest
 from ebs.runner.run import ToolRun, run_tool
-from ebs.runner.stage import (
-    Scratch,
-    resolve_contents,
-    stage_inputs,
-    verify_inputs,
-    write_config_files,
-)
+from ebs.runner.stage import Scratch, prepare_work, resolve_contents
 
 __all__ = [
     "EXIT_INFRA",
@@ -193,16 +187,7 @@ class Runner:
         rule = self._rule(spec)
         cache_mode = self._cache_mode(req.build)
         contents = resolve_contents(plan, spec, self._store)
-        toolchain_env: Mapping[str, str] = {}
-        if spec.toolchain is not None:
-            planned = plan.toolchains.get(spec.toolchain.name)
-            if planned is None or planned.id != spec.toolchain.id:
-                raise UsageError(
-                    f"action {spec.action_id!r} uses toolchain {spec.toolchain.name!r} "
-                    f"({spec.toolchain.id}) but the plan's toolchains do not record that id, so "
-                    "its env is unknown; re-plan"
-                )
-            toolchain_env = planned.env
+        tool_env = toolchain_env(plan, spec)
         if spec.resources.time is not None and not isinstance(spec.resources.time, int):
             raise UsageError(
                 f"action {spec.action_id!r} has an unexpanded time limit "
@@ -223,19 +208,17 @@ class Runner:
         attempt = _Attempt()
         try:
             attempt.debug = self._open_debug(spec, build_dir)
-            stage_inputs(
+            prepare_work(  # I10: every input verified before anything executes
                 spec,
                 self._cas,
                 scratch.work,
                 contents,
                 copy_threshold=self._settings.copy_threshold,
             )
-            write_config_files(spec, scratch.work)
-            verify_inputs(spec, scratch.work, contents)  # I10: before anything executes
             self._touch_inputs(spec, contents)
             env = build_env(
                 spec,
-                toolchain_env=toolchain_env,
+                toolchain_env=tool_env,
                 scratch=scratch,
                 caller_env=self._caller_env,
                 passthrough_patterns=self._settings.passthrough_env,

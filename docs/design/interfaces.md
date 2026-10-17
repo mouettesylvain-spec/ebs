@@ -885,6 +885,11 @@ P1-04 (grid) details:
   (≤ 16 MiB) are kept, so cleanup fits in SLURM's KillWait.
 - A SIGTERM that lands during debug collection or scratch removal does not stop the removal
   (I16); a job killed with SIGKILL is cleaned by the epilog (deploy/slurm/README.md).
+- Shared with `ebs reproduce` (P1-10; `ebs.runner.stage`, `ebs.runner.env`):
+  `resolve_content(plan, spec, ref, store) -> Digest | None` (the bytes to stage for one input;
+  None = a nondeterministic producer's result is not recorded), `prepare_work(spec, cas, work,
+  contents, *, copy_threshold)` (stage, write config files, verify: I10),
+  `toolchain_env(plan, spec)`, `remove_tree(path)`. The runner itself goes through them.
 
 ## 10. Driver events — `ebs.driver.events`
 
@@ -1151,7 +1156,8 @@ class RegistryToolchainResolver:  # ToolchainResolver over the store
 
 ## 14. CLI — `ebs.cli` (P0-16)
 
-Commands: `ebs plan`, `build`, `status`, `logs`, `outputs`, `fetch` (P1-13), `rules list`,
+Commands: `ebs plan`, `build`, `status`, `logs`, `outputs`, `fetch` (P1-13), `debug`,
+`reproduce` (P1-10), `rules list`,
 `seeds gen` (P1-11), `toolchain register|list|show|check` (P1-07); global `--debug` (tracebacks,
 debug logs). Exit codes: § 11. Every command has `--json`; `NO_COLOR` disables colors. The
 working directory holds `.ebs/` (config lookup, `builds/`, executor logs); `-f` names the flow
@@ -1269,6 +1275,51 @@ no result yet (states the action's state), no `[metadata].url`; an object missin
 exits 3 ("may have been garbage-collected; `ebs build --no-cache <step>`"). Text: one line per
 output, `<action_id>.<name> -> <dest>`. `--json`: `{"v": 1, "uuid", "build", "fetched":
 [{"action_id", "name", "digest", "dest"}]}` (`dest` as printed: `DIR` as given).
+
+**`ebs debug` / `ebs reproduce`** (P1-10; `ebs.cli.debug`, `ebs.cli.reproduce`,
+`ebs.runner.reproduce`):
+
+```
+ebs debug     ACTION [--build B] [--json]
+ebs reproduce ACTION [--build B] [--dir D] [--run | --interactive] [--salloc] [--json]
+```
+
+Both read the build record and events, the build's `final_plan` (else `plan`) from the CAS and,
+with `[metadata].url`, `get_result` and `resolve_output`; ACTION is an id or unique prefix. An
+action whose input ids the recorded plan lacks takes them from its result's `inputs`.
+`debug --json` (v1): `{"v": 1, "uuid", "build", "action_id", "step", "state", "reason",
+"exit_code", "first_error", "signature", "key", "argv", "command" (shell-quoted), "env"
+(declared only), "toolchain": null | {"name", "module", "id"}, "inputs": [{"path", "kind", "id",
+"content", "origin": {"type": "source", "input", "pattern"} | {"type": "action", "action_id",
+"output"} | {"type": "import", "name", "path"}}], "slurm": {"job_id", "node"}, "attempts":
+[{"attempt", "job_id", "node", "reason"}], "debug_dir", "log"}`. `first_error`/`signature` come
+from the result's `summary`; `slurm` from the result's `runner` (else the last attempt);
+`debug_dir` is the action's debug dir if it exists. Store fields are null without a store.
+
+`reproduce` builds the sandbox with the runner's own code (`resolve_content`, `prepare_work`,
+`toolchain_env`, `build_env`; § 9) in `--dir D` (new or empty, else exit 2) or a new
+directory `<[scratch].dir>/repro-<uid>/<action dir>-<random>` (0700; an earlier sandbox is
+never reused or removed), with the scratch layout `{work,home,tmp,logs}` plus `repro.json`
+`{v, kind: "repro", cache_mode: "off", build, build_id, plan, action_id, key}`, and keeps it.
+Under SLURM (`$SLURM_JOB_ID` set, e.g. the inner command of `--salloc`) the default directory
+gets the `.ebs-job` marker, so the node epilog removes it with the job (I16). Inputs whose bytes
+are gone (not in the CAS, any blob or manifest of a tree missing, a nondeterministic input
+without a recorded result, or an id unknown because its producer never ran) are all named
+before anything is created, with a hint to `ebs build --no-cache`; exit 3. `--run` runs the command with `run_tool` (runner timeout and log cap),
+classifies the exit like the runner (exec or log error, timeout, the rule's `classify`, a missing
+required output ⇒ `failed`) and compares outputs with the result (R3): `same`,
+`different`, `missing`, `not_compared` (`deterministic: false`), `not_recorded`. `--interactive`
+runs `bash --norc` in `work/` with the sandbox env (+ `PS1`). `--salloc` (needs `--run` or
+`--interactive`) runs `salloc --job-name=ebs:repro:<step> [--partition --account --qos
+--cpus-per-task --mem=<MiB>M --time=<time + JOB_TIME_GRACE_S> --licenses --constraint] srun
+--pty ebs reproduce ACTION --build <uuid> --run|--interactive [--dir D] [--json]` (options as the SLURM
+executor would give the action alone; account/QOS for build kind `dev`), so the sandbox is
+built on the node. Reproduce never writes to the metadata store: no build, result, cache entry,
+event, lease or touch (R4). `--json`: `{"v": 1, "uuid", "build", "action_id", "dir", "work",
+"argv", "env", "interactive", "ran": null | {"exit_code", "status", "timed_out", "error", "log",
+"outputs": [{"name", "status", "recorded", "reproduced"}], "identical"}}`; with `--salloc`
+the outer command prints the salloc line on stderr and the inner one the document. The exit
+code is 0 once the sandbox is built, whatever the tool or the comparison gave.
 
 **`ebs rules list --json`**: `{"v": 1, "rules": [{"kind", "version", "impl"}]}`, sorted by kind.
 
