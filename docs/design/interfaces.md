@@ -445,7 +445,7 @@ re-validated on write (values must also pass `canonical_json`).
   quota_bytes, high_water, low_water}` (defaults without a `domains` row), `gc_blobs`,
   `gc_cache_entries` (`GcCacheEntry{key, last_access, outputs: content digests, log}`),
   `gc_roots(domain, now) -> GcRoots{pinned, leased, released}` (pinned: plan, outputs and logs
-  of pinned builds; leased: live leases; released: empty until P2-02), `gc_tombstones`,
+  of pinned builds; leased: live leases; released: release outputs, P2-02), `gc_tombstones`,
   `gc_attribution` (`GcAttribution{digest, build, project, step}` for every output and log of a
   recorded result), `register_blobs`, `gc_expire_leases(domain, now) -> int`,
   `gc_delete_cache_entries(domain, keys, *, unused_before) -> deleted keys` (re-checks
@@ -453,6 +453,41 @@ re-validated on write (values must also pass `canonical_json`).
   (existing tombstones kept), `gc_drop_tombstones`, `gc_claim(domain, digest, now) -> bool`
   (atomically: a due tombstone whose blob row was not touched since `deleted_rows_at` is
   deleted with the row; PG locks the blob row first, like `touch`), `gc_record_run(GcRun)`.
+- `ReleaseStore` (P2-02; PostgreSQL, in-memory and HTTP stores; `MetadataBackend` = both
+  protocols, what `open_metadata_store` returns). **CONTRACT CHANGE (P2-02):** new protocol and
+  models; `SiteServices.store()` and the factory return `MetadataBackend`; `GcRoots.released`
+  is now filled. `create_release(ReleaseCreate{domain, name, version, build, outputs: {"<action
+  id>.<output>": ReleaseOutput{action_id, output, digest, id, type, size}}, notes,
+  allow_failed: reason | None}, *, by) -> ReleaseView` (+ `id, created_at, created_by,
+  exported_from, yanked_at, yanked_by, yank_reason`): the store checks the build is in
+  `domain` and finished, and each output equals what its action recorded, from an action in
+  `done`/`cached` with a `passed` result unless `allow_failed`; `(domain, name, version)` is
+  unique. Names `RELEASE_NAME_PATTERN` (`team/product`), versions `VERSION_PATTERN` (D4),
+  channels `CHANNEL_PATTERN`. `get_release(domain, name, version)`, `get_release_by_id`,
+  `list_releases(domain, *, name=None)` (by name, created_at, id), `yank_release(id, *, by,
+  reason)` (idempotent: the first yank is kept). There is no update or delete (I19; in
+  PostgreSQL a trigger refuses DELETE and any UPDATE other than setting the yank fields once).
+  `set_channel(domain, name, channel, release, *, by, gate: GateCheck{flow, build} | None) ->
+  ChannelMove{id, domain, name, channel, release, version, moved_at, moved_by, gate}` (the
+  release must have this domain and name and not be yanked), `get_channel -> ChannelView{…,
+  release: ReleaseView, updated_at, updated_by} | None`, `channel_history` (oldest first,
+  append-only), `gate_builds(domain, flow, ids) -> [BuildId]` (passed builds of project `flow`
+  with an action whose `in` provenance edge holds one of `ids`, newest first; cache hits count,
+  edges belong to the action key), `record_export(release, to_domain, *, by) -> ReleaseView`
+  (the same release in `to_domain` with `exported_from`, plus an `ExportRecord{id, release,
+  exported, to_domain, exported_at, exported_by}` audit row, atomically), `list_exports(release)`
+  (rows naming it as source or copy). Release outputs (content digests, also of yanked releases)
+  are `GcRoots.released`.
+- `ebs.release` (L3, P2-02): `releases.create_release(store, *, name, version, build, outputs:
+  ["step.output", "step.output[*]", "step.output[col=value,…]"], by, notes, allow_failed)`
+  (selectors as in flow references; a matrix step needs one; `ReleaseError` for a broken rule),
+  `channels.GatePolicy.from_section([release])` (`[release.gates]`: `channel` or
+  `"name:channel"` -> gate flow project; the specific key wins), `check_gate(store, release,
+  flow, *, gate_build=None) -> GateCheck`, `move_channel(store, gates, release, channel, *, by,
+  gate_build=None)`, `export.export_release(store, release, *, src, dst, access, by)` (copies
+  every blob and manifest through `dst`'s atomic write path, children before manifests,
+  registers them in the target domain, then `record_export`; `access: DomainAccess` must accept
+  both domains, by default `UnixGroupAccess(cas_root)`: owner or group of `<cas_root>/<domain>`).
 
 ```python
 class ResultManifest(BaseModel):          # frozen
@@ -508,6 +543,16 @@ in JSON mode (`model_validate_json`):
 | `GET /toolchains/{id}` | `get_toolchain` | → `ToolchainList` (0 or 1) |
 | `GET /toolchains/{id}/manifest` | `toolchain_manifest` | → `ToolchainManifest` |
 | `POST /toolchains/{id}/touch` | `touch_toolchain` | → 204 |
+| `POST /releases` | `create_release` (by = caller) | `ReleaseCreate` → `ReleaseView` (P2-02, `release_write`) |
+| `GET /releases?domain=[&name=][&version=]` | `list_releases` / `get_release` | → `ReleaseList` |
+| `GET /releases/{id}` | `get_release_by_id` | → `ReleaseList` (0 or 1) |
+| `POST /releases/{id}/yank` | `yank_release` (by = caller) | `YankRequest{reason}` → `ReleaseView` |
+| `POST /releases/{id}/exports` | `record_export` (by = caller) | `ExportRequest{to_domain}` → `ReleaseView` (`release_export`) |
+| `GET /releases/{id}/exports` | `list_exports` | → `ExportList` |
+| `PUT /channels` | `move_channel` with the service's `[release.gates]` | `ChannelSet{domain, name, channel, release, gate_build}` → `ChannelMove` |
+| `GET /channels?domain=&name=&channel=` | `get_channel` | → `ChannelList` (0 or 1) |
+| `GET /channels/history?domain=&name=&channel=` | `channel_history` | → `ChannelHistory` |
+| `POST /domains/{d}/gate-builds` | `gate_builds` | `GateQuery{flow, ids}` → `BuildList` |
 | `GET /whoami` | — | → caller's principal |
 
 `/healthz` (process) and `/readyz` (database reachable, schema at the migrations' head, else 503)
@@ -541,7 +586,9 @@ database outage, 500 a bug. The client raises `MetadataError` with the detail.
   `user | ci | service`. Pluggable `Authenticator`s (`authenticate(RequestInfo)`), tried in
   order by `ChainAuthenticator`.
 - **Authorization (R4):** every API route calls the one hook `ServiceDeps.authorize(principal,
-  op, *, domain, owner)` with `op = read | cache_write | build_write | toolchain_write`, the
+  op, *, domain, owner)` with `op = read | cache_write | build_write | toolchain_write |
+  release_write | release_export` (P2-02: like `build_write` on the release's build; an
+  export's `domain` is the target; a failed channel gate is a 409), the
   domain, and the build's `BuildOwner(user_name, project, domain, build)` for build routes. The
   default `Policy(toolchain_admins)`: a build write is allowed to its owner (`principal ==
   user_name`) or to a `ci` token whose `team` is the build's project, and `service` tokens never
@@ -977,7 +1024,8 @@ cancels submitted work, keeps results of jobs that already finished, marks the r
 
 `EbsError` → `ConfigError`, `FlowError` (has `file`, `line`, `col`), `DigestError`, `CanonError`,
 `TreeError`, `PlanError`, `CasError`, `MetadataError`, `ExecutorError`, `RuleError`, `SandboxError`,
-`SourceError` (→ `SourceEscapeError`), `ToolchainError`.
+`SourceError` (→ `SourceEscapeError`), `ToolchainError`, `ReleaseError` (P2-02: a broken release,
+channel or export rule; exit 2).
 CLI exit codes: `0` ok, `1` build finished with failed actions, `2` usage/flow error,
 `3` infrastructure error (retries exhausted), `4` internal bug (with "please report" hint),
 `130` cancelled by the user (Ctrl-C; 128 + SIGINT, P0-15).
@@ -1338,6 +1386,13 @@ roots, env names, module system; a drift warning with the first 20 changed files
 `check [--days N=30]` re-fingerprints, changes nothing and exits 1 if any toolchain drifted or
 could not be fingerprinted (`--json`: `{"v": 1, "days", "results": [{"id", "module", "status":
 ok|drift|error, "fingerprint", "registered_fingerprint", "changes", "error"}]}`).
+
+**`ebs release create NAME VERSION --build B --output SEL… [--notes] [--allow-failed REASON]
+[--json]`**, `release show|yank|export NAME VERSION [--domain D]` (`yank --reason R`, `export
+--to D2`), `release list [NAME]`; **`ebs channel set NAME CHANNEL VERSION [--gate-build ID]`**,
+`channel show|history NAME CHANNEL` (P2-02; `ebs.release`). `--domain` defaults to the domain of
+the latest build recorded here; B is a recorded build's UUID prefix or id, or any store build id.
+A broken rule (selector, version, failed action, gate, membership) exits 2.
 
 **`ebs gc [--dry-run] [--domain D] [--json]`** (P1-09; `ebs.gc`): collects one domain (default
 `[gc].domain`) as the GC service account; needs `[metadata].url` = a `postgresql` URL (direct

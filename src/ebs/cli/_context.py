@@ -26,7 +26,7 @@ from ebs.core.clock import Clock, SystemClock
 from ebs.core.errors import ConfigError, ExecutorError, MetadataError, SourceError, ToolchainError
 from ebs.exec.api import Executor
 from ebs.exec.local import LocalExecutor
-from ebs.meta.api import GcStore, MetadataStore
+from ebs.meta.api import GcStore, MetadataBackend
 from ebs.rules.api import DEFAULT_LICENSE_ERROR_PATTERNS, RuleSettings
 from ebs.rules.registry import RuleRegistry
 from ebs.runner.config import RunnerSettings
@@ -136,7 +136,7 @@ class SiteServices:
         self.clock: Clock = clock or SystemClock()
         self._statcache_default = statcache_default or default_statcache_path(os.getuid())
         self._config: Config | None = None
-        self._store: MetadataStore | None = None
+        self._store: MetadataBackend | None = None
 
     @classmethod
     def from_process(cls) -> SiteServices:
@@ -168,7 +168,7 @@ class SiteServices:
     def cas(self, domain: str) -> FsCAS:
         return FsCAS(self.runner_settings().cas_root, domain, clock=self.clock)
 
-    def store(self, *, required: bool) -> MetadataStore | None:
+    def store(self, *, required: bool) -> MetadataBackend | None:
         """The metadata store of `[metadata].url`; None (or ConfigError if required) without it."""
         if self._store is not None:
             return self._store

@@ -158,6 +158,9 @@ os_constraint = ""             # node feature of the OS image, e.g. "rhel9" (--c
 default = ""
 ci = ""                        # `ebs build --ci`
 release = ""
+
+[release.gates]                # P2-02: channel (or "name:channel") => gate flow project
+# stable = "cpu-gate"          # read by the CLI on a direct database, else by the service
 ```
 
 ## Glossary

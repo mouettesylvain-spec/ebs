@@ -83,16 +83,25 @@ api_tokens(id bigserial PK, principal text, kind text check in ('user','ci','ser
 ## Phase 2
 
 ```
-releases(id bigserial PK, domain FK, name text, version text, build_id FK,
-         outputs jsonb,                                    -- {name: {digest, id, type, size}}
-         notes text, attestation text null, signature text null,
+releases(id bigserial PK, domain FK, name text check ~ RELEASE_NAME_PATTERN,
+         version text check ~ VERSION_PATTERN (D4), build_id FK builds (no cascade),
+         outputs jsonb object,                             -- {"<action>.<output>": {action_id, output, digest, id, type, size}}
+         notes text default '', allow_failed text null,    -- the reason, when failed actions were released
+         attestation text null, signature text null,       -- P3-03
+         exported_from bigint FK releases null,            -- set on the copy made by an export
          created_at, created_by, yanked_at null, yanked_by null, yank_reason null,
-         UNIQUE(domain, name, version))
-channels(domain FK, name text, channel text, release_id FK, updated_at, updated_by,
-         PRIMARY KEY(domain, name, channel))
-channel_history(id, domain, name, channel, release_id, moved_at, moved_by, gate_build_id null)
-release_imports(consumer_build_id FK, release_id FK, alias text)   -- used-by queries
-exports(id, release_id FK, to_domain FK, exported_at, exported_by)  -- audited cross-domain copy
+         check yank fields all null or all set, UNIQUE(domain, name, version))
+         -- 0007, P2-02; trigger releases_immutable: no DELETE, no UPDATE but setting the
+         -- yank fields once (I19)
+channel_history(id bigserial PK, domain FK, name, channel check ~ CHANNEL_PATTERN,
+                release_id FK, moved_at, moved_by, gate_flow null, gate_build_id FK builds null,
+                check gate fields both null or both set)
+                index (domain, name, channel, id)          -- append-only (trigger)
+channels(domain FK, name text, channel text, release_id FK, move_id FK channel_history,
+         updated_at, updated_by, PRIMARY KEY(domain, name, channel))   -- the last move
+exports(id bigserial PK, release_id FK, exported_release_id FK releases, to_domain FK,
+        exported_at, exported_by) index (release_id)        -- audited cross-domain copy, append-only
+release_imports(consumer_build_id FK, release_id FK, alias text)   -- used-by queries (P2-03)
 ```
 
 ## Phase 3

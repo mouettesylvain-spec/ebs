@@ -6,6 +6,7 @@ lock makes each method atomic; a method validates and stages everything before i
 
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -18,12 +19,16 @@ from ebs.meta._common import (
     attribution_digests,
     cache_refs,
     check_blobs,
+    check_by,
     check_digest,
+    check_exportable,
     check_final_status,
     check_lease_ttl,
     check_pin,
+    check_release,
     check_result,
     check_run,
+    check_set_channel,
     check_toolchain,
     edge_rows,
     revalidate,
@@ -39,8 +44,12 @@ from ebs.meta.api import (
     BuildId,
     BuildStatus,
     BuildView,
+    ChannelMove,
+    ChannelView,
     DomainPolicy,
     Event,
+    ExportRecord,
+    GateCheck,
     GcAttribution,
     GcBlob,
     GcCacheEntry,
@@ -48,6 +57,9 @@ from ebs.meta.api import (
     GcRun,
     LeaseId,
     RegisterOutcome,
+    ReleaseCreate,
+    ReleaseId,
+    ReleaseView,
     ResultManifest,
     Tombstone,
     ToolchainCreate,
@@ -112,6 +124,10 @@ class InMemoryMetadataStore:
         self._tombstones: dict[tuple[str, str], Tombstone] = {}
         self._policies: dict[str, DomainPolicy] = {}
         self.gc_runs: list[GcRun] = []
+        self._releases: dict[int, dict[str, object]] = {}  # JSON, like a database row
+        self._channels: dict[tuple[str, str, str], int] = {}  # -> last history entry
+        self._history: list[ChannelMove] = []
+        self._exports: list[ExportRecord] = []
 
     # --- action cache ---------------------------------------------------------------------------
 
@@ -386,6 +402,183 @@ class InMemoryMetadataStore:
             b.view = b.view.model_copy(update={"pinned": False})
             return self._pins.pop(build, None) is not None
 
+    # --- releases and channels (P2-02) -----------------------------------------------------------
+
+    def _release(self, release: int) -> ReleaseView | None:
+        row = self._releases.get(release)
+        return None if row is None else ReleaseView.model_validate_json(json.dumps(row))
+
+    def create_release(self, spec: ReleaseCreate, *, by: str) -> ReleaseView:
+        checked = revalidate(spec, ReleaseCreate, "create_release")
+        by = check_by(by, "create_release")
+        with self._lock:
+            b = self._build(checked.build)
+            results = {a: stored_result(p, checked.build, a) for a, p in b.results.items()}
+            check_release(checked, b.view, b.actions, results)
+            return self._insert_release(checked, by, exported_from=None)
+
+    def _insert_release(
+        self, spec: ReleaseCreate, by: str, *, exported_from: int | None
+    ) -> ReleaseView:
+        key = (spec.domain, spec.name, spec.version)
+        if any((r["domain"], r["name"], r["version"]) == key for r in self._releases.values()):
+            raise MetadataError(
+                f"release {spec.name} {spec.version} already exists in domain {spec.domain!r}; "
+                "releases are immutable, so publish a new version"
+            )
+        release_id = ReleaseId(len(self._releases) + 1)
+        view = ReleaseView(
+            **dict(spec),
+            id=release_id,
+            created_at=self._clock.now(),
+            created_by=by,
+            exported_from=None if exported_from is None else ReleaseId(exported_from),
+            yanked_at=None,
+            yanked_by=None,
+            yank_reason=None,
+        )
+        self._domains.add(spec.domain)
+        self._releases[release_id] = view.model_dump(mode="json")
+        return view.model_copy(deep=True)
+
+    def get_release(self, domain: str, name: str, version: str) -> ReleaseView | None:
+        check_domain(domain)
+        with self._lock:
+            for rid, r in self._releases.items():
+                if (r["domain"], r["name"], r["version"]) == (domain, name, version):
+                    return self._release(rid)
+        return None
+
+    def get_release_by_id(self, release: ReleaseId) -> ReleaseView | None:
+        with self._lock:
+            return self._release(release)
+
+    def list_releases(self, domain: str, *, name: str | None = None) -> list[ReleaseView]:
+        check_domain(domain)
+        with self._lock:
+            found = [
+                v
+                for rid in self._releases
+                if (v := self._release(rid)) is not None
+                and v.domain == domain
+                and (name is None or v.name == name)
+            ]
+        return sorted(found, key=lambda v: (v.name, v.created_at, v.id))
+
+    def yank_release(self, release: ReleaseId, *, by: str, reason: str) -> ReleaseView:
+        by = check_by(by, "yank_release")
+        if not isinstance(reason, str) or not reason or len(reason) > 4096:
+            raise MetadataError("yank_release: give a reason (1-4096 characters)")
+        with self._lock:
+            view = self._release(release)
+            if view is None:
+                raise MetadataError(f"yank_release: no release with id {release}")
+            if view.yanked_at is None:
+                view = view.model_copy(
+                    update={"yanked_at": self._clock.now(), "yanked_by": by, "yank_reason": reason}
+                )
+                self._releases[release] = view.model_dump(mode="json")
+            return view
+
+    def set_channel(
+        self,
+        domain: str,
+        name: str,
+        channel: str,
+        release: ReleaseId,
+        *,
+        by: str,
+        gate: GateCheck | None = None,
+    ) -> ChannelMove:
+        by = check_by(by, "set_channel")
+        checked_gate = None if gate is None else revalidate(gate, GateCheck, "set_channel gate")
+        with self._lock:
+            view = self._release(release)
+            check_set_channel(view, domain, name, channel)
+            assert view is not None
+            move = ChannelMove(
+                id=len(self._history) + 1,
+                domain=domain,
+                name=name,
+                channel=channel,
+                release=view.id,
+                version=view.version,
+                moved_at=self._clock.now(),
+                moved_by=by,
+                gate=checked_gate,
+            )
+            self._history.append(move)
+            self._channels[(domain, name, channel)] = move.id
+            return move
+
+    def get_channel(self, domain: str, name: str, channel: str) -> ChannelView | None:
+        check_domain(domain)
+        with self._lock:
+            last = self._channels.get((domain, name, channel))
+            if last is None:
+                return None
+            move = self._history[last - 1]
+            view = self._release(move.release)
+            assert view is not None
+            return ChannelView(
+                domain=domain, name=name, channel=channel, release=view,
+                updated_at=move.moved_at, updated_by=move.moved_by,
+            )  # fmt: skip
+
+    def channel_history(self, domain: str, name: str, channel: str) -> list[ChannelMove]:
+        check_domain(domain)
+        with self._lock:
+            return [m for m in self._history if (m.domain, m.name, m.channel) == (
+                domain, name, channel,
+            )]  # fmt: skip
+
+    def gate_builds(self, domain: str, flow: str, ids: Iterable[Digest]) -> list[BuildId]:
+        check_domain(domain)
+        wanted = {str(check_digest(d, "gate_builds id")) for d in ids}
+        with self._lock:
+            keys = {
+                key
+                for (d, key, direction, _path), (oid, _content) in self._edges.items()
+                if d == domain and direction == "in" and oid in wanted
+            }
+            found = [
+                BuildId(bid)
+                for bid, b in self._builds.items()
+                if b.view.domain == domain
+                and b.view.project == flow
+                and b.view.status == "passed"
+                and any(r.key is not None and str(r.key) in keys for r in b.actions.values())
+            ]
+        return sorted(found, reverse=True)
+
+    def record_export(self, release: ReleaseId, to_domain: str, *, by: str) -> ReleaseView:
+        check_domain(to_domain)
+        by = check_by(by, "record_export")
+        with self._lock:
+            source = self._release(release)
+            if source is None:
+                raise MetadataError(f"record_export: no release with id {release}")
+            check_exportable(source)
+            if source.domain == to_domain:
+                raise MetadataError(
+                    f"record_export: release {release} is already in domain {to_domain!r}"
+                )
+            spec = ReleaseCreate.model_validate(
+                {**source.model_dump(include=set(ReleaseCreate.model_fields)), "domain": to_domain}
+            )
+            exported = self._insert_release(spec, by, exported_from=source.id)
+            self._exports.append(
+                ExportRecord(
+                    id=len(self._exports) + 1, release=source.id, exported=exported.id,
+                    to_domain=to_domain, exported_at=self._clock.now(), exported_by=by,
+                )
+            )  # fmt: skip
+            return exported
+
+    def list_exports(self, release: ReleaseId) -> list[ExportRecord]:
+        with self._lock:
+            return [e for e in self._exports if release in (e.release, e.exported)]
+
     # --- garbage collection (GcStore) -----------------------------------------------------------
 
     def set_policy(self, domain: str, policy: DomainPolicy) -> None:
@@ -435,7 +628,13 @@ class InMemoryMetadataStore:
                 if lease.domain == domain and lease.expires_at > now
                 for k in lease.digests
             }
-        return GcRoots(frozenset(pinned), frozenset(leased), frozenset())
+            released = {
+                Digest.parse(str(o["digest"]))
+                for r in self._releases.values()
+                if r["domain"] == domain
+                for o in r["outputs"].values()  # type: ignore[attr-defined]
+            }
+        return GcRoots(frozenset(pinned), frozenset(leased), frozenset(released))
 
     def gc_tombstones(self, domain: str) -> list[Tombstone]:
         check_domain(domain)

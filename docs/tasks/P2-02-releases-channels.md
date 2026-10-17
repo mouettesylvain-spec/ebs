@@ -1,6 +1,6 @@
 # P2-02 — Releases and channels
 
-Status: todo · Phase: 2 · Depends on: P1-09 · Size: L
+Status: review · Phase: 2 · Depends on: P1-09 · Size: L
 
 ## Goal
 Teams publish selected outputs of a build as immutable, versioned releases and move channels
@@ -35,3 +35,24 @@ Teams publish selected outputs of a build as immutable, versioned releases and m
 | `test_channels.py::test_history`, `::test_gate_policy[...]` | R3 | unit |
 | `tests/integration/release/test_export.py::test_copy_not_link_and_audit` | R4 | integration |
 | `tests/integration/release/test_api.py` | R5 | integration |
+
+## Notes
+- P2-01 (authz) was not done yet. Defaults used: the service's single `authorize` hook gets
+  `release_write` / `release_export`, allowed like `build_write` on the release's build (owner,
+  or a CI token of its project); reads stay open. Export membership is the Unix group (or owner)
+  of `<cas_root>/<domain>` (`ebs.release.export.UnixGroupAccess`), checked client side, since
+  the service has no CAS access and only records the export. P2-01 should add team and
+  two-domain membership to the hook.
+- Gates: `[release.gates]` maps a channel (or `"name:channel"`) to a gate flow project. The
+  check uses `in` provenance edges joined through action keys, so cache-hit gate builds count.
+  Only passed checks are stored (on the move); a failed gate refuses the move.
+- I19 is enforced in PostgreSQL by triggers (revision 0007): no DELETE on `releases`, no UPDATE
+  except setting the yank fields once; `channel_history` and `exports` are append-only.
+  Yanked releases stay GC roots.
+- New `ReleaseError` (exit 2) and `MetadataBackend` protocol (CONTRACT CHANGE, interfaces.md § 6).
+- Follow-ups: `release_imports` rows arrive with P2-03; `create_release` reads results one action
+  at a time (fine for v1, slow for 1,000+ actions over HTTP: add a batch result read); a release
+  could also root its build's plan (for `ebs verify`, P3-04); exports of very large trees copy
+  object by object without progress output.
+- Review follow-ups not done: `--build N` is tried as a recorded build's UUID prefix before the
+  store id; selector values containing `,` `=` `[` `]` can only be released with `[*]`.

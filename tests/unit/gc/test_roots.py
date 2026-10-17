@@ -11,9 +11,11 @@ from ebs.core.errors import MetadataError
 from ebs.gc.leases import LeaseKeeper
 from ebs.gc.roots import root_set
 from ebs.gc.run import collect
-from ebs.meta.api import LEASE_TTL_S, BuildId, GcRoots
+from ebs.meta.api import LEASE_TTL_S, BuildId, GcRoots, OutputResult
+from ebs.release.releases import create_release
 from tests.helpers.driver import Node, make_env
 from tests.helpers.gc import DOMAIN, World, present
+from tests.helpers.release import Action, finish
 
 
 def roots(world: World) -> GcRoots:
@@ -62,7 +64,7 @@ def test_pins_leases_releases(world: World) -> None:
     with pytest.raises(MetadataError, match="ttl_s"):
         world.store.acquire_lease(DOMAIN, other, [leased], ttl_s=0)
 
-    # Releases arrive with P2-02: none yet.
+    # No release yet (test_release_roots covers them).
     assert roots(world).released == frozenset()
     assert root_set(roots(world)) == {plan, out, log}
 
@@ -141,3 +143,29 @@ def test_lease_keeper(world: World) -> None:
     world.advance(hours=0.1)
     keeper.heartbeat()  # finished build: the lease is gone and cannot be renewed; logged only
     assert roots(world).leased == frozenset()
+
+
+# P2-02 R2 (I19): released outputs are GC roots, also once yanked; a tree root keeps all of it.
+def test_release_roots(world: World) -> None:
+    tree = world.tree({"a.v": b"a", "sub/b.v": b"b"}, register="all")
+    report = world.blob(b"lint report")
+    other = world.blob(b"not released")
+    outputs = {
+        "worklib": OutputResult(digest=tree, id=hash_bytes(b"nd"), type="tree", size=0),
+        "report": OutputResult(digest=report, id=report, type="file", size=11),
+        "other": OutputResult(digest=other, id=other, type="file", size=12),
+    }
+    build = finish(world.store, {"gen": Action(outputs)})
+    rel = create_release(
+        world.store, name="rtl-team/cpu", version="1.0", build=build,
+        outputs=["gen.worklib", "gen.report"], by="alice",
+    )  # fmt: skip
+    assert roots(world).released == {tree, report}
+    assert world.store.gc_roots("elsewhere", world.clock.now()).released == frozenset()
+    world.store.yank_release(rel.id, by="alice", reason="superseded")
+    assert roots(world).released == {tree, report}  # a yanked release is still a release
+    kept = present(world.cas) - {other}
+    for _ in range(4):  # 40 days: past the TTL and the grace period
+        world.advance(days=10)
+        collect(world.store, world.cas, clock=world.clock)
+    assert present(world.cas) == kept

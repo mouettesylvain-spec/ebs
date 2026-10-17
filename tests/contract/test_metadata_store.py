@@ -34,7 +34,7 @@ from ebs.meta.api import (
     BuildId,
     Event,
     InfraReason,
-    MetadataStore,
+    MetadataBackend,
     OutputResult,
     ResourceUsage,
     ResultManifest,
@@ -65,7 +65,7 @@ class Inspector(Protocol):
 
 @dataclass
 class Harness:
-    store: MetadataStore
+    store: MetadataBackend
     clock: FakeClock
     inspect: Inspector
 

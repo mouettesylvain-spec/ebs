@@ -36,3 +36,10 @@ users only see domains whose Unix group they belong to, through every interface.
 | `tests/unit/cli/test_domain_guard.py` | R3 | unit |
 | `tests/unit/deploy/test_create_domain.py` (runs in a user namespace or with a fake chgrp) | R4 | unit |
 | `tests/unit/meta/test_schema_no_content.py` | R5 | unit |
+
+## Notes
+- From P2-02: the `release_write` / `release_export` ops of the `authorize` hook only check the
+  release's build owner today. `release_export` must also check membership in both the source
+  domain and `to_domain` on the server (the CLI's `UnixGroupAccess` check is client side, and the
+  route only records the export); consider also requiring every output digest to be registered
+  in `to_domain`'s `blobs` before `record_export` succeeds.
