@@ -33,6 +33,7 @@ from pydantic import (
 from ebs.core.clock import Clock, SystemClock
 from ebs.core.errors import ExecutorError
 from ebs.core.log import get_logger
+from ebs.exec.api import NodeName
 from ebs.exec.slurm.models import (
     ArrayTaskId,
     JobId,
@@ -194,6 +195,7 @@ class SbatchOptions(BaseModel):
     time_limit_s: Annotated[int, Field(ge=1)] | None = None
     licenses: Mapping[_License, Annotated[int, Field(ge=1)]] = Field(default_factory=dict)
     constraint: _Text | None = None
+    exclude: tuple[NodeName, ...] = ()  # P1-05 R3: nodes that failed this build
     array: ArraySpec | None = None
     output: Path | None = None  # may hold sbatch patterns: %j %A %a %x
     error: Path | None = None
@@ -250,6 +252,8 @@ def sbatch_argv(script: Path, opts: SbatchOptions, *, command: str = "sbatch") -
         argv.append(f"--licenses={lic}")
     if opts.constraint is not None:
         argv.append(f"--constraint={opts.constraint}")
+    if opts.exclude:
+        argv.append(f"--exclude={','.join(sorted(opts.exclude))}")
     if opts.array is not None:
         argv.append(f"--array={opts.array.render()}")
     if opts.output is not None:

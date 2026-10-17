@@ -16,6 +16,7 @@ from typing import Literal, NewType
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ebs.core.errors import ExecutorError
+from ebs.exec.api import NODE_PATTERN
 
 __all__ = [
     "ArrayTaskId",
@@ -70,6 +71,7 @@ class SlurmJobInfo:
     signal: int | None = None  # signal that ended it, if any
     array_job_id: JobId | None = None
     array_task_id: int | None = None
+    node: str | None = None  # the one node it ran on; None if pending or several (P1-05 R3)
 
 
 # --- raw JSON models -------------------------------------------------------------------------
@@ -139,6 +141,15 @@ def _reason(raw: str) -> str | None:
     return None if raw in ("", "None") else raw
 
 
+_ONE_NODE = re.compile(NODE_PATTERN, re.ASCII)
+
+
+def _node(raw: str) -> str | None:
+    """`nodes` names one host for our single-node jobs; "", "None assigned" or a host list
+    (`n[1-2]`, `n1,n2`) is no single node to blame."""
+    return raw if _ONE_NODE.match(raw) and raw != "None" else None
+
+
 class SqueueJob(_Model):
     job_id: int
     job_state: list[str] = Field(min_length=1)
@@ -148,6 +159,7 @@ class SqueueJob(_Model):
     array_task_string: str = ""
     exit_code: ExitCode = ExitCode()
     name: str = ""
+    nodes: str = ""
 
     @field_validator("job_state", mode="before")
     @classmethod
@@ -172,6 +184,7 @@ class SqueueJob(_Model):
             signal=sig,
             array_job_id=JobId(str(array_job)) if array_job else None,
             array_task_id=task if array_job else None,
+            node=_node(self.nodes),
             source="squeue",
         )
 
@@ -203,6 +216,7 @@ class SacctJob(_Model):
     array: SacctArray = SacctArray()
     exit_code: ExitCode = ExitCode()
     name: str = ""
+    nodes: str = ""
 
     def info(self, *, task_id: int | None = None) -> SlurmJobInfo:
         code, sig = self.exit_code.code_and_signal()
@@ -217,6 +231,7 @@ class SacctJob(_Model):
             signal=sig,
             array_job_id=JobId(str(array_job)) if array_job else None,
             array_task_id=task if array_job else None,
+            node=_node(self.nodes),
             source="sacct",
         )
 

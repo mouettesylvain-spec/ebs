@@ -359,6 +359,18 @@
           ],
           "default": null,
           "title": "Constraint"
+        },
+        "retry_on_timeout": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retry On Timeout"
         }
       },
       "title": "Resources",
@@ -468,7 +480,8 @@
             "mem": null,
             "time": null,
             "max_parallel": null,
-            "constraint": null
+            "constraint": null,
+            "retry_on_timeout": null
           }
         },
         "licenses": {
@@ -599,7 +612,8 @@
             "mem": null,
             "time": null,
             "max_parallel": null,
-            "constraint": null
+            "constraint": null,
+            "retry_on_timeout": null
           }
         }
       },

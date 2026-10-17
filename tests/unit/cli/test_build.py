@@ -4,6 +4,7 @@ import json
 import os
 import re
 import signal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,7 +14,7 @@ from ebs.cli.build import CacheChoice, ExecutorChoice
 from ebs.core.errors import ExitCode
 from ebs.driver.cache_policy import CACHE_MODES
 from ebs.driver.events import read_events
-from tests.helpers.cli import Site
+from tests.helpers.cli import Site, TestServices, write_site
 
 
 # R2
@@ -124,3 +125,24 @@ def test_build_needs_metadata_store(site: Site) -> None:
     result = site.invoke(["build"])
     assert result.exit_code == ExitCode.USAGE
     assert "[metadata].url" in result.stderr
+
+
+# P1-05 R1: `[retry]` reaches the driver; a bad section fails before anything runs.
+def test_retry_config_reaches_the_driver(tmp_path: Path) -> None:
+    write_site(tmp_path, config_extra="[retry]\nmax_retries = 1\nbackoff_s = 0\n")
+    site = Site(tmp_path, TestServices(tmp_path))
+    site.services.scripts = {"gen": (("infra", "node_fail"),)}
+    assert site.invoke(["build"]).exit_code == ExitCode.INFRA
+    assert site.services.executors[-1].runs("gen") == 2  # max_retries = 1
+    # A timeout is not retried unless the step asks.
+    site.services.scripts = {"gen": (("infra", "timeout"),)}
+    assert site.invoke(["build", "--no-cache"]).exit_code == ExitCode.INFRA
+    assert site.services.executors[-1].runs("gen") == 1
+
+    bad = tmp_path / "bad"
+    write_site(bad, config_extra="[retry]\nmax_retries = -1\n")
+    site = Site(bad, TestServices(bad))
+    result = site.invoke(["build"])
+    assert result.exit_code == ExitCode.USAGE, result.output
+    assert "max_retries" in result.output
+    assert site.services.executors == []

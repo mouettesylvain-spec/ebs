@@ -25,6 +25,7 @@ from ebs.cli._output import Output, handle_errors, make_output
 from ebs.cli._records import BuildRecord, find_build
 from ebs.core.digest import Digest
 from ebs.core.errors import CasError, ConfigError, FlowError, PlanError
+from ebs.driver.resources_tuning import MemoryHint, UsageLog, memory_hints, usage_path
 from ebs.flow.loader import load_flow
 from ebs.flow.model import Flow
 from ebs.meta.api import MetadataStore, ResultManifest
@@ -187,6 +188,7 @@ def _document(
     record: BuildRecord | None,
     diffs: dict[str, ActionDiff],
     removed: list[str],
+    hints: list[MemoryHint],
 ) -> dict[str, Any]:
     plan = prediction.plan if prediction else result.plan
     actions: list[dict[str, Any]] = []
@@ -238,6 +240,7 @@ def _document(
         "actions": actions,
         "removed": removed,
         "warnings": result.warnings,
+        "hints": [h.to_json() for h in hints],
     }
 
 
@@ -293,6 +296,8 @@ def _print(out: Output, doc: dict[str, Any]) -> None:
             out.line(f"  … {len(reasons) - MAX_REASONS} more (see --json)")
     for action_id in doc["removed"]:
         out.line(f"  removed: {action_id}")
+    for hint in doc["hints"]:
+        out.line(f"hint: {hint['message']}")
 
 
 @handle_errors
@@ -318,7 +323,8 @@ def plan_command(
     new = prediction.plan if prediction else result.plan
     diffs = {d.action_id: d for d in diff_plans(old, new)} if old else {}
     removed = [d.action_id for d in diffs.values() if d.status == "removed"]
-    doc = _document(result, prediction, record, diffs, removed)
+    hints = memory_hints(new, UsageLog(usage_path(services.cwd)).by_step())
+    doc = _document(result, prediction, record, diffs, removed, hints)
     if json_mode:
         out.emit(doc)
     else:

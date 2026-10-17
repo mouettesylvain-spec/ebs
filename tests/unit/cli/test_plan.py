@@ -149,6 +149,7 @@ def test_json_schema_stable(site: Site) -> None:
         ],
         "removed": [],
         "warnings": [],
+        "hints": [],  # P1-05 R4: no usage recorded yet
     }
 
 

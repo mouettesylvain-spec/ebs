@@ -1,8 +1,10 @@
 """A scripted stand-in for `ebs-runner`, started by executor tests as `python fake_runner.py …`.
 
 Stdlib only. Behaviour per action comes from the JSON file named by `$EBS_FAKE_RUNNER_SCRIPT`:
-`{action_id: {"exit": int, "hold": bool, "stderr": str, "signal": int, "cpus": int}}` (all
-optional; default: exit 0 at once). A held fake waits until the test creates `release/<id>`.
+`{action_id: {"exit": int, "hold": bool, "stderr": str, "signal": int, "cpus": int,
+"alloc_mb": int}}` (all optional; default: exit 0 at once). `alloc_mb` fills that much memory
+and keeps it for a second, long enough for FakeSlurm to see it against `--mem`. A held fake
+waits until the test creates `release/<id>`.
 Under `$EBS_FAKE_RUNNER_RECORD` it leaves:
 
 - `argv/<id>.json`: its argv; `running/<id>`: present while it runs, holding its cpus;
@@ -83,6 +85,11 @@ def main() -> int:
         release = record / "release" / name
         while not release.exists():
             time.sleep(0.01)
+    alloc = behaviour.get("alloc_mb")
+    if isinstance(alloc, int):
+        ballast = b"\x01" * (alloc << 20)  # written, so resident
+        time.sleep(1.0)
+        del ballast
     stderr = behaviour.get("stderr")
     if isinstance(stderr, str):
         sys.stderr.write(stderr)

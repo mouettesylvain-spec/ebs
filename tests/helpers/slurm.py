@@ -27,6 +27,7 @@ class Job:
     state: str = "PENDING"
     reason: str = "Priority"
     exit_code: int = 0
+    node: str = ""  # where it runs/ran; "" while pending
 
 
 def _opt(argv: Sequence[str], name: str) -> str | None:
@@ -100,10 +101,12 @@ class ScriptedSlurm:
                 self.jobs.append(Job(job_id, name, comment, argv, job_id, task))
         return CommandResult(0, f"{job_id}\n", "")
 
-    def set_state(self, job: str, state: str, *, exit_code: int = 0, reason: str = "None") -> None:
+    def set_state(
+        self, job: str, state: str, *, exit_code: int = 0, reason: str = "None", node: str = ""
+    ) -> None:
         """Set the state of "<id>" or "<id>_<task>"."""
         for j in self._select(job):
-            j.state, j.exit_code, j.reason = state, exit_code, reason
+            j.state, j.exit_code, j.reason, j.node = state, exit_code, reason, node
 
     def _select(self, ref: str) -> list[Job]:
         base, _, task = ref.partition("_")
@@ -127,6 +130,7 @@ class ScriptedSlurm:
                     "array_task_id": _num(j.task_id),
                     "array_task_string": "",
                     "name": j.name,
+                    "nodes": j.node,
                     "exit_code": {
                         "status": ["SUCCESS" if ended else "PENDING"],
                         "return_code": _num(j.exit_code if ended else None),

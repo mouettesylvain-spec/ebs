@@ -3,7 +3,8 @@
 `run_build` stores the plan in the CAS, creates the build record (git info of the flow repo,
 user, CI job, cache mode), adds the actions, runs the `Scheduler` and finishes the build with its
 status and per-state counts. With `handle_sigint`, Ctrl-C cancels submitted work and records the
-build as `cancelled` (R8).
+build as `cancelled` (R8). The usage of the actions that ran and passed is appended to
+`.ebs/usage.jsonl` for `ebs plan`'s tuning hints (P1-05 R4).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from ebs.core.clock import Clock, SystemClock
 from ebs.core.errors import ExitCode
 from ebs.core.log import get_logger
 from ebs.driver.events import EventLog
+from ebs.driver.resources_tuning import UsageLog, record_usage, usage_path
 from ebs.driver.retry import BackoffRetry, RetryPolicy
 from ebs.driver.scheduler import DriverConfig, FinalState, Refiner, Scheduler
 from ebs.exec.api import Executor
@@ -128,6 +130,7 @@ def run_build(
     store.finish_build(build, status)
     counts = Counter(states.values())
     events.emit("build_finished", status=status, counts=dict(sorted(counts.items())))
+    record_usage(UsageLog(usage_path(workdir)), scheduler.usage)
     return BuildOutcome(build, uuid, status, EXIT_CODES[status], states, scheduler.plan, path)
 
 

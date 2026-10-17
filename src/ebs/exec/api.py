@@ -9,11 +9,12 @@ Runner exit codes map to states the same way on every executor (`status_for_exit
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Final, Literal, Protocol
+from typing import Annotated, Final, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
 from ebs.core.digest import Digest
 from ebs.core.errors import ExecutorError
@@ -22,12 +23,14 @@ from ebs.plan.types import ActionSpec
 from ebs.runner.errors import EXIT_INFRA, EXIT_OK, EXIT_VERIFY
 
 __all__ = [
+    "NODE_PATTERN",
     "TERMINAL_JOB_STATES",
     "Executor",
     "ExecutorBusy",
     "JobHandle",
     "JobState",
     "JobStatus",
+    "NodeName",
     "SubmitBatch",
     "status_for_exit",
 ]
@@ -69,6 +72,7 @@ class SubmitBatch:
     domain: str
     build: BuildId | None  # None: the runner posts nothing and prints the result
     actions: tuple[ActionSpec, ...]
+    exclude_nodes: tuple[str, ...] = ()  # P1-05: nodes the jobs must not run on (sorted)
 
     def __post_init__(self) -> None:
         if not self.actions:
@@ -89,14 +93,30 @@ class SubmitBatch:
         if len(set(ids)) != len(ids):
             dup = sorted({i for i in ids if ids.count(i) > 1})
             raise ExecutorError(f"action(s) {dup} appear twice in one batch")
+        bad = [n for n in self.exclude_nodes if not isinstance(n, str) or not _NODE_RE.match(n)]
+        if bad:
+            raise ExecutorError(
+                f"invalid node name(s) to exclude {bad}: expected host names made of letters, "
+                "digits, '_', '.' and '-'"
+            )
 
     @property
     def step(self) -> str:
         return self.actions[0].step
 
 
+NODE_PATTERN: Final = r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$"
+"""One compute node's host name, as SLURM prints it (no host list expression)."""
+_NODE_RE: Final = re.compile(NODE_PATTERN, re.ASCII)
+NodeName = Annotated[str, StringConstraints(pattern=NODE_PATTERN)]
+
+
 class JobStatus(BaseModel):
-    """Where a job stands. Reasons are set exactly for the state they explain."""
+    """Where a job stands. Reasons are set exactly for the state they explain.
+
+    `node` is the host the job ran on when the executor knows it (P1-05: the driver excludes a
+    node that keeps failing); None while pending, or for executors without nodes.
+    """
 
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
@@ -104,6 +124,7 @@ class JobStatus(BaseModel):
     pending_reason: PendingReason | None = None
     infra_reason: InfraReason | None = None
     exit_code: int | None = None  # the runner's; negative = killed by that signal
+    node: NodeName | None = None
 
     @model_validator(mode="after")
     def _reasons_match_state(self) -> JobStatus:

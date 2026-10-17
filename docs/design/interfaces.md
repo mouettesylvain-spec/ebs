@@ -111,6 +111,10 @@ Model details (P0-04):
   planner ANDs a toolchain's and the step's (`ebs.flow.model.and_constraints(*exprs)`: in order,
   no repeats); the SLURM executor ANDs the result with `[slurm].os_constraint`.
   plan.json writes it only when set. Not in the action key.
+- `Resources.retry_on_timeout` (P1-05) is a literal `bool` or None: whether an attempt killed at
+  its time limit is retried (`ReasonRetry`); None defers to `[retry].retry_on_timeout`. A
+  toolchain's value is a default the step overrides. plan.json writes it only when set. Not in
+  the action key.
 - The planner parses a resolved resource string with `ebs.flow.model.parse_memory` / `parse_duration`.
 - `model_dump()` emits the YAML spelling again (`8G`, `30m`, `from`, `zip`), so the result re-validates.
 - `ebs.flow.model.check_ref_syntax(s) -> str | None` validates the grammar below without resolving anything.
@@ -649,13 +653,20 @@ class SubmitBatch:                        # non-empty; one step, one domain, uni
     domain: str
     build: BuildId | None                 # None: the runner posts nothing and prints the result
     actions: tuple[ActionSpec, ...]
+    exclude_nodes: tuple[str, ...] = ()   # P1-05: hosts (NODE_PATTERN) the jobs must avoid
 
 class JobStatus(BaseModel):               # frozen, strict
     state: Literal["pending", "running", "done", "infra_failed", "cancelled"]
     pending_reason: PendingReason | None = None   # only for `pending`
     infra_reason: InfraReason | None = None       # exactly for `infra_failed`
     exit_code: int | None = None                  # the runner's; negative = killed by that signal
+    node: NodeName | None = None                  # P1-05: host it ran on, if known (never pending)
 ```
+
+`NODE_PATTERN = r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$"`: one host name, never a host list. Executors
+without nodes (local) ignore `exclude_nodes` and report no node; the SLURM executor reads the
+node from `squeue`/`sacct` (`nodes`; a host list or "None assigned" is no node) and passes
+`exclude_nodes` as `sbatch --exclude=`.
 
 `ExecutorBusy(ExecutorError)` (P1-02) carries `retry_after_s`: `submit` started nothing because the
 backend cannot take the batch now (rate limit, too many jobs in flight). It is not a failure of
@@ -681,7 +692,8 @@ SlurmCli(runner: CommandRunner | None = None, clock: Clock | None = None, bin_di
     .cancel(job_ids, *, signal: str | None = None) -> None       # one scancel; ended jobs are no error
     .version() -> str                                            # scontrol --version
 SbatchOptions(job_name, partition=, account=, qos=, cpus_per_task=, mem_mb=, time_limit_s=,
-              licenses={name[@server]: n}, constraint=, array=ArraySpec(indices, throttle=),
+              licenses={name[@server]: n}, constraint=, exclude=(node, …),
+              array=ArraySpec(indices, throttle=),
               output=, error=, workdir=, export_file=, requeue=False, comment=)   # frozen, validated
 write_env_file(path, env)                 # NUL-separated NAME=value for --export-file
 states.job_status(info: SlurmJobInfo, *, infra_reason: InfraReason | None = None) -> JobStatus
@@ -885,9 +897,15 @@ attempt, § 9). Emitted to MetadataStore and to a local JSONL file
 (`<workdir>/.ebs/builds/<uuid>/events.jsonl`, written before the store so an outage leaves a
 trace) used by `ebs status` / `ebs logs` when offline; `read_events(path)` parses it. Data (no
 floats): `submitted {job_id, attempt, batch_size}`, `pending {reason}`, `running {job_id}`,
-`cache_hit {key, status}`, `infra_failed {reason, exit_code?, detail?}`, `retrying {attempt,
-delay_ms}`, `finished {state ∈ done|failed|infra_failed|skipped|cancelled, exit_code?, attempts?,
-reason?}`, `build_finished {status, counts}`.
+`cache_hit {key, status}`, `infra_failed {reason, attempt, exit_code?, detail?, node?,
+excluded_node?}`, `retrying {attempt, delay_ms}`, `finished {state ∈
+done|failed|infra_failed|skipped|cancelled, exit_code?, attempts?, reasons?, reason?, hint?}`,
+`build_finished {status, counts}`. P1-05 R2: `attempt` numbers the submissions of an action
+(1, 2, …) in `submitted` and the driver's `infra_failed`; once any attempt failed for an
+infrastructure reason, the action's `finished` event has `attempts` (submissions) and
+`reasons` (one per failed attempt, in order). `attempt_history(events) -> {action_id:
+[Attempt(attempt, job_id, node, reason)]}` rebuilds them (`ebs status`). The runner's own
+`infra_failed` event has no `attempt`.
 
 Driver API (P0-15; used by the CLI, P0-16, and retry tuning, P1-05):
 
@@ -904,15 +922,44 @@ class DriverConfig:                 # ebs.driver.scheduler
     max_retries: int = 2; max_batch: int = 1000; poll_min_s: float = 0.5; poll_max_s: float = 10.0
 
 class RetryPolicy(Protocol):        # ebs.driver.retry
-    def decide(self, spec: ActionSpec, attempt: int, reason: InfraReason) -> RetryDecision | None: ...
-RetryDecision(delay_s: float, resources: Resources | None = None)   # resources: e.g. more mem after OOM
-BackoffRetry(max_retries=2, base_s=10.0, factor=2.0, max_s=300.0)
+    def decide(self, spec: ActionSpec, attempt: int, reason: InfraReason,
+               earlier: tuple[InfraReason, ...] = ()) -> RetryDecision | None: ...
+    # earlier (P1-05): reasons of the action's previous failed attempts, oldest first
+RetryDecision(delay_s: float, resources: Resources | None = None, avoid_node: bool = False)
+    # resources: e.g. more mem after OOM; avoid_node: the next attempt excludes the failed node
+BackoffRetry(max_retries=2, base_s=10.0, factor=2.0, max_s=300.0)   # run_build's default
+RetrySettings(max_retries=2, backoff_s=10.0, backoff_factor=2.0, backoff_max_s=300.0,
+              oom_mem_factor=1.5, max_mem=None, license_backoff_s=60.0, retry_on_timeout=False,
+              input_verification_retries=1)    # .from_config(config): `[retry]`, ConfigError
+ReasonRetry(settings=RetrySettings())   # P1-05 R1, used by `ebs build`; see ebs.driver.retry
+grown_memory(mem: int, factor: float, cap: int | None) -> int | None
 CachePolicy(mode, rerun_failed=False)   # .reads, .writes, .accept(result)
+
+# ebs.driver.resources_tuning (P1-05 R4): hints, never enforcement
+usage_path(workdir) -> Path                     # <workdir>/.ebs/usage.jsonl
+UsageSample(step, max_rss_kb, cpu_s, wall_s); UsageLog(path, *, max_samples=200, max_lines=20000)
+    .record(samples) / .samples() / .by_step() -> {step: [max_rss_kb, …]}   # most recent last
+record_usage(log, samples)          # best effort (OSError is logged); Scheduler.usage holds them
+p95(values) -> int                                           # nearest rank
+memory_hints(plan, usage, *, factor=4.0, min_samples=5) -> list[MemoryHint]
+MemoryHint(step, requested, p95, samples, suggested)         # bytes; .message(), .to_json()
 ```
+
+`ReasonRetry` (P1-05 R1): every reason is bounded by `max_retries`; `oom` ⇒ memory ×
+`oom_mem_factor` rounded up to a MiB, capped at `max_mem` (no request, or at the cap: final);
+`timeout` ⇒ final unless `resources.retry_on_timeout` (else `[retry].retry_on_timeout`) is true;
+`node_fail`/`preempted`/`runner_crash`/`other` ⇒ same resources after the backoff; `license` ⇒
+`license_backoff_s` × attempt; `input_verification` ⇒ `input_verification_retries` times
+(counted over `earlier` input_verification failures, whatever came before), each
+avoiding the failed node, then final with a `hint` in its `finished` event. A test failure
+(`failed` result) never reaches the policy (I12). The scheduler excludes a node from every later
+submission of the build once it had `NODE_FAIL_LIMIT` (2) `node_fail`s, of any actions.
 
 Driver rules: an action is looked up in the cache and, on a miss, submitted only once all its
 producers succeeded and its key is known; the refined plan is stored in the CAS before each
-submit (the runner needs keys). Batches group one step with identical resources and licenses.
+submit (the runner needs keys). Batches group one step with identical resources, licenses and
+nodes to avoid. After the build is finished, `run_build` appends the usage of the actions that
+ran and passed (collected by the scheduler from their manifests) to `.ebs/usage.jsonl` (P1-05 R4).
 One `poll` per loop iteration; the wait doubles from `poll_min_s` to `poll_max_s` while nothing
 changes and also ends when a retry is due. Executor results: `done` ⇒ `get_result` (none posted
 ⇒ infra `runner_crash`); `infra_failed` ⇒ retry policy; `cancelled` not requested by the driver,
@@ -1149,8 +1196,14 @@ folded from events: `queued` (no event yet), `submitted`, `pending: <reason>`, `
               "cache": "hit|miss|unknown", "cached_status": "passed|failed|null",
               "change": {"status": "added|changed|unchanged|unknown|null", "fields": […],
                          "pending": ["depends on <action_id>"]}}],
- "removed": ["<action_id>"], "warnings": ["…"]}
+ "removed": ["<action_id>"], "warnings": ["…"],
+ "hints": [{"step", "requested_mem": "16G", "p95_mem": "1G", "samples": 20,
+            "suggested_mem": "1536M", "message": "…"}]}
 ```
+
+`hints` (P1-05 R4) lists steps whose largest memory request is more than 4 × the p95 of the
+peak memory of their recent successful runs (`.ebs/usage.jsonl`, written by `run_build`; at
+least 5 samples). Text mode prints each as `hint: <message>`. Hints never change the plan.
 
 Prediction mirrors the driver: keyed actions are looked up with `cache_get` (which counts a hit
 and touches `last_access`); the output ids of passed hits refine the plan, repeated until no new
@@ -1164,8 +1217,12 @@ key appears. `cache` is `unknown` for actions still unkeyed, or for all without
 then `build <uuid>: build <status> (<state>=<n>, …)`.
 
 **`ebs status --json`**: `{"v": 1, "uuid", "build", "status", "flow", "created_at", "steps":
-[{"step", "actions", "states": {state: n}}], "totals": {state: n}}`. `--watch` redraws every
-`--interval` seconds until the build is no longer `running`.
+[{"step", "actions", "states": {state: n}}], "totals": {state: n}, "retries": [{"action_id",
+"state", "attempts": [{"attempt", "job_id", "node", "reason"}]}]}`. `retries` (P1-05 R2) lists the
+actions with at least one infrastructure failure, with every attempt (`reason` null for one that
+did not fail that way); text mode prints `<action>: <state> after <n> attempts (<reason> on
+<node>, …)` under `infrastructure failures:`. `--watch` redraws every `--interval` seconds until
+the build is no longer `running`.
 
 **`ebs logs ACTION`**: ACTION is an action id or a unique prefix. Finished actions: the log blob
 of `get_result(build, action)` (or of the last `infra_failed` event's `log`), read from the CAS.

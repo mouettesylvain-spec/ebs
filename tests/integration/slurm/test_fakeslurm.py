@@ -24,6 +24,7 @@ from ebs.exec.slurm.models import (
 )
 from ebs.exec.slurm.states import job_status
 from tests.fakes.slurm import FakeSlurm
+from tests.fakes.slurm.core import NODE
 from tests.helpers.wait import wait_until
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "slurm" / "26.05"
@@ -74,7 +75,9 @@ def test_submit_runs_script_and_reports_exit_code(fake_slurm: FakeSlurm, tmp_pat
     assert (tmp_path / f"ok-{ok}.out").read_text() == "hello\n"
     info = _wait_state(cli, bad, TERMINAL)
     assert (info.state, info.exit_code) == ("FAILED", 75)
-    assert job_status(info) == JobStatus(state="infra_failed", infra_reason="other", exit_code=75)
+    assert job_status(info) == JobStatus(
+        state="infra_failed", infra_reason="other", exit_code=75, node=NODE
+    )
 
 
 # R5: at most N elements of an array run at once.
@@ -178,13 +181,13 @@ def test_time_kill(fake_slurm: FakeSlurm) -> None:
         pytest.param(
             {"fault": "NODE_FAIL", "after_s": 0.2},
             "NODE_FAIL",
-            JobStatus(state="infra_failed", infra_reason="node_fail", exit_code=-9),
+            JobStatus(state="infra_failed", infra_reason="node_fail", exit_code=-9, node=NODE),
             id="node-fail",
         ),
         pytest.param(
             {"fault": "PREEMPTED", "after_s": 0.2},
             "PREEMPTED",
-            JobStatus(state="infra_failed", infra_reason="preempted", exit_code=-15),
+            JobStatus(state="infra_failed", infra_reason="preempted", exit_code=-15, node=NODE),
             id="preempted",
         ),
     ],

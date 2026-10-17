@@ -420,6 +420,7 @@ class SlurmExecutor:
                 self._policy.os_constraint,
                 sorted({c for a in job.actions if (c := a.resources.constraint) is not None}),
             ),
+            exclude=batch.exclude_nodes,
             array=array,
             output=output,
             workdir=log_dir,

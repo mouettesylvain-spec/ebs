@@ -642,10 +642,10 @@ def _check_overlaps(
 
 def _merge_resources(step: Resources, toolchain: Resources | None, where: str) -> Resources:
     # Constraints add up (both are needed on the node); the other resources are defaults.
-    values: dict[str, int | str | None] = {
+    values: dict[str, int | str | bool | None] = {
         "constraint": and_constraints(toolchain.constraint if toolchain else None, step.constraint)
     }
-    for attr in ("cpus", "mem", "time", "max_parallel"):
+    for attr in ("cpus", "mem", "time", "max_parallel", "retry_on_timeout"):
         value = getattr(step, attr)
         if value is None and toolchain is not None:
             value = getattr(toolchain, attr)
