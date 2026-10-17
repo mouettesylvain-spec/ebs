@@ -14,20 +14,27 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-import psycopg
-import sqlalchemy as sa
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+)
 
 import ebs
 from ebs.config import config_paths, load_config
 from ebs.core.errors import ConfigError, MetadataError
 from ebs.core.log import get_logger
+from ebs.domains import Domains
 from ebs.meta.api import API_PREFIX, ErrorBody
 from ebs.meta.pg import PgMetadataStore
 from ebs.meta.service.auth import (
@@ -36,11 +43,13 @@ from ebs.meta.service.auth import (
     BearerAuthenticator,
     ChainAuthenticator,
     MungeAuthenticator,
+    NotFoundError,
     PermissionDeniedError,
     Policy,
     UnmungeVerifier,
 )
-from ebs.meta.service.deps import BODY_MODELS, ServiceDeps
+from ebs.meta.service.authz import DomainPolicy, NssGroups
+from ebs.meta.service.deps import BODY_MODELS, ServiceDeps, is_outage
 from ebs.meta.service.readiness import PgReadiness
 from ebs.meta.service.routes import builds, cache, probes, releases, toolchains
 from ebs.meta.service.tokens import PgTokenStore
@@ -50,28 +59,9 @@ __all__ = ["ServiceConfig", "ServiceDeps", "app_from_config", "create_app"]
 
 _log = get_logger(__name__)
 
-_OUTAGES: tuple[type[BaseException], ...] = (
-    ConnectionError,
-    TimeoutError,
-    sa.exc.OperationalError,
-    sa.exc.InterfaceError,
-    sa.exc.TimeoutError,
-    psycopg.OperationalError,
-    psycopg.InterfaceError,
-)
 _ERRORS: dict[int | str, dict[str, Any]] = {
-    code: {"model": ErrorBody} for code in (401, 403, 409, 422, 503)
+    code: {"model": ErrorBody} for code in (401, 403, 404, 409, 422, 503)
 }
-
-
-def _is_outage(exc: BaseException) -> bool:
-    """True if a MetadataError was caused by the database being unreachable or failing."""
-    seen: BaseException | None = exc.__cause__
-    while seen is not None:
-        if isinstance(seen, _OUTAGES):
-            return True
-        seen = seen.__cause__
-    return False
 
 
 def _error(status: int, detail: str, headers: Mapping[str, str] | None = None) -> JSONResponse:
@@ -91,8 +81,25 @@ async def _forbidden(request: Request, exc: Exception) -> JSONResponse:
     return _error(403, str(exc))
 
 
+async def _not_found(request: Request, exc: Exception) -> JSONResponse:
+    return _error(404, str(exc))
+
+
+async def _fail_closed(request: Request, call_next: Any) -> Any:
+    """Refuse to send a success that no `ServiceDeps.check` authorized (P2-01 R1): a route that
+    forgot its authorization fails loudly instead of leaking data. It guards what is sent, not
+    what the route already wrote (and clients retry 5xx), so the route tests and the matrix
+    (tests/helpers/authz_matrix.py) remain what proves each route authorizes first."""
+    response = await call_next(request)
+    principal = getattr(request.state, "principal", None)
+    if principal is not None and response.status_code < 400 and not principal.authorized:
+        _log.error("route answered without authorization", path=request.url.path)
+        return _error(500, "internal error: the route did not authorize the request")
+    return response
+
+
 async def _store_error(request: Request, exc: Exception) -> JSONResponse:
-    if _is_outage(exc):
+    if is_outage(exc):
         # The full text names the database host; it goes to the log, not to every caller.
         _log.error("metadata database unavailable", path=request.url.path, error=str(exc))
         return _error(503, "metadata database unavailable; retry later")
@@ -144,9 +151,11 @@ def create_app(deps: ServiceDeps) -> FastAPI:
         app.include_router(router, prefix=API_PREFIX, responses=_ERRORS)
     app.add_exception_handler(AuthenticationError, _auth_failed)
     app.add_exception_handler(PermissionDeniedError, _forbidden)
+    app.add_exception_handler(NotFoundError, _not_found)
     app.add_exception_handler(MetadataError, _store_error)
     app.add_exception_handler(RequestValidationError, _invalid)
     app.add_exception_handler(Exception, _internal)
+    app.middleware("http")(_fail_closed)
     app.openapi = lambda: _openapi(app)  # type: ignore[method-assign]
     return app
 
@@ -164,6 +173,11 @@ class ServiceConfig(BaseModel):
     audience: StrictStr | None = None  # required with munge: the host[:port] clients use
     bearer: StrictBool = True
     toolchain_admins: list[StrictStr] = Field(default_factory=list)
+    # P2-01: the domains this service serves (each in [[domains]]), bearer token principals'
+    # domains, and how long NSS group lookups are cached.
+    domains: list[StrictStr] = Field(default_factory=list)
+    token_domains: dict[StrictStr, list[StrictStr]] = Field(default_factory=dict)
+    group_ttl_s: Annotated[StrictInt, Field(ge=0)] = 60
 
     @classmethod
     def from_mapping(cls, section: Mapping[str, object]) -> ServiceConfig:
@@ -197,7 +211,13 @@ def app_from_config(environ: Mapping[str, str] | None = None) -> FastAPI:
         store=store,
         authenticator=ChainAuthenticator(*schemes),
         readiness=PgReadiness(store.engine),
-        authorize=Policy(service.toolchain_admins),
+        authorize=DomainPolicy(
+            Policy(service.toolchain_admins),
+            Domains.from_config(config),
+            service.domains,
+            NssGroups(ttl_s=service.group_ttl_s),
+            service.token_domains,
+        ),
         gates=GatePolicy.from_section(config.get("release", {})),
     )
     return create_app(deps)

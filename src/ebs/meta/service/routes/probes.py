@@ -42,8 +42,12 @@ class Whoami(BaseModel):
 
 
 @api.get("/whoami", response_model=Whoami)
-def whoami(caller: Annotated[Principal, Depends(current_principal)]) -> Response:
+def whoami(
+    caller: Annotated[Principal, Depends(current_principal)],
+    deps: Annotated[ServiceDeps, Depends(get_deps)],
+) -> Response:
     """The authenticated caller, to check credentials (`curl -H "X-EBS-Munge: $(munge -n)"`)."""
+    deps.check(caller, "read", domain=None, owner=None)
     return ok(
         Whoami(name=caller.name, via=caller.via, token_kind=caller.token_kind, team=caller.team)
     )

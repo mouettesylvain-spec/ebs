@@ -29,11 +29,12 @@ class DomainAccess(Protocol):
 
 
 class UnixGroupAccess:
-    """Membership = the caller owns `<cas root>/<domain>` or is in its group."""
+    """Membership = the caller owns `<cas root>/<domain>` or is in its group (`cas_root`: one
+    root, or the root of each domain, `RunnerSettings.cas_root_for`)."""
 
     def __init__(
         self,
-        cas_root: Path,
+        cas_root: Path | Callable[[str], Path],
         *,
         uid: Callable[[], int] = os.getuid,
         groups: Callable[[], Iterable[int]] = lambda: {os.getgid(), *os.getgroups()},
@@ -44,7 +45,8 @@ class UnixGroupAccess:
 
     def is_member(self, domain: str) -> bool:
         try:
-            st = (self._root / domain).stat()
+            root = self._root(domain) if callable(self._root) else self._root
+            st = (root / domain).stat()
         except OSError:
             return False
         return st.st_uid == self._uid() or st.st_gid in set(self._groups())

@@ -41,6 +41,14 @@ is the build's project. Service tokens can read and write the action cache but n
 Registering a toolchain makes it current for every later build, so only service tokens and the
 users in `[meta_service].toolchain_admins` may.
 
+Domains (P2-01): the service serves only `[meta_service].domains`, each configured in
+`[[domains]]`; run it as an account that is a member of exactly those domains' groups. A user
+sees a domain only if NSS (LDAP/SSSD) puts them in its `unix_group` (cached `group_ttl_s`, 60 s
+by default, so a removal takes effect within a minute). Bearer tokens are scoped with
+`token_domains = { "ci-cpu" = ["cpu-nda"] }`. Outside their domains callers get 403, or 404 for
+a build or release named by id, and every cache lookup is a miss. Create a domain's directories
+with `deploy/admin/create_domain.sh NAME GROUP` and verify them with `ebs domain check`.
+
 ## Client configuration
 
 ```toml

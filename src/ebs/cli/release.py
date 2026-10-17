@@ -217,7 +217,7 @@ def export_command(
     rel = find_release(store, default_domain(services, domain), name, version)
     exported = export_release(
         store, rel, src=services.cas(rel.domain), dst=services.cas(to),
-        access=UnixGroupAccess(services.runner_settings().cas_root), by=services.user(),
+        access=UnixGroupAccess(services.runner_settings().cas_root_for), by=services.user(),
     )  # fmt: skip
     if json_mode:
         out.emit(release_doc(exported))

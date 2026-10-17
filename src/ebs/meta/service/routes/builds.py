@@ -27,7 +27,8 @@ from ebs.meta.api import (
     ResultManifest,
     StateChange,
 )
-from ebs.meta.service.auth import BuildOwner, Principal
+from ebs.meta.service.auth import BuildOwner, NotFoundError, Operation, Principal
+from ebs.meta.service.authz import DomainDenied
 from ebs.meta.service.deps import ServiceDeps, body, current_principal, get_deps, json_body
 from ebs.meta.service.routes import no_content, ok
 
@@ -41,14 +42,22 @@ Caller = Annotated[Principal, Depends(current_principal)]
 _RESERVED_FIELDS = frozenset({"self", "build", "action_id", "state"})
 
 
-def _write(deps: ServiceDeps, caller: Principal, build: int) -> None:
+def _check(deps: ServiceDeps, caller: Principal, build: int, op: Operation) -> None:
+    """Authorize `op` on `build`; a build of a domain the caller is not in looks like no
+    build at all (404), so ids do not reveal what exists (R2)."""
     owner = deps.owner(build)
-    deps.authorize(caller, "build_write", domain=owner.domain, owner=owner)
+    try:
+        deps.check(caller, op, domain=owner.domain, owner=owner)
+    except DomainDenied:
+        raise NotFoundError(f"no build with id {build}") from None
+
+
+def _write(deps: ServiceDeps, caller: Principal, build: int) -> None:
+    _check(deps, caller, build, "build_write")
 
 
 def _read(deps: ServiceDeps, caller: Principal, build: int) -> None:
-    owner = deps.owner(build)
-    deps.authorize(caller, "read", domain=owner.domain, owner=owner)
+    _check(deps, caller, build, "read")
 
 
 @router.post("", response_model=CreatedBuild, openapi_extra=json_body(BuildCreate))
@@ -56,7 +65,7 @@ def create_build(
     spec: Annotated[BuildCreate, Depends(body(BuildCreate))], deps: Deps, caller: Caller
 ) -> Response:
     owner = BuildOwner(user_name=spec.user_name, project=spec.project, domain=spec.domain)
-    deps.authorize(caller, "build_write", domain=spec.domain, owner=owner)
+    deps.check(caller, "build_write", domain=spec.domain, owner=owner)
     return ok(CreatedBuild(id=deps.store.create_build(spec)))
 
 

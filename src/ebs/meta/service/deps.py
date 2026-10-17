@@ -8,15 +8,20 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
+import psycopg
+import sqlalchemy as sa
 from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
 
+from ebs.core.errors import MetadataError
 from ebs.meta.api import API_PREFIX, BuildId
 from ebs.meta.service.auth import (
     Authenticator,
     AuthorizeHook,
     BuildOwner,
+    NotFoundError,
+    Operation,
     Principal,
     RequestInfo,
     authorize,
@@ -25,9 +30,38 @@ from ebs.meta.service.readiness import Readiness
 from ebs.release.channels import GatePolicy
 from ebs.release.releases import ReleaseBackend
 
-__all__ = ["BODY_MODELS", "ServiceDeps", "body", "current_principal", "get_deps", "json_body"]
+__all__ = [
+    "BODY_MODELS",
+    "ServiceDeps",
+    "body",
+    "current_principal",
+    "get_deps",
+    "is_outage",
+    "json_body",
+]
 
 _M = TypeVar("_M", bound=BaseModel)
+
+_OUTAGES: tuple[type[BaseException], ...] = (
+    ConnectionError,
+    TimeoutError,
+    sa.exc.OperationalError,
+    sa.exc.InterfaceError,
+    sa.exc.TimeoutError,
+    psycopg.OperationalError,
+    psycopg.InterfaceError,
+)
+
+
+def is_outage(exc: BaseException) -> bool:
+    """True if a MetadataError was caused by the database being unreachable or failing."""
+    seen: BaseException | None = exc.__cause__
+    while seen is not None:
+        if isinstance(seen, _OUTAGES):
+            return True
+        seen = seen.__cause__
+    return False
+
 
 BODY_MODELS: set[type[BaseModel]] = set()
 """Request body models, published in the OpenAPI components by `app.create_app`."""
@@ -51,14 +85,31 @@ class ServiceDeps:
     _owners: OrderedDict[int, BuildOwner] = field(default_factory=OrderedDict, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
+    def check(
+        self,
+        principal: Principal,
+        op: Operation,
+        *,
+        domain: str | None,
+        owner: BuildOwner | None,
+    ) -> None:
+        """Call the `authorize` hook and record that this request was authorized (R1)."""
+        self.authorize(principal, op, domain=domain, owner=owner)
+        principal.authorized.append(op)
+
     def owner(self, build: int) -> BuildOwner:
-        """The owner of `build`; MetadataError (HTTP 409) if there is no such build."""
+        """The owner of `build`; NotFoundError (HTTP 404) if there is no such build."""
         with self._lock:
             cached = self._owners.get(build)
             if cached is not None:
                 self._owners.move_to_end(build)
                 return cached
-        view = self.store.get_build(BuildId(build))
+        try:
+            view = self.store.get_build(BuildId(build))
+        except MetadataError as exc:
+            if is_outage(exc):
+                raise
+            raise NotFoundError(f"no build with id {build}") from None
         found = BuildOwner(
             user_name=view.user_name, project=view.project, domain=view.domain, build=build
         )

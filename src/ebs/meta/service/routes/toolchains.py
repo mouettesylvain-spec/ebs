@@ -42,7 +42,7 @@ def register_toolchain(
     deps: Deps,
     caller: Caller,
 ) -> Response:
-    deps.authorize(caller, "toolchain_write", domain=None, owner=None)
+    deps.check(caller, "toolchain_write", domain=None, owner=None)
     try:
         manifest = base64.b64decode(reg.manifest_b64, validate=True)
     except binascii.Error as exc:
@@ -54,28 +54,28 @@ def register_toolchain(
 def list_toolchains(
     deps: Deps, caller: Caller, module: str | None = None, current_only: bool = False
 ) -> Response:
-    deps.authorize(caller, "read", domain=None, owner=None)
+    deps.check(caller, "read", domain=None, owner=None)
     found = deps.store.list_toolchains(module=module, current_only=current_only)
     return ok(ToolchainList(toolchains=found))
 
 
 @router.get("/current", response_model=ToolchainList)
 def current_toolchain(module: str, deps: Deps, caller: Caller) -> Response:
-    deps.authorize(caller, "read", domain=None, owner=None)
+    deps.check(caller, "read", domain=None, owner=None)
     found = deps.store.current_toolchain(module)
     return ok(ToolchainList(toolchains=[] if found is None else [found]))
 
 
 @router.get("/{toolchain_id}", response_model=ToolchainList)
 def get_toolchain(toolchain_id: str, deps: Deps, caller: Caller) -> Response:
-    deps.authorize(caller, "read", domain=None, owner=None)
+    deps.check(caller, "read", domain=None, owner=None)
     found = deps.store.get_toolchain(_id(toolchain_id))
     return ok(ToolchainList(toolchains=[] if found is None else [found]))
 
 
 @router.get("/{toolchain_id}/manifest", response_model=ToolchainManifest)
 def toolchain_manifest(toolchain_id: str, deps: Deps, caller: Caller) -> Response:
-    deps.authorize(caller, "read", domain=None, owner=None)
+    deps.check(caller, "read", domain=None, owner=None)
     found = deps.store.toolchain_manifest(_id(toolchain_id))
     encoded = None if found is None else base64.b64encode(found).decode("ascii")
     return ok(ToolchainManifest(manifest_b64=encoded))
@@ -83,6 +83,6 @@ def toolchain_manifest(toolchain_id: str, deps: Deps, caller: Caller) -> Respons
 
 @router.post("/{toolchain_id}/touch", status_code=204)
 def touch_toolchain(toolchain_id: str, deps: Deps, caller: Caller) -> Response:
-    deps.authorize(caller, "cache_write", domain=None, owner=None)
+    deps.check(caller, "cache_write", domain=None, owner=None)
     deps.store.touch_toolchain(_id(toolchain_id))
     return no_content()

@@ -593,8 +593,21 @@ database outage, 500 a bug. The client raises `MetadataError` with the detail.
   default `Policy(toolchain_admins)`: a build write is allowed to its owner (`principal ==
   user_name`) or to a `ci` token whose `team` is the build's project, and `service` tokens never
   write builds; `toolchain_write` (registering makes a toolchain current for every later build)
-  only to `service` tokens and the users in `[meta_service].toolchain_admins`; everything else
-  is open to any authenticated principal until P2-01 adds domain membership in this hook.
+  only to `service` tokens and the users in `[meta_service].toolchain_admins`.
+- **Domains (P2-01, I20):** routes call `ServiceDeps.check(...)`, which calls the hook and
+  records the authorization on `Principal.authorized`; a 2xx answer without one becomes a 500
+  (fail closed), and every OpenAPI route depends on `current_principal`, which arms that check
+  (`tests/unit/meta/service/test_authz.py`). The deployed hook is
+  `ebs.meta.service.authz.DomainPolicy(base, domains, served, groups, token_domains)`: the
+  route's domain and the domain of the build it names must be in `[meta_service].domains`
+  (required, each in `[[domains]]`) and the caller a member (MUNGE user: NSS groups via
+  `NssGroups(ttl_s=[meta_service].group_ttl_s)`, `getgrouplist`; bearer principal:
+  `[meta_service].token_domains`, else the NSS groups of that name), then `base` (the owner
+  rules above). Refusal is `DomainDenied` (403); routes that name an object by id answer 404
+  (`NotFoundError`, as for an id that does not exist — **CONTRACT CHANGE (P2-01):** an unknown
+  build id is now 404, not 409), cache reads (`cache_get`, `lookup`, `resolve_output`,
+  `GET /releases/{id}`) answer a miss; a release export also checks the source domain. Only
+  `/whoami` and the toolchain registry are domain-free.
 
 ## 7. Rules — `ebs.rules.api`
 
@@ -1386,6 +1399,15 @@ roots, env names, module system; a drift warning with the first 20 changed files
 `check [--days N=30]` re-fingerprints, changes nothing and exits 1 if any toolchain drifted or
 could not be fingerprinted (`--json`: `{"v": 1, "days", "results": [{"id", "module", "status":
 ok|drift|error, "fingerprint", "registered_fingerprint", "changes", "error"}]}`).
+
+**`ebs domain list|check [--min-free PCT] [--json]`** (P2-01; `ebs.domains`): the `[[domains]]`
+with group, roots, TTL, quota and your membership; `check` verifies `<cas>/<name>` (group, 2750),
+its `blobs`/`trees`/`tmp` and `<debug>/<name>` (2770) and free space, exit 3 on a problem
+(the layout `deploy/admin/create_domain.sh NAME GROUP` makes, idempotently). With `[[domains]]`
+configured, `ebs plan`/`build` refuse a flow whose domain you are not in (its `unix_group`)
+before anything is hashed (exit 2); `ebs gc` collects only `[gc].domain` and `[gc].domains`.
+`SiteServices.cas(domain)` and the runner use the domain's `cas_root`/`debug_root`
+(`RunnerSettings.cas_root_for/debug_root_for`).
 
 **`ebs release create NAME VERSION --build B --output SEL… [--notes] [--allow-failed REASON]
 [--json]`**, `release show|yank|export NAME VERSION [--domain D]` (`yank --reason R`, `export

@@ -203,8 +203,14 @@ def test_request_validation_is_422_with_message(svc: Service) -> None:
 
 
 def test_store_errors_are_409_with_message(svc: Service) -> None:
-    r = svc.client.get(f"{B}/424242", auth=ALICE)
+    build = svc.store().create_build(make_build())
+    svc.store().finish_build(build, "passed")
+    r = svc.client.post(f"{B}/{build}/finish", json={"status": "failed"}, auth=ALICE)
     assert r.status_code == 409
+    assert "already finished" in r.json()["detail"]
+    # P2-01: an unknown build id is 404, like a build of another domain (nothing is revealed).
+    r = svc.client.get(f"{B}/424242", auth=ALICE)
+    assert r.status_code == 404
     assert "424242" in r.json()["detail"]
 
 
@@ -390,9 +396,11 @@ def test_app_from_config(tmp_path: Path) -> None:
     from ebs.meta.service.app import app_from_config
 
     config = tmp_path / "config.toml"
+    # P2-01: a deployed service serves explicitly listed, configured domains.
+    domains = '[[domains]]\nname = "test"\nunix_group = "test-nda"\n'
     config.write_text(
         '[metadata]\nurl = "postgresql+psycopg://ebs@db.example.invalid/ebs"\n'
-        "[meta_service]\nmunge = false\n"
+        '[meta_service]\nmunge = false\ndomains = ["test"]\n' + domains
     )
     env = {"EBS_CONFIG": str(config), "HOME": str(tmp_path)}
     app = app_from_config(env)
@@ -402,15 +410,19 @@ def test_app_from_config(tmp_path: Path) -> None:
     config.write_text(
         '[metadata]\nurl = "postgresql+psycopg://ebs@db.example.invalid/ebs"\n'
         '[meta_service]\naudience = "ebs-meta.example"\ntoolchain_admins = ["tcadmin"]\n'
+        'domains = ["test"]\n' + domains
     )
     app = app_from_config(env)
     deps = app.state.deps
-    assert deps.authorize.toolchain_admins == {"tcadmin"}
+    assert deps.authorize.base.toolchain_admins == {"tcadmin"}
+    assert deps.authorize.served == {"test"}
     deps.store.close()
     for bad, match in (
         ("[meta_service]\nmunge = false\nbearer = false\n", "no authentication"),
         ("[meta_service]\nmunge = true\n", "audience"),  # D1: MUNGE needs the binding
         ("[meta_service]\ncolour = 1\n", r"\[meta_service\]"),
+        ("[meta_service]\nmunge = false\n", r"\[meta_service\].domains must list"),
+        ('[meta_service]\nmunge = false\ndomains = ["other"]\n' + domains, "not configured"),
     ):
         config.write_text(
             '[metadata]\nurl = "postgresql+psycopg://ebs@db.example.invalid/ebs"\n' + bad

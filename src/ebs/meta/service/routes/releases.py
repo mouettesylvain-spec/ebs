@@ -9,6 +9,7 @@ has no CAS access (`ebs.release.export`).
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response
@@ -31,7 +32,8 @@ from ebs.meta.api import (
     YankRequest,
     check_domain,
 )
-from ebs.meta.service.auth import Operation, Principal
+from ebs.meta.service.auth import BuildOwner, NotFoundError, Operation, Principal
+from ebs.meta.service.authz import DomainDenied
 from ebs.meta.service.deps import ServiceDeps, body, current_principal, get_deps, json_body
 from ebs.meta.service.routes import ok
 from ebs.release.channels import move_channel
@@ -43,26 +45,43 @@ Deps = Annotated[ServiceDeps, Depends(get_deps)]
 Caller = Annotated[Principal, Depends(current_principal)]
 
 
-def _release(deps: ServiceDeps, release: int) -> ReleaseView:
+def _hidden(deps: ServiceDeps, caller: Principal, release: ReleaseView, op: Operation) -> None:
+    """Authorize `op` on a release named by id; outside the caller's domains it does not exist
+    (404, R2)."""
+    try:
+        deps.check(caller, op, domain=release.domain, owner=_owner(deps, release))
+    except DomainDenied:
+        raise NotFoundError(f"no release with id {release.id}") from None
+
+
+def _owner(deps: ServiceDeps, release: ReleaseView) -> BuildOwner:
+    """The owner rules of the release's build, in the release's own domain: an exported release
+    keeps its source build, whose domain its readers need not belong to."""
+    return dataclasses.replace(deps.owner(release.build), domain=release.domain)
+
+
+def _release(deps: ServiceDeps, caller: Principal, release: int, op: Operation) -> ReleaseView:
     found = deps.store.get_release_by_id(ReleaseId(release))
     if found is None:
-        raise MetadataError(f"no release with id {release}")
+        raise NotFoundError(f"no release with id {release}")
+    _hidden(deps, caller, found, op)
     return found
 
 
-def _write(deps: ServiceDeps, caller: Principal, build: int, op: Operation, domain: str) -> None:
-    deps.authorize(caller, op, domain=domain, owner=deps.owner(build))
-
-
 def _read(deps: ServiceDeps, caller: Principal, domain: str) -> None:
-    deps.authorize(caller, "read", domain=check_domain(domain), owner=None)
+    deps.check(caller, "read", domain=check_domain(domain), owner=None)
 
 
 @router.post("/releases", response_model=ReleaseView, openapi_extra=json_body(ReleaseCreate))
 def create_release(
     spec: Annotated[ReleaseCreate, Depends(body(ReleaseCreate))], deps: Deps, caller: Caller
 ) -> Response:
-    _write(deps, caller, spec.build, "release_write", spec.domain)
+    # The release's domain first (403), so a non-member learns nothing about build ids.
+    deps.check(caller, "read", domain=spec.domain, owner=None)
+    try:
+        deps.check(caller, "release_write", domain=spec.domain, owner=deps.owner(spec.build))
+    except DomainDenied:  # the build is in a domain the caller is not in: no such build
+        raise NotFoundError(f"no build with id {spec.build}") from None
     return ok(deps.store.create_release(spec, by=caller.name))
 
 
@@ -83,7 +102,12 @@ def list_releases(
 def get_release(release: int, deps: Deps, caller: Caller) -> Response:
     found = deps.store.get_release_by_id(ReleaseId(release))
     if found is not None:
-        _read(deps, caller, found.domain)
+        try:
+            _hidden(deps, caller, found, "read")
+        except NotFoundError:
+            found = None  # the same answer as for an id that does not exist
+    if found is None:
+        deps.check(caller, "read", domain=None, owner=None)
     return ok(ReleaseList(releases=[] if found is None else [found]))
 
 
@@ -96,8 +120,7 @@ def yank_release(
     deps: Deps,
     caller: Caller,
 ) -> Response:
-    found = _release(deps, release)
-    _write(deps, caller, found.build, "release_write", found.domain)
+    found = _release(deps, caller, release, "release_write")
     return ok(deps.store.yank_release(found.id, by=caller.name, reason=req.reason))
 
 
@@ -112,14 +135,14 @@ def record_export(
     deps: Deps,
     caller: Caller,
 ) -> Response:
-    found = _release(deps, release)
-    _write(deps, caller, found.build, "release_export", req.to_domain)
+    found = _release(deps, caller, release, "release_write")  # the source domain
+    deps.check(caller, "release_export", domain=req.to_domain, owner=_owner(deps, found))
     return ok(deps.store.record_export(found.id, req.to_domain, by=caller.name))
 
 
 @router.get("/releases/{release}/exports", response_model=ExportList)
 def list_exports(release: int, deps: Deps, caller: Caller) -> Response:
-    _read(deps, caller, _release(deps, release).domain)
+    _release(deps, caller, release, "read")
     return ok(ExportList(exports=deps.store.list_exports(ReleaseId(release))))
 
 
@@ -127,14 +150,14 @@ def list_exports(release: int, deps: Deps, caller: Caller) -> Response:
 def set_channel(
     req: Annotated[ChannelSet, Depends(body(ChannelSet))], deps: Deps, caller: Caller
 ) -> Response:
-    found = _release(deps, req.release)
+    _read(deps, caller, req.domain)
+    found = _release(deps, caller, req.release, "release_write")
     if (found.domain, found.name) != (req.domain, req.name):
         raise MetadataError(
             f"channel {req.name}:{req.channel} in domain {req.domain!r}: release {found.id} is "
             f"{found.name} {found.version} in domain {found.domain!r}; a channel points at "
             "releases of its own name and domain"
         )
-    _write(deps, caller, found.build, "release_write", found.domain)
     gate_build = None if req.gate_build is None else BuildId(req.gate_build)
     try:
         move = move_channel(

@@ -24,6 +24,7 @@ from ebs.meta.service.app import ServiceDeps, create_app
 from ebs.meta.service.auth import (
     MUNGE_HEADER,
     AuthenticationError,
+    AuthorizeHook,
     BearerAuthenticator,
     ChainAuthenticator,
     MungeAuthenticator,
@@ -42,7 +43,7 @@ with warnings.catch_warnings():
 
 BASE_URL = "http://meta.test"
 AUDIENCE = "meta.test"  # MUNGE binding: the host[:port] of BASE_URL
-USERS: Mapping[int, str] = {1000: "alice", 1001: "bob", 1002: "carol"}
+USERS: Mapping[int, str] = {1000: "alice", 1001: "bob", 1002: "carol", 1003: "dave"}
 
 
 @dataclass
@@ -134,6 +135,7 @@ def make_service(
     users: Callable[[int], str] = user_of_uid,
     toolchain_admins: Iterable[str] = (),
     gates: GatePolicy | None = None,
+    authorize: AuthorizeHook | None = None,
 ) -> Service:
     tokens = tokens if tokens is not None else InMemoryTokenStore()
     munge = FakeMungeVerifier()
@@ -144,7 +146,7 @@ def make_service(
             MungeAuthenticator(munge, users, audience=AUDIENCE), BearerAuthenticator(tokens)
         ),
         readiness=ready,
-        authorize=Policy(toolchain_admins),
+        authorize=authorize or Policy(toolchain_admins),
         gates=gates or GatePolicy(),
     )
     client = TestClient(create_app(deps), base_url=BASE_URL, raise_server_exceptions=False)

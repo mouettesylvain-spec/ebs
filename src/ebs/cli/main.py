@@ -12,6 +12,7 @@ from ebs import __version__
 from ebs.cli import (
     build,
     channel,
+    domain,
     gc,
     logs,
     outputs,
@@ -89,6 +90,7 @@ app.command("fetch")(outputs.fetch_command)
 app.command("gc")(gc.gc_command)
 app.command("pin")(gc.pin_command)
 app.command("unpin")(gc.unpin_command)
+app.add_typer(domain.app, name="domain")
 app.add_typer(release.app, name="release")
 app.add_typer(channel.app, name="channel")
 app.add_typer(rules.app, name="rules")
