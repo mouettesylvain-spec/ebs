@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta
 from typing import TypeVar
@@ -12,16 +13,22 @@ from ebs.core.canon import canonical_json
 from ebs.core.digest import Digest
 from ebs.core.errors import CanonError, DigestError, MetadataError
 from ebs.meta.api import (
+    CHANNEL_PATTERN,
     FINAL_BUILD_STATUSES,
     MAX_LEASE_TTL_S,
     TOUCH_INTERVAL_S,
     ActionRow,
     ActionUpdate,
     BlobRef,
+    BuildView,
     GcRun,
+    ReleaseCreate,
+    ReleaseView,
     ResultManifest,
     ToolchainCreate,
+    check_domain,
     check_transition,
+    release_output_name,
 )
 
 _M = TypeVar("_M", bound=BaseModel)
@@ -232,3 +239,97 @@ def _parse(value: str) -> Digest | None:
         return Digest.parse(value)
     except DigestError:
         return None
+
+
+# --- releases (P2-02) ----------------------------------------------------------------------------
+
+PASSED_STATES: frozenset[str] = frozenset({"done", "cached"})
+"""Action states whose recorded result may be released without `allow_failed`."""
+
+
+def check_by(by: object, what: str) -> str:
+    if not isinstance(by, str) or not by or len(by) > 256:
+        raise MetadataError(f"{what}: the author must be a non-empty name, got {by!r}")
+    return by
+
+
+def check_release(
+    spec: ReleaseCreate,
+    build: BuildView,
+    rows: Mapping[str, ActionRow],
+    results: Mapping[str, ResultManifest],
+) -> None:
+    """Raise MetadataError unless `spec` may be created from `build` (P2-02 R1): the build is
+    in the release's domain and finished, and every output is exactly what its action recorded,
+    from an action that passed (or `allow_failed` says why not)."""
+    what = f"release {spec.name} {spec.version}"
+    if build.domain != spec.domain:
+        raise MetadataError(
+            f"{what}: build {build.id} is in domain {build.domain!r}, not {spec.domain!r}; a "
+            "release is created in its build's domain (`ebs release export` copies it to another)"
+        )
+    if build.status == "running":
+        raise MetadataError(
+            f"{what}: build {build.id} is still running; release it once it has finished"
+        )
+    failed: list[str] = []
+    for name, out in sorted(spec.outputs.items()):
+        if name != release_output_name(out.action_id, out.output):
+            raise MetadataError(
+                f"{what}: output {name!r} must be named "
+                f"{release_output_name(out.action_id, out.output)!r}"
+            )
+        row, result = rows.get(out.action_id), results.get(out.action_id)
+        if row is None:
+            raise MetadataError(f"{what}: build {build.id} has no action {out.action_id!r}")
+        recorded = None if result is None else result.outputs.get(out.output)
+        if recorded is None:
+            raise MetadataError(
+                f"{what}: action {out.action_id!r} of build {build.id} recorded no output "
+                f"{out.output!r}"
+            )
+        if (recorded.digest, recorded.id, recorded.type, recorded.size) != (
+            out.digest, out.id, out.type, out.size,
+        ):  # fmt: skip
+            raise MetadataError(
+                f"{what}: output {name!r} does not match what build {build.id} recorded "
+                f"({recorded.type} {recorded.digest}, id {recorded.id})"
+            )
+        assert result is not None
+        if row.state not in PASSED_STATES or result.status != "passed":
+            failed.append(f"{out.action_id} ({row.state}, {result.status})")
+    if failed and spec.allow_failed is None:
+        raise MetadataError(
+            f"{what}: these actions did not pass: {', '.join(failed)}; release only passed "
+            "outputs, or give --allow-failed REASON (the reason is stored with the release)"
+        )
+
+
+def check_set_channel(release: ReleaseView | None, domain: str, name: str, channel: str) -> None:
+    check_domain(domain)
+    where = f"channel {name}:{channel} in domain {domain!r}"
+    if not isinstance(channel, str) or re.fullmatch(CHANNEL_PATTERN, channel) is None:
+        raise MetadataError(
+            f"{where}: invalid channel name; use lower-case letters, digits, '_' or '-', "
+            "starting with a letter"
+        )
+    if release is None:
+        raise MetadataError(f"{where}: no such release")
+    if (release.domain, release.name) != (domain, name):
+        raise MetadataError(
+            f"{where}: release {release.id} is {release.name} {release.version} in domain "
+            f"{release.domain!r}; a channel points at releases of its own name and domain"
+        )
+    if release.yanked_at is not None:
+        raise MetadataError(
+            f"{where}: release {release.name} {release.version} is yanked "
+            f"({release.yank_reason}); point the channel at another release"
+        )
+
+
+def check_exportable(release: ReleaseView) -> None:
+    if release.yanked_at is not None:
+        raise MetadataError(
+            f"release {release.name} {release.version} is yanked ({release.yank_reason}); a "
+            "yanked release is not exported"
+        )

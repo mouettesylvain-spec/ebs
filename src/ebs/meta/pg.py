@@ -27,12 +27,16 @@ from ebs.meta._common import (
     attribution_digests,
     cache_refs,
     check_blobs,
+    check_by,
     check_digest,
+    check_exportable,
     check_final_status,
     check_lease_ttl,
     check_pin,
+    check_release,
     check_result,
     check_run,
+    check_set_channel,
     check_toolchain,
     edge_rows,
     revalidate,
@@ -48,8 +52,12 @@ from ebs.meta.api import (
     BuildId,
     BuildStatus,
     BuildView,
+    ChannelMove,
+    ChannelView,
     DomainPolicy,
     Event,
+    ExportRecord,
+    GateCheck,
     GcAttribution,
     GcBlob,
     GcCacheEntry,
@@ -57,6 +65,9 @@ from ebs.meta.api import (
     GcRun,
     LeaseId,
     RegisterOutcome,
+    ReleaseCreate,
+    ReleaseId,
+    ReleaseView,
     ResultManifest,
     Tombstone,
     ToolchainCreate,
@@ -68,13 +79,17 @@ from ebs.meta.models import (
     actions,
     blobs,
     builds,
+    channel_history,
+    channels,
     domains,
     events,
+    exports,
     gc_runs,
     lease_objects,
     leases,
     pins,
     provenance_edges,
+    releases,
     tombstones,
     toolchain_manifests,
     toolchains,
@@ -677,6 +692,321 @@ class PgMetadataStore:
             ).first()
         return removed is not None
 
+    # --- releases and channels (P2-02) -----------------------------------------------------------
+
+    _RELEASE_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "id", "domain", "name", "version", "build_id", "outputs", "notes", "allow_failed",
+        "exported_from", "created_at", "created_by", "yanked_at", "yanked_by", "yank_reason",
+    )  # fmt: skip
+
+    @classmethod
+    def _release_view(cls, row: sa.RowMapping) -> ReleaseView:
+        doc = {("build" if k == "build_id" else k): row[k] for k in cls._RELEASE_COLUMNS}
+        try:
+            return ReleaseView.model_validate(doc)
+        except ValidationError as exc:
+            raise MetadataError(f"release {row['id']} is stored invalid: {exc}") from None
+
+    def _select_releases(
+        self, conn: sa.Connection, *where: sa.ColumnElement[bool]
+    ) -> list[ReleaseView]:
+        rows = (
+            conn.execute(
+                sa.select(*(releases.c[c] for c in self._RELEASE_COLUMNS))
+                .where(*where)
+                .order_by(releases.c.name, releases.c.created_at, releases.c.id)
+            )
+            .mappings()
+            .all()
+        )
+        return [self._release_view(r) for r in rows]
+
+    def _insert_release(
+        self, conn: sa.Connection, spec: ReleaseCreate, by: str, *, exported_from: int | None
+    ) -> ReleaseView:
+        self._ensure_domain(conn, spec.domain)
+        dumped = spec.model_dump(mode="json")
+        release_id: int | None = conn.execute(
+            pg_insert(releases)
+            .values(
+                domain=spec.domain,
+                name=spec.name,
+                version=spec.version,
+                build_id=spec.build,
+                outputs=dumped["outputs"],
+                notes=spec.notes,
+                allow_failed=spec.allow_failed,
+                exported_from=exported_from,
+                created_at=self._clock.now(),
+                created_by=by,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[releases.c.domain, releases.c.name, releases.c.version]
+            )
+            .returning(releases.c.id)
+        ).scalar_one_or_none()
+        if release_id is None:
+            raise MetadataError(
+                f"release {spec.name} {spec.version} already exists in domain {spec.domain!r}; "
+                "releases are immutable, so publish a new version"
+            )
+        return self._select_releases(conn, releases.c.id == release_id)[0]
+
+    def create_release(self, spec: ReleaseCreate, *, by: str) -> ReleaseView:
+        checked = revalidate(spec, ReleaseCreate, "create_release")
+        by = check_by(by, "create_release")
+        build = checked.build
+        with self._tx(f"create_release {checked.name} {checked.version}") as conn:
+            self._build_status(conn, build, lock=True)  # finish_build waits for this release
+            found = conn.execute(sa.select(builds).where(builds.c.id == build)).mappings().one()
+            view = BuildView.model_validate({**found, "action_counts": {}})
+            rows = (
+                conn.execute(
+                    sa.select(*(actions.c[n] for n in _ACTION_COLUMNS), actions.c.result).where(
+                        actions.c.build_id == build
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            actions_ = {
+                str(r["action_id"]): ActionRow.model_validate({n: r[n] for n in _ACTION_COLUMNS})
+                for r in rows
+            }
+            results = {
+                str(r["action_id"]): stored_result(r["result"], build, str(r["action_id"]))
+                for r in rows
+                if r["result"] is not None
+            }
+            check_release(checked, view, actions_, results)
+            return self._insert_release(conn, checked, by, exported_from=None)
+
+    def get_release(self, domain: str, name: str, version: str) -> ReleaseView | None:
+        check_domain(domain)
+        with self._tx(f"get_release {name} {version}") as conn:
+            found = self._select_releases(
+                conn,
+                releases.c.domain == domain,
+                releases.c.name == name,
+                releases.c.version == version,
+            )
+        return found[0] if found else None
+
+    def get_release_by_id(self, release: ReleaseId) -> ReleaseView | None:
+        with self._tx(f"get_release {release}") as conn:
+            found = self._select_releases(conn, releases.c.id == int(release))
+        return found[0] if found else None
+
+    def list_releases(self, domain: str, *, name: str | None = None) -> list[ReleaseView]:
+        check_domain(domain)
+        where = [releases.c.domain == domain]
+        if name is not None:
+            where.append(releases.c.name == name)
+        with self._tx(f"list_releases {domain}") as conn:
+            return self._select_releases(conn, *where)
+
+    def yank_release(self, release: ReleaseId, *, by: str, reason: str) -> ReleaseView:
+        by = check_by(by, "yank_release")
+        if not isinstance(reason, str) or not reason or len(reason) > 4096:
+            raise MetadataError("yank_release: give a reason (1-4096 characters)")
+        with self._tx(f"yank_release {release}") as conn:
+            conn.execute(
+                sa.update(releases)
+                .where(releases.c.id == int(release), releases.c.yanked_at.is_(None))
+                .values(yanked_at=self._clock.now(), yanked_by=by, yank_reason=reason)
+            )
+            found = self._select_releases(conn, releases.c.id == int(release))
+        if not found:
+            raise MetadataError(f"yank_release: no release with id {release}")
+        return found[0]
+
+    @staticmethod
+    def _move(row: sa.RowMapping, domain: str, name: str, channel: str) -> ChannelMove:
+        gate = (
+            None
+            if row["gate_flow"] is None
+            else GateCheck(flow=str(row["gate_flow"]), build=BuildId(int(row["gate_build_id"])))
+        )
+        return ChannelMove(
+            id=int(row["id"]),
+            domain=domain,
+            name=name,
+            channel=channel,
+            release=ReleaseId(int(row["release_id"])),
+            version=str(row["version"]),
+            moved_at=row["moved_at"],
+            moved_by=str(row["moved_by"]),
+            gate=gate,
+        )
+
+    def set_channel(
+        self,
+        domain: str,
+        name: str,
+        channel: str,
+        release: ReleaseId,
+        *,
+        by: str,
+        gate: GateCheck | None = None,
+    ) -> ChannelMove:
+        by = check_by(by, "set_channel")
+        checked_gate = None if gate is None else revalidate(gate, GateCheck, "set_channel gate")
+        now = self._clock.now()
+        with self._tx(f"set_channel {name}:{channel}") as conn:
+            # Lock the release row first: a concurrent yank either precedes this check or waits.
+            conn.execute(
+                sa.select(releases.c.id).where(releases.c.id == int(release)).with_for_update()
+            )
+            found = self._select_releases(conn, releases.c.id == int(release))
+            view = found[0] if found else None
+            check_set_channel(view, domain, name, channel)
+            assert view is not None
+            # Serialize moves of one channel: history order = commit order, and the pointer is
+            # always the channel's last move.
+            conn.execute(
+                sa.select(
+                    sa.func.pg_advisory_xact_lock(
+                        sa.func.hashtextextended(f"ebs.channel:{domain}/{name}:{channel}", 0)
+                    )
+                )
+            )
+            move_id: int = conn.execute(
+                sa.insert(channel_history)
+                .values(
+                    domain=domain,
+                    name=name,
+                    channel=channel,
+                    release_id=view.id,
+                    moved_at=now,
+                    moved_by=by,
+                    gate_flow=None if checked_gate is None else checked_gate.flow,
+                    gate_build_id=None if checked_gate is None else checked_gate.build,
+                )
+                .returning(channel_history.c.id)
+            ).scalar_one()
+            values = {
+                "release_id": view.id,
+                "move_id": move_id,
+                "updated_at": now,
+                "updated_by": by,
+            }
+            conn.execute(
+                pg_insert(channels)
+                .values(domain=domain, name=name, channel=channel, **values)
+                .on_conflict_do_update(index_elements=list(channels.primary_key), set_=values)
+            )
+        return ChannelMove(
+            id=move_id, domain=domain, name=name, channel=channel, release=view.id,
+            version=view.version, moved_at=now, moved_by=by, gate=checked_gate,
+        )  # fmt: skip
+
+    def get_channel(self, domain: str, name: str, channel: str) -> ChannelView | None:
+        check_domain(domain)
+        c = channels
+        with self._tx(f"get_channel {name}:{channel}") as conn:
+            found = conn.execute(
+                sa.select(c.c.release_id, c.c.updated_at, c.c.updated_by).where(
+                    c.c.domain == domain, c.c.name == name, c.c.channel == channel
+                )
+            ).first()
+            if found is None:
+                return None
+            view = self._select_releases(conn, releases.c.id == found.release_id)[0]
+        return ChannelView(
+            domain=domain, name=name, channel=channel, release=view,
+            updated_at=found.updated_at, updated_by=str(found.updated_by),
+        )  # fmt: skip
+
+    def channel_history(self, domain: str, name: str, channel: str) -> list[ChannelMove]:
+        check_domain(domain)
+        h = channel_history
+        with self._tx(f"channel_history {name}:{channel}") as conn:
+            rows = (
+                conn.execute(
+                    sa.select(h, releases.c.version)
+                    .join(releases, releases.c.id == h.c.release_id)
+                    .where(h.c.domain == domain, h.c.name == name, h.c.channel == channel)
+                    .order_by(h.c.id)
+                )
+                .mappings()
+                .all()
+            )
+        return [self._move(r, domain, name, channel) for r in rows]
+
+    def gate_builds(self, domain: str, flow: str, ids: Iterable[Digest]) -> list[BuildId]:
+        check_domain(domain)
+        wanted = sorted({str(check_digest(d, "gate_builds id")) for d in ids})
+        e = provenance_edges
+        stmt = (
+            sa.select(builds.c.id)
+            .distinct()
+            .select_from(e)
+            .join(actions, actions.c.key == e.c.action_key)
+            .join(builds, builds.c.id == actions.c.build_id)
+            .where(
+                e.c.domain == domain,
+                e.c.direction == "in",
+                e.c.object_id.in_(wanted),
+                builds.c.domain == domain,
+                builds.c.project == flow,
+                builds.c.status == "passed",
+            )
+            .order_by(builds.c.id.desc())
+        )
+        with self._tx(f"gate_builds {domain}/{flow}") as conn:
+            found: Sequence[int] = conn.execute(stmt).scalars().all() if wanted else []
+        return [BuildId(int(b)) for b in found]
+
+    def record_export(self, release: ReleaseId, to_domain: str, *, by: str) -> ReleaseView:
+        check_domain(to_domain)
+        by = check_by(by, "record_export")
+        with self._tx(f"record_export {release} to {to_domain}") as conn:
+            found = self._select_releases(conn, releases.c.id == int(release))
+            if not found:
+                raise MetadataError(f"record_export: no release with id {release}")
+            source = found[0]
+            check_exportable(source)
+            if source.domain == to_domain:
+                raise MetadataError(
+                    f"record_export: release {release} is already in domain {to_domain!r}"
+                )
+            spec = ReleaseCreate.model_validate(
+                {**source.model_dump(include=set(ReleaseCreate.model_fields)), "domain": to_domain}
+            )
+            exported = self._insert_release(conn, spec, by, exported_from=source.id)
+            conn.execute(
+                sa.insert(exports).values(
+                    release_id=source.id,
+                    exported_release_id=exported.id,
+                    to_domain=to_domain,
+                    exported_at=self._clock.now(),
+                    exported_by=by,
+                )
+            )
+        return exported
+
+    def list_exports(self, release: ReleaseId) -> list[ExportRecord]:
+        x = exports
+        with self._tx(f"list_exports {release}") as conn:
+            rows = conn.execute(
+                sa.select(x)
+                .where(
+                    sa.or_(x.c.release_id == int(release), x.c.exported_release_id == int(release))
+                )
+                .order_by(x.c.id)
+            ).all()
+        return [
+            ExportRecord(
+                id=int(r.id),
+                release=ReleaseId(int(r.release_id)),
+                exported=ReleaseId(int(r.exported_release_id)),
+                to_domain=str(r.to_domain),
+                exported_at=r.exported_at,
+                exported_by=str(r.exported_by),
+            )
+            for r in rows
+        ]
+
     # --- garbage collection (GcStore) -----------------------------------------------------------
 
     def gc_policy(self, domain: str) -> DomainPolicy:
@@ -744,11 +1074,21 @@ class PgMetadataStore:
                 .scalars()
                 .all()
             )
+            released_outputs: Sequence[dict[str, dict[str, str]]] = (
+                conn.execute(sa.select(releases.c.outputs).where(releases.c.domain == domain))
+                .scalars()
+                .all()
+            )
+        released = {o["digest"] for outputs in released_outputs for o in outputs.values()}
         pinned: set[Digest] = set()
         for plan_digest, result in pinned_builds:
             pinned.add(Digest.parse(plan_digest))
             pinned.update(attribution_digests(result))
-        return GcRoots(frozenset(pinned), frozenset(Digest.parse(k) for k in leased), frozenset())
+        return GcRoots(
+            frozenset(pinned),
+            frozenset(Digest.parse(k) for k in leased),
+            frozenset(Digest.parse(k) for k in released),
+        )
 
     def gc_tombstones(self, domain: str) -> list[Tombstone]:
         check_domain(domain)

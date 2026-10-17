@@ -1,6 +1,6 @@
 """The metadata service in-process, for contract and route tests (P1-06).
 
-`make_service` serves a backing MetadataStore through the FastAPI app; `Service.store()` is an
+`make_service` serves a backing store through the FastAPI app; `Service.store()` is an
 `HttpMetadataStore` talking to it over Starlette's in-process transport: no sockets, no network.
 Authentication uses `FakeMungeVerifier`, which behaves like `unmunge` (each credential decodes
 once; replays and expired credentials are refused), and `FakeMunge`, the client-side source that
@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 import httpx
 from starlette.exceptions import StarletteDeprecationWarning
 
-from ebs.meta.api import API_PREFIX, MetadataStore
+from ebs.meta.api import API_PREFIX
 from ebs.meta.client import HttpMetadataStore, munge_payload
 from ebs.meta.service.app import ServiceDeps, create_app
 from ebs.meta.service.auth import (
@@ -31,6 +31,8 @@ from ebs.meta.service.auth import (
     Policy,
 )
 from ebs.meta.service.tokens import InMemoryTokenStore
+from ebs.release.channels import GatePolicy
+from ebs.release.releases import ReleaseBackend
 
 with warnings.catch_warnings():
     # Starlette 1.x deprecates `httpx` for its test client in favour of `httpx2`; the transport
@@ -126,11 +128,12 @@ class Service:
 
 
 def make_service(
-    backing: MetadataStore,
+    backing: ReleaseBackend,
     *,
     tokens: InMemoryTokenStore | None = None,
     users: Callable[[int], str] = user_of_uid,
     toolchain_admins: Iterable[str] = (),
+    gates: GatePolicy | None = None,
 ) -> Service:
     tokens = tokens if tokens is not None else InMemoryTokenStore()
     munge = FakeMungeVerifier()
@@ -142,6 +145,7 @@ def make_service(
         ),
         readiness=ready,
         authorize=Policy(toolchain_admins),
+        gates=gates or GatePolicy(),
     )
     client = TestClient(create_app(deps), base_url=BASE_URL, raise_server_exceptions=False)
     return Service(deps, client, tokens, munge, ready)

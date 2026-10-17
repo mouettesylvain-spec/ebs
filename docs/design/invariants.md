@@ -24,7 +24,7 @@ that test green, and a PR that weakens one needs explicit human approval.
 | I16 | Node scratch is removed on success, failure, timeout and SIGTERM (by the runner) and SIGKILL (by the node epilog) | `tests/integration/test_runner_cleanup.py` (fake SLURM kill), `tests/unit/deploy/test_epilog.py` | P1-04 |
 | I17 | No subprocess is started with `shell=True` using interpolated user data | `tests/unit/test_no_shell_true.py` (AST scan of src/) | P0-01 |
 | I18 | Package layering (overview.md) holds | `tests/unit/test_layering.py` (import-linter contracts) | P0-01 |
-| I19 | Released outputs are GC roots and releases are never deleted (only yanked) | `tests/unit/release/test_release_immutability.py` | P2-02 |
+| I19 | Released outputs are GC roots and releases are never deleted (only yanked) | `tests/unit/release/test_release_immutability.py`, `tests/integration/release/test_release_immutability_pg.py` (triggers), `tests/unit/gc/test_roots.py::test_release_roots` | P2-02 |
 | I20 | A user can never read cache entries, logs or provenance of a domain they are not a member of, through any API | `tests/integration/test_authz_matrix.py` | P2-01 |
 
 ## Mutation check

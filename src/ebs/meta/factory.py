@@ -12,7 +12,7 @@ from collections.abc import Mapping
 
 from ebs.core.clock import Clock
 from ebs.core.errors import ConfigError
-from ebs.meta.api import MetadataStore
+from ebs.meta.api import MetadataBackend
 
 __all__ = ["open_metadata_store"]
 
@@ -22,7 +22,7 @@ def open_metadata_store(
     *,
     clock: Clock | None = None,
     environ: Mapping[str, str] | None = None,
-) -> MetadataStore:
+) -> MetadataBackend:
     url = section.get("url")
     if not isinstance(url, str) or not url:
         raise ConfigError("[metadata].url must be set to the metadata service or database URL")

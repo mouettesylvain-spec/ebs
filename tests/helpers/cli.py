@@ -21,7 +21,7 @@ from ebs.cli._records import BuildRecord, build_dir
 from ebs.cli.main import app
 from ebs.core.digest import hash_bytes
 from ebs.exec.api import Executor
-from ebs.meta.api import BuildId, Event, GcStore, MetadataStore
+from ebs.meta.api import BuildId, Event, GcStore, MetadataBackend
 from ebs.meta.memory import InMemoryMetadataStore
 from ebs.sources.statcache import StatCache
 from tests.helpers.driver import ScriptedExecutor, SleepRecorder
@@ -69,7 +69,7 @@ class TestServices(SiteServices):
         self.on_poll: Callable[[int], None] | None = None
         self.executors: list[ScriptedExecutor] = []
 
-    def store(self, *, required: bool) -> MetadataStore | None:
+    def store(self, *, required: bool) -> MetadataBackend | None:
         if not self.with_store:
             return super().store(required=required)
         return self.memory_store

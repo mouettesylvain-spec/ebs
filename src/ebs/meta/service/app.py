@@ -42,8 +42,9 @@ from ebs.meta.service.auth import (
 )
 from ebs.meta.service.deps import BODY_MODELS, ServiceDeps
 from ebs.meta.service.readiness import PgReadiness
-from ebs.meta.service.routes import builds, cache, probes, toolchains
+from ebs.meta.service.routes import builds, cache, probes, releases, toolchains
 from ebs.meta.service.tokens import PgTokenStore
+from ebs.release.channels import GatePolicy
 
 __all__ = ["ServiceConfig", "ServiceDeps", "app_from_config", "create_app"]
 
@@ -139,7 +140,7 @@ def create_app(deps: ServiceDeps) -> FastAPI:
     )
     app.state.deps = deps
     app.include_router(probes.probes)
-    for router in (probes.api, cache.router, builds.router, toolchains.router):
+    for router in (probes.api, cache.router, builds.router, toolchains.router, releases.router):
         app.include_router(router, prefix=API_PREFIX, responses=_ERRORS)
     app.add_exception_handler(AuthenticationError, _auth_failed)
     app.add_exception_handler(PermissionDeniedError, _forbidden)
@@ -197,5 +198,6 @@ def app_from_config(environ: Mapping[str, str] | None = None) -> FastAPI:
         authenticator=ChainAuthenticator(*schemes),
         readiness=PgReadiness(store.engine),
         authorize=Policy(service.toolchain_admins),
+        gates=GatePolicy.from_section(config.get("release", {})),
     )
     return create_app(deps)

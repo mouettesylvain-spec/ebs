@@ -55,20 +55,35 @@ from ebs.meta.api import (
     BuildCreate,
     BuildFinish,
     BuildId,
+    BuildList,
     BuildStatus,
     BuildView,
     CacheHits,
     Changed,
+    ChannelHistory,
+    ChannelList,
+    ChannelMove,
+    ChannelSet,
+    ChannelView,
     CreatedBuild,
     CreatedLease,
     DigestBatch,
     Event,
+    ExportList,
+    ExportRecord,
+    ExportRequest,
+    GateCheck,
+    GateQuery,
     LeaseId,
     LeaseRequest,
     OptionalDigest,
     OptionalResult,
     PinRequest,
     RegisterOutcome,
+    ReleaseCreate,
+    ReleaseId,
+    ReleaseList,
+    ReleaseView,
     ResultManifest,
     StateChange,
     ToolchainCreate,
@@ -76,6 +91,7 @@ from ebs.meta.api import (
     ToolchainManifest,
     ToolchainRecord,
     ToolchainRegistration,
+    YankRequest,
     check_domain,
 )
 
@@ -686,3 +702,104 @@ class HttpMetadataStore:
             body=checked,
             idempotent=False,
         )
+
+    # --- releases and channels (P2-02) -----------------------------------------------------------
+
+    def create_release(self, spec: ReleaseCreate, *, by: str) -> ReleaseView:
+        # The service records the authenticated caller as the author, not `by`.
+        checked = revalidate(spec, ReleaseCreate, "create_release")
+        what = f"create_release {checked.name} {checked.version}"
+        r = self._call("POST", "/releases", what, body=checked, idempotent=False)
+        return self._parse(r, ReleaseView, what)
+
+    def _releases(self, path: str, what: str, params: Mapping[str, str]) -> list[ReleaseView]:
+        r = self._call("GET", path, what, params=params, idempotent=True)
+        return self._parse(r, ReleaseList, what).releases
+
+    def get_release(self, domain: str, name: str, version: str) -> ReleaseView | None:
+        check_domain(domain)
+        params = {"domain": domain, "name": name, "version": version}
+        found = self._releases("/releases", f"get_release {name} {version}", params)
+        return found[0] if found else None
+
+    def get_release_by_id(self, release: ReleaseId) -> ReleaseView | None:
+        found = self._releases(f"/releases/{int(release)}", f"get_release {release}", {})
+        return found[0] if found else None
+
+    def list_releases(self, domain: str, *, name: str | None = None) -> list[ReleaseView]:
+        check_domain(domain)
+        params = {"domain": domain} | ({} if name is None else {"name": name})
+        return self._releases("/releases", f"list_releases {domain}", params)
+
+    def yank_release(self, release: ReleaseId, *, by: str, reason: str) -> ReleaseView:
+        what = f"yank_release {release}"
+        try:
+            req = YankRequest(reason=reason)
+        except ValidationError:
+            raise MetadataError(f"{what}: give a reason (1-4096 characters)") from None
+        r = self._call("POST", f"/releases/{int(release)}/yank", what, body=req, idempotent=True)
+        return self._parse(r, ReleaseView, what)
+
+    def set_channel(
+        self,
+        domain: str,
+        name: str,
+        channel: str,
+        release: ReleaseId,
+        *,
+        by: str,
+        gate: GateCheck | None = None,
+    ) -> ChannelMove:
+        """The service checks its own gate policy; `gate` only names the gate build to check."""
+        what = f"set_channel {name}:{channel}"
+        try:
+            req = ChannelSet(
+                domain=domain, name=name, channel=channel, release=int(release),
+                gate_build=None if gate is None else int(gate.build),
+            )  # fmt: skip
+        except ValidationError as exc:
+            raise MetadataError(f"{what}: invalid request: {exc}") from None
+        r = self._call("PUT", "/channels", what, body=req, idempotent=False)
+        return self._parse(r, ChannelMove, what)
+
+    def get_channel(self, domain: str, name: str, channel: str) -> ChannelView | None:
+        check_domain(domain)
+        what = f"get_channel {name}:{channel}"
+        params = {"domain": domain, "name": name, "channel": channel}
+        r = self._call("GET", "/channels", what, params=params, idempotent=True)
+        found = self._parse(r, ChannelList, what).channels
+        return found[0] if found else None
+
+    def channel_history(self, domain: str, name: str, channel: str) -> list[ChannelMove]:
+        check_domain(domain)
+        what = f"channel_history {name}:{channel}"
+        params = {"domain": domain, "name": name, "channel": channel}
+        r = self._call("GET", "/channels/history", what, params=params, idempotent=True)
+        return self._parse(r, ChannelHistory, what).moves
+
+    def gate_builds(self, domain: str, flow: str, ids: Iterable[Digest]) -> list[BuildId]:
+        check_domain(domain)
+        keys = sorted({check_digest(d, "gate_builds id") for d in ids}, key=str)
+        what = f"gate_builds {domain}/{flow}"
+        found: set[int] = set()
+        for chunk in _chunks(keys, BATCH_MAX):
+            r = self._call(
+                "POST", f"/domains/{_q(domain)}/gate-builds", what,
+                body=GateQuery(flow=flow, ids=chunk), idempotent=True,
+            )  # fmt: skip
+            found.update(self._parse(r, BuildList, what).builds)
+        return [BuildId(b) for b in sorted(found, reverse=True)]
+
+    def record_export(self, release: ReleaseId, to_domain: str, *, by: str) -> ReleaseView:
+        check_domain(to_domain)
+        what = f"record_export {release} to {to_domain}"
+        r = self._call(
+            "POST", f"/releases/{int(release)}/exports", what,
+            body=ExportRequest(to_domain=to_domain), idempotent=False,
+        )  # fmt: skip
+        return self._parse(r, ReleaseView, what)
+
+    def list_exports(self, release: ReleaseId) -> list[ExportRecord]:
+        what = f"list_exports {release}"
+        r = self._call("GET", f"/releases/{int(release)}/exports", what, idempotent=True)
+        return self._parse(r, ExportList, what).exports

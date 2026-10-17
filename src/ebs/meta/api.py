@@ -37,15 +37,18 @@ from ebs.flow.model import NAME_PATTERN
 __all__ = [
     "API_PREFIX",
     "BATCH_MAX",
+    "CHANNEL_PATTERN",
     "DIGEST_SQL_PATTERN",
     "DOMAIN_PATTERN",
     "EVENT_TYPE_PATTERN",
     "FINAL_BUILD_STATUSES",
     "LEASE_TTL_S",
     "MAX_LEASE_TTL_S",
+    "RELEASE_NAME_PATTERN",
     "TERMINAL_STATES",
     "TOUCH_INTERVAL_S",
     "TRANSITIONS",
+    "VERSION_PATTERN",
     "ActionBatch",
     "ActionId",
     "ActionList",
@@ -57,11 +60,17 @@ __all__ = [
     "BuildCreate",
     "BuildFinish",
     "BuildId",
+    "BuildList",
     "BuildStatus",
     "BuildView",
     "CacheHits",
     "CacheMode",
     "Changed",
+    "ChannelHistory",
+    "ChannelList",
+    "ChannelMove",
+    "ChannelSet",
+    "ChannelView",
     "CreatedBuild",
     "CreatedLease",
     "DigestBatch",
@@ -70,6 +79,11 @@ __all__ = [
     "ErrorBody",
     "Event",
     "EventType",
+    "ExportList",
+    "ExportRecord",
+    "ExportRequest",
+    "GateCheck",
+    "GateQuery",
     "GcAttribution",
     "GcBlob",
     "GcCacheEntry",
@@ -79,6 +93,7 @@ __all__ = [
     "InfraReason",
     "LeaseId",
     "LeaseRequest",
+    "MetadataBackend",
     "MetadataStore",
     "OptionalDigest",
     "OptionalResult",
@@ -86,6 +101,12 @@ __all__ = [
     "PendingReason",
     "PinRequest",
     "RegisterOutcome",
+    "ReleaseCreate",
+    "ReleaseId",
+    "ReleaseList",
+    "ReleaseOutput",
+    "ReleaseStore",
+    "ReleaseView",
     "ResourceUsage",
     "ResultManifest",
     "RunnerInfo",
@@ -96,8 +117,10 @@ __all__ = [
     "ToolchainManifest",
     "ToolchainRecord",
     "ToolchainRegistration",
+    "YankRequest",
     "check_domain",
     "check_transition",
+    "release_output_name",
 ]
 
 DIGEST_SQL_PATTERN: Final = "^(sha256|blake3):[0-9a-f]{64}$"
@@ -757,7 +780,7 @@ class GcRoots:
 
     pinned: frozenset[Digest]  # plan, outputs and logs of pinned builds
     leased: frozenset[Digest]  # objects of live leases
-    released: frozenset[Digest]  # release outputs (P2-02; empty until the table exists)
+    released: frozenset[Digest]  # content digests of release outputs, yanked ones too (P2-02)
 
 
 @dataclass(frozen=True, slots=True)
@@ -840,3 +863,246 @@ class GcStore(Protocol):
         ...
 
     def gc_record_run(self, run: GcRun) -> None: ...
+
+
+# --- releases and channels (P2-02) ---------------------------------------------------------------
+# A release is a named, versioned selection of a finished build's outputs; a channel is a movable
+# pointer to a release of the same name, with its full history (data-model.md, Phase 2).
+
+RELEASE_NAME_PATTERN: Final = r"^[a-z0-9][a-z0-9._-]{0,63}(/[a-z0-9][a-z0-9._-]{0,63})?$"
+"""`team/product` or `product`, e.g. `rtl-team/cpu`."""
+
+VERSION_PATTERN: Final = r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$"
+"""Release versions (decision D4): free-form; CalVer `YYYY.MM.N` is recommended."""
+
+CHANNEL_PATTERN: Final = r"^[a-z][a-z0-9_-]{0,63}$"
+"""Channel names, e.g. `stable`, `nightly`."""
+
+ReleaseId = NewType("ReleaseId", int)
+
+_ReleaseName = Annotated[StrictStr, Field(pattern=RELEASE_NAME_PATTERN)]
+_Version = Annotated[StrictStr, Field(pattern=VERSION_PATTERN)]
+_Channel = Annotated[StrictStr, Field(pattern=CHANNEL_PATTERN)]
+
+
+def release_output_name(action_id: str, output: str) -> str:
+    """The name of an action's output in a release: `<action id>.<output>`."""
+    return f"{action_id}.{output}"
+
+
+class ReleaseOutput(BaseModel):
+    """One released output: where it comes from and the result it had in the build."""
+
+    model_config = _FROZEN
+
+    action_id: ActionId
+    output: _Name
+    digest: DigestField  # content
+    id: DigestField  # the id passed downstream (= digest if deterministic)
+    type: Literal["file", "tree"]
+    size: _NonNegative
+
+
+class ReleaseCreate(BaseModel):
+    """A release to create. `outputs` maps `release_output_name(action, output)` to the result
+    the action recorded; the store checks every entry against the build (P2-02 R1).
+    `allow_failed` is the reason given for releasing outputs of actions that did not pass."""
+
+    model_config = _FROZEN
+
+    domain: _Domain
+    name: _ReleaseName
+    version: _Version
+    build: BuildId
+    outputs: Annotated[dict[_Name, ReleaseOutput], Field(min_length=1)]
+    notes: _Text = ""
+    allow_failed: Annotated[StrictStr, Field(min_length=1, max_length=4096)] | None = None
+
+
+class ReleaseView(ReleaseCreate):
+    """A stored release. Immutable: only the yank fields are ever set, once (I19)."""
+
+    id: ReleaseId
+    created_at: AwareDatetime
+    created_by: _Name
+    exported_from: ReleaseId | None
+    yanked_at: AwareDatetime | None
+    yanked_by: _Name | None
+    yank_reason: _Text | None
+
+
+class GateCheck(BaseModel):
+    """A passed channel gate: `build` is a passing build of project `flow` that consumed the
+    release (provenance edges), checked when the channel moved."""
+
+    model_config = _FROZEN
+
+    flow: _Name
+    build: BuildId
+
+
+class ChannelMove(BaseModel):
+    """One entry of a channel's history."""
+
+    model_config = _FROZEN
+
+    id: StrictInt
+    domain: _Domain
+    name: _ReleaseName
+    channel: _Channel
+    release: ReleaseId
+    version: _Version
+    moved_at: AwareDatetime
+    moved_by: _Name
+    gate: GateCheck | None
+
+
+class ChannelView(BaseModel):
+    model_config = _FROZEN
+
+    domain: _Domain
+    name: _ReleaseName
+    channel: _Channel
+    release: ReleaseView
+    updated_at: AwareDatetime
+    updated_by: _Name
+
+
+class ExportRecord(BaseModel):
+    """The audit row of a cross-domain export (`exports` table)."""
+
+    model_config = _FROZEN
+
+    id: StrictInt
+    release: ReleaseId  # the exported release, in its own domain
+    exported: ReleaseId  # the release created in `to_domain`
+    to_domain: _Domain
+    exported_at: AwareDatetime
+    exported_by: _Name
+
+
+class ReleaseStore(Protocol):
+    """Releases, channels and exports (P2-02). Implemented by the PostgreSQL, in-memory and HTTP
+    stores; there is no method to change or delete a release other than `yank_release` (I19)."""
+
+    def create_release(self, spec: ReleaseCreate, *, by: str) -> ReleaseView:
+        """Insert a release. The build must be in `spec.domain` and finished; every output must
+        be one its action recorded (same digest, id, type, size), from an action that passed
+        unless `allow_failed` gives a reason. `(domain, name, version)` is unique."""
+        ...
+
+    def get_release(self, domain: str, name: str, version: str) -> ReleaseView | None: ...
+
+    def get_release_by_id(self, release: ReleaseId) -> ReleaseView | None: ...
+
+    def list_releases(self, domain: str, *, name: str | None = None) -> list[ReleaseView]:
+        """Ordered by (name, created_at, id)."""
+        ...
+
+    def yank_release(self, release: ReleaseId, *, by: str, reason: str) -> ReleaseView:
+        """Mark the release yanked (idempotent: the first yank is kept). Never deletes it."""
+        ...
+
+    def set_channel(
+        self,
+        domain: str,
+        name: str,
+        channel: str,
+        release: ReleaseId,
+        *,
+        by: str,
+        gate: GateCheck | None = None,
+    ) -> ChannelMove:
+        """Point the channel at `release` (of this domain and name, not yanked) and append the
+        move, with its gate check, to the channel's history."""
+        ...
+
+    def get_channel(self, domain: str, name: str, channel: str) -> ChannelView | None: ...
+
+    def channel_history(self, domain: str, name: str, channel: str) -> list[ChannelMove]:
+        """Oldest first."""
+        ...
+
+    def gate_builds(self, domain: str, flow: str, ids: Iterable[Digest]) -> list[BuildId]:
+        """Passed builds of project `flow` in `domain` with an action that consumed one of
+        `ids` (an `in` provenance edge), newest first."""
+        ...
+
+    def record_export(self, release: ReleaseId, to_domain: str, *, by: str) -> ReleaseView:
+        """Create the release in `to_domain` (same name, version, outputs; `exported_from`) and
+        its audit row, atomically. The caller has copied the bytes into that domain's CAS."""
+        ...
+
+    def list_exports(self, release: ReleaseId) -> list[ExportRecord]: ...
+
+
+class MetadataBackend(MetadataStore, ReleaseStore, Protocol):
+    """What every store backend implements (PostgreSQL, in-memory, HTTP): `open_metadata_store`
+    returns one."""
+
+
+class YankRequest(BaseModel):
+    """Body of `POST /releases/{id}/yank`; the author is the authenticated caller."""
+
+    model_config = _WIRE
+
+    reason: Annotated[StrictStr, Field(min_length=1, max_length=4096)]
+
+
+class ChannelSet(BaseModel):
+    """Body of `PUT /channels`: the service checks the channel's gate itself."""
+
+    model_config = _WIRE
+
+    domain: _Domain
+    name: _ReleaseName
+    channel: _Channel
+    release: StrictInt
+    gate_build: StrictInt | None = None  # the gate build to check; default: any
+
+
+class ExportRequest(BaseModel):
+    model_config = _WIRE
+
+    to_domain: _Domain
+
+
+class GateQuery(BaseModel):
+    """Body of `POST /domains/{domain}/gate-builds`."""
+
+    model_config = _WIRE
+
+    flow: _Name
+    ids: Annotated[list[DigestField], Field(max_length=BATCH_MAX)]
+
+
+class ReleaseList(BaseModel):
+    model_config = _WIRE
+
+    releases: list[ReleaseView]
+
+
+class ChannelList(BaseModel):
+    """Response of the channel reads; `GET /channels` holds zero or one channel."""
+
+    model_config = _WIRE
+
+    channels: list[ChannelView]
+
+
+class ChannelHistory(BaseModel):
+    model_config = _WIRE
+
+    moves: list[ChannelMove]
+
+
+class BuildList(BaseModel):
+    model_config = _WIRE
+
+    builds: list[StrictInt]
+
+
+class ExportList(BaseModel):
+    model_config = _WIRE
+
+    exports: list[ExportRecord]

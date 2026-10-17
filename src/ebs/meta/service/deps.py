@@ -12,7 +12,7 @@ from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
 
-from ebs.meta.api import API_PREFIX, BuildId, MetadataStore
+from ebs.meta.api import API_PREFIX, BuildId
 from ebs.meta.service.auth import (
     Authenticator,
     AuthorizeHook,
@@ -22,6 +22,8 @@ from ebs.meta.service.auth import (
     authorize,
 )
 from ebs.meta.service.readiness import Readiness
+from ebs.release.channels import GatePolicy
+from ebs.release.releases import ReleaseBackend
 
 __all__ = ["BODY_MODELS", "ServiceDeps", "body", "current_principal", "get_deps", "json_body"]
 
@@ -37,12 +39,14 @@ class ServiceDeps:
 
     `authorize` is the single policy hook called by every API route (R4); P2-01 replaces it to add
     domain membership. Build owners are immutable, so they are cached (`owner_cache_size`).
+    `gates` is the channel gate policy (`[release.gates]` of the service's config, P2-02).
     """
 
-    store: MetadataStore
+    store: ReleaseBackend
     authenticator: Authenticator
     readiness: Readiness
     authorize: AuthorizeHook = authorize
+    gates: GatePolicy = field(default_factory=GatePolicy)
     owner_cache_size: int = 10_000
     _owners: OrderedDict[int, BuildOwner] = field(default_factory=OrderedDict, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)

@@ -30,6 +30,7 @@ P0_TABLES = {
 P1_TABLES = {"toolchain_manifests"}  # P1-07
 GC_TABLES = {"leases", "lease_objects", "pins", "gc_runs", "tombstones"}  # P1-09 (revision 0006)
 P1_TABLES |= GC_TABLES
+P2_TABLES = {"releases", "channels", "channel_history", "exports"}  # P2-02 (revision 0007)
 GOOD = "sha256:" + "a" * 64
 
 
@@ -56,7 +57,7 @@ def test_upgrade_downgrade(empty_db: URL) -> None:
     url = url_string(empty_db)
     assert _tables(empty_db) == set()
     migrations.upgrade(url)
-    assert _tables(empty_db) == P0_TABLES | P1_TABLES
+    assert _tables(empty_db) == P0_TABLES | P1_TABLES | P2_TABLES
     migrations.downgrade(url)
     engine = sa.create_engine(empty_db, poolclass=sa.pool.NullPool)
     try:
@@ -65,7 +66,7 @@ def test_upgrade_downgrade(empty_db: URL) -> None:
     finally:
         engine.dispose()
     migrations.upgrade(url)  # the round trip leaves nothing behind that blocks a re-upgrade
-    assert _tables(empty_db) == P0_TABLES | P1_TABLES
+    assert _tables(empty_db) == P0_TABLES | P1_TABLES | P2_TABLES
 
 
 # R1: a deployment may pre-create schema `ebs`, and a role named `ebs` then has it first in its
@@ -353,3 +354,18 @@ def test_gc_revision_round_trip(empty_db: URL) -> None:
     migrations.downgrade(url, "0005_api_tokens")
     assert not GC_TABLES & _tables(empty_db)
     assert _tables(empty_db) >= P0_TABLES
+
+
+# P2-02: revision 0007 upgrades from 0006 and downgrades back to it, dropping its triggers and
+# functions, so a re-upgrade works.
+def test_release_revision_round_trip(empty_db: URL) -> None:
+    url = url_string(empty_db)
+    migrations.upgrade(url, "0006_gc")
+    assert not P2_TABLES & _tables(empty_db)
+    migrations.upgrade(url, "0007_releases")
+    assert _tables(empty_db) >= P2_TABLES
+    migrations.downgrade(url, "0006_gc")
+    assert not P2_TABLES & _tables(empty_db)
+    assert _tables(empty_db) >= GC_TABLES
+    migrations.upgrade(url, "0007_releases")
+    assert _tables(empty_db) >= P2_TABLES

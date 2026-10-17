@@ -13,6 +13,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 
 from ebs.meta.api import (
+    CHANNEL_PATTERN,
     DIGEST_SQL_PATTERN,
     DOMAIN_PATTERN,
     EVENT_TYPE_PATTERN,
@@ -22,6 +23,8 @@ from ebs.meta.api import (
     InfraReason,
     PendingReason,
 )
+from ebs.meta.api import RELEASE_NAME_PATTERN as _RELEASE_NAME
+from ebs.meta.api import VERSION_PATTERN as _VERSION
 
 __all__ = [
     "SCHEMA",
@@ -30,14 +33,18 @@ __all__ = [
     "api_tokens",
     "blobs",
     "builds",
+    "channel_history",
+    "channels",
     "domains",
     "events",
+    "exports",
     "gc_runs",
     "lease_objects",
     "leases",
     "metadata",
     "pins",
     "provenance_edges",
+    "releases",
     "tombstones",
     "toolchain_manifests",
     "toolchains",
@@ -319,4 +326,79 @@ tombstones = sa.Table(  # the grace period between deleting cache rows and their
     sa.Column("deleted_rows_at", _TS, nullable=False),
     sa.Column("blob_delete_after", _TS, nullable=False),
     _digest_check("digest"),
+)
+
+
+# --- Phase 2: releases and channels (P2-02, revision 0007) ---------------------------------------
+# Revision 0007 also installs triggers (not modelled here): `releases` refuses DELETE and any
+# UPDATE but setting the yank fields once (I19); `channel_history` and `exports` are append-only.
+
+releases = sa.Table(
+    "releases",
+    metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    _domain_fk(),
+    sa.Column("name", sa.Text, nullable=False),
+    sa.Column("version", sa.Text, nullable=False),
+    sa.Column("build_id", sa.BigInteger, sa.ForeignKey("builds.id"), nullable=False),
+    sa.Column("outputs", JSONB, nullable=False),  # {name: ReleaseOutput}
+    sa.Column("notes", sa.Text, nullable=False, server_default=sa.text("''")),
+    sa.Column("allow_failed", sa.Text, nullable=True),
+    sa.Column("attestation", sa.Text, nullable=True),  # P3-03
+    sa.Column("signature", sa.Text, nullable=True),  # P3-03
+    sa.Column("exported_from", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=True),
+    sa.Column("created_at", _TS, nullable=False),
+    sa.Column("created_by", sa.Text, nullable=False),
+    sa.Column("yanked_at", _TS, nullable=True),
+    sa.Column("yanked_by", sa.Text, nullable=True),
+    sa.Column("yank_reason", sa.Text, nullable=True),
+    sa.UniqueConstraint("domain", "name", "version"),
+    sa.CheckConstraint(f"name ~ '{_RELEASE_NAME}'", name="name_valid"),
+    sa.CheckConstraint(f"version ~ '{_VERSION}'", name="version_valid"),
+    sa.CheckConstraint("jsonb_typeof(outputs) = 'object'", name="outputs_object"),
+    sa.CheckConstraint(
+        "(yanked_at IS NULL) = (yanked_by IS NULL) AND (yanked_at IS NULL) = (yank_reason IS NULL)",
+        name="yank_fields",
+    ),
+)
+
+channel_history = sa.Table(  # every move of a channel, append-only
+    "channel_history",
+    metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    _domain_fk(),
+    sa.Column("name", sa.Text, nullable=False),
+    sa.Column("channel", sa.Text, nullable=False),
+    sa.Column("release_id", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=False),
+    sa.Column("moved_at", _TS, nullable=False),
+    sa.Column("moved_by", sa.Text, nullable=False),
+    sa.Column("gate_flow", sa.Text, nullable=True),
+    sa.Column("gate_build_id", sa.BigInteger, sa.ForeignKey("builds.id"), nullable=True),
+    sa.CheckConstraint(f"channel ~ '{CHANNEL_PATTERN}'", name="channel_valid"),
+    sa.CheckConstraint("(gate_flow IS NULL) = (gate_build_id IS NULL)", name="gate_fields"),
+    sa.Index(None, "domain", "name", "channel", "id"),
+)
+
+channels = sa.Table(  # the current pointer: the last move of each channel
+    "channels",
+    metadata,
+    sa.Column("domain", sa.Text, sa.ForeignKey("domains.name"), primary_key=True),
+    sa.Column("name", sa.Text, primary_key=True),
+    sa.Column("channel", sa.Text, primary_key=True),
+    sa.Column("release_id", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=False),
+    sa.Column("move_id", sa.BigInteger, sa.ForeignKey("channel_history.id"), nullable=False),
+    sa.Column("updated_at", _TS, nullable=False),
+    sa.Column("updated_by", sa.Text, nullable=False),
+)
+
+exports = sa.Table(  # audited cross-domain copies, append-only
+    "exports",
+    metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("release_id", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=False),
+    sa.Column("exported_release_id", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=False),
+    sa.Column("to_domain", sa.Text, sa.ForeignKey("domains.name"), nullable=False),
+    sa.Column("exported_at", _TS, nullable=False),
+    sa.Column("exported_by", sa.Text, nullable=False),
+    sa.Index(None, "release_id"),
 )
