@@ -1,0 +1,65 @@
+---
+// Build → release → channel → consumers: an immutable release is cut from one build, and the
+// `stable` channel moves to it; the old release stays reachable.
+import SceneFrame from '../_lib/SceneFrame.astro';
+
+const builds = [
+  { x: 20, id: 'build 41', status: 'passed' },
+  { x: 150, id: 'build 42', status: 'passed' },
+  { x: 280, id: 'build 43', status: 'failed' },
+];
+---
+
+<SceneFrame
+  name="release"
+  viewBox="0 0 780 330"
+  caption="Build 42 is released as rtl-team/cpu 2026.09.3 by digest. The stable channel moves from 2026.09.2 to the new release; the history keeps every move, and downstream teams following stable pick it up when they choose."
+  label="Three builds; build 42 is selected and published as release 2026.09.3. The stable channel pointer moves from release 2026.09.2 to 2026.09.3. A verification team follows the stable channel."
+>
+  <text class="sub" x="20" y="28">Builds (immutable, frequent)</text>
+  {
+    builds.map((b, i) => (
+      <g class="build" data-i={i}>
+        <rect class={`box ${i === 1 ? 'chosen' : ''}`} x={b.x} y="40" width="110" height="56" rx="12" />
+        <text class="label" x={b.x + 16} y="64" style="font-size:13px">{b.id}</text>
+        <text class={b.status === 'passed' ? 'tag-hit' : 'tag-stale'} x={b.x + 16} y="84">{b.status}</text>
+      </g>
+    ))
+  }
+  <rect class="box accent chosen-ring" x="146" y="36" width="118" height="64" rx="14" fill="none" />
+
+  <text class="sub" x="20" y="150">Releases (immutable, by digest)</text>
+  <g class="rel-old">
+    <rect class="box" x="20" y="162" width="200" height="64" rx="12" />
+    <text class="label" x="36" y="188" style="font-size:13px">rtl-team/cpu 2026.09.2</text>
+    <text class="mono" x="36" y="210">from build 37</text>
+  </g>
+  <g class="rel-new">
+    <rect class="box accent" x="250" y="162" width="200" height="64" rx="12" />
+    <text class="label" x="266" y="188" style="font-size:13px">rtl-team/cpu 2026.09.3</text>
+    <text class="mono" x="266" y="210">sha256:7f1c… ×3 outputs</text>
+  </g>
+  <path class="wire accent cut" d="M205 96 C205 130 350 130 350 162" />
+
+  <text class="sub" x="520" y="150">Channel (movable, with history)</text>
+  <g class="channel">
+    <rect class="box hit" x="520" y="170" width="110" height="40" rx="20" />
+    <text class="tag-hit" x="575" y="195" text-anchor="middle" style="font-size:14px">stable</text>
+  </g>
+  <path class="wire pointer" d="M520 190 H450" />
+  <path class="wire pointer-old" d="M520 190 C480 250 260 250 220 210" stroke-dasharray="4 4" opacity="0.25" />
+
+  <g class="consumer">
+    <rect class="box" x="520" y="250" width="240" height="56" rx="12" />
+    <text class="label" x="536" y="274" style="font-size:13px">verification team</text>
+    <text class="sub" x="536" y="294">follows rtl-team/cpu:stable</text>
+  </g>
+  <path class="wire" d="M575 210 V250" />
+  <text class="sub history" x="660" y="196">2026.09.2 → 2026.09.3</text>
+</SceneFrame>
+
+<script>
+  import { mountScene } from '../_lib/scene';
+  import { buildRelease } from './release';
+  mountScene('release', buildRelease);
+</script>

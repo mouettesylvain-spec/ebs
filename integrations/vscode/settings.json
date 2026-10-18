@@ -1,0 +1,17 @@
+{
+  "yaml.schemas": {
+    "https://mouettesylvain-spec.github.io/ebs/schemas/flow.v1.schema.json": [
+      "flow.yaml",
+      "flow.*.yaml",
+      "**/flow.yaml",
+      "**/flow.*.yaml"
+    ]
+  },
+  "files.exclude": {
+    "**/.ebs/builds": true
+  },
+  "search.exclude": {
+    "**/.ebs": true,
+    "**/ebs-out": true
+  }
+}

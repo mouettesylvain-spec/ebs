@@ -1,0 +1,19 @@
+---
+title: Metadata service
+description: The REST service in front of the database - deployment, authentication, domains.
+sidebar:
+  order: 3
+---
+
+import RepoDoc from '../../../components/RepoDoc.astro';
+import RepoFile from '../../../components/RepoFile.astro';
+
+<RepoDoc path="deploy/meta/README.md" />
+
+## Files
+
+<RepoFile path="deploy/meta/config.toml.example" />
+
+<RepoFile path="deploy/meta/compose.yaml" />
+
+<RepoFile path="deploy/meta/systemd/ebs-meta.service" />

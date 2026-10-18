@@ -1,0 +1,31 @@
+# Copy to .github/workflows/ebs.yml. Runs on a self-hosted runner that can reach the site's
+# CAS and metadata service; CI fills the shared cache (--cache write) for everyone else.
+name: ebs
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, ebs]
+    env:
+      EBS_CONFIG: /etc/ebs/ci.toml            # site config: CAS root, metadata URL
+      EBS_META_TOKEN: ${{ secrets.EBS_META_TOKEN }}   # a CI bearer token scoped to the domain
+    steps:
+      - uses: actions/checkout@v4
+      - name: Plan
+        run: ebs plan
+      - name: Build
+        run: ebs build --cache write -k
+      - name: Status
+        if: always()
+        run: ebs status
+      - name: Collect reports
+        if: always()
+        run: ebs fetch summary -o ebs-out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ebs-out
+          path: ebs-out/

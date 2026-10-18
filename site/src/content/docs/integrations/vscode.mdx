@@ -1,0 +1,36 @@
+---
+title: VS Code
+description: Completion and validation for flow.yaml, tasks for plan/build/logs, and flow errors in the Problems panel.
+sidebar:
+  order: 1
+---
+
+import RepoFile from '../../../components/RepoFile.astro';
+import { Steps } from '@astrojs/starlight/components';
+
+<Steps>
+
+1. Install the [YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)
+   (Red Hat). Committing `.vscode/extensions.json` makes VS Code suggest it to everyone:
+
+   <RepoFile path="integrations/vscode/extensions.json" />
+
+2. Map `flow.yaml` files to the EBS schema in `.vscode/settings.json`. You get completion of
+   keys and step kinds, hover documentation and red squiggles for invalid flows as you type:
+
+   <RepoFile path="integrations/vscode/settings.json" />
+
+   The schema is published with this site at `/ebs/schemas/flow.v1.schema.json` and always
+   matches `main`. To pin it to your installed version, use the file from your checkout instead:
+   `"./path/to/ebs/schemas/flow.v1.schema.json"`.
+
+3. Add tasks in `.vscode/tasks.json`. **Terminal › Run Build Task** (`Ctrl+Shift+B`) then runs
+   `ebs build` in the directory of the open file, and a flow error such as
+   `ebs: error: flow.yaml:14:13: …` lands in the Problems panel, linked to the line:
+
+   <RepoFile path="integrations/vscode/tasks.json" />
+
+</Steps>
+
+These files live in `integrations/vscode/` in the repository; a unit test checks that they
+parse and that every `ebs` command they call exists.

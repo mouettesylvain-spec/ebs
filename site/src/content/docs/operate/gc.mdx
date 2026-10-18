@@ -1,0 +1,25 @@
+---
+title: Garbage collection
+description: Keep the CAS within bounds - TTL, quota, grace period, one systemd timer per domain.
+sidebar:
+  order: 7
+---
+
+import RepoDoc from '../../../components/RepoDoc.astro';
+import RepoFile from '../../../components/RepoFile.astro';
+
+<RepoDoc path="deploy/gc/README.md" />
+
+## Files
+
+<RepoFile path="deploy/gc/gc.toml.example" />
+
+<RepoFile path="deploy/gc/ebs-gc@.service" />
+
+<RepoFile path="deploy/gc/ebs-gc@.timer" />
+
+## Reports
+
+```sh
+ebs gc --domain cpu-nda --dry-run    # what would be collected, without deleting anything
+```

@@ -1,0 +1,151 @@
+---
+// The frame every scene shares: stage, caption and replay button.
+//   <SceneFrame name="cas" caption="…" viewBox="0 0 720 360"> …svg content… </SceneFrame>
+// The SVG content is drawn in its final state; the scene's builder animates towards it.
+interface Props {
+  name: string;
+  caption: string;
+  viewBox: string;
+  /** Accessible description of what the animation shows. */
+  label: string;
+  wide?: boolean;
+}
+
+const { name, caption, viewBox, label, wide = false } = Astro.props;
+---
+
+<figure class:list={['ebs-scene', 'not-content', { wide }]} data-scene={name}>
+  <div class="stage">
+    <svg viewBox={viewBox} role="img" aria-label={label} xmlns="http://www.w3.org/2000/svg">
+      <slot />
+    </svg>
+  </div>
+  <figcaption>
+    <span>{caption}</span>
+    <button type="button" data-scene-replay aria-label="Replay the animation">
+      <svg viewBox="0 0 16 16" aria-hidden="true"
+        ><path d="M8 3a5 5 0 1 1-4.6 3.1M3 2.5v3.6h3.6" fill="none" stroke="currentColor"
+        stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg
+      >
+      Replay
+    </button>
+  </figcaption>
+</figure>
+
+<style>
+  .ebs-scene {
+    margin: 2rem 0;
+    border-radius: var(--ebs-radius-l);
+    background: var(--ebs-surface);
+    border: 1px solid var(--ebs-hairline);
+    overflow: hidden;
+  }
+  .stage {
+    padding: clamp(0.75rem, 3vw, 2rem);
+    overflow-x: auto; /* on phones the diagram keeps a legible size and scrolls sideways */
+  }
+  @media (max-width: 640px) {
+    .stage > svg {
+      min-width: 600px;
+    }
+  }
+  .stage > svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    font-family: var(--ebs-font);
+  }
+  figcaption {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem clamp(0.75rem, 3vw, 2rem) 1rem;
+    color: var(--ebs-text-2);
+    font-size: var(--ebs-text-small);
+    border-top: 1px solid var(--ebs-hairline);
+  }
+  button {
+    display: inline-flex;
+    gap: 0.35rem;
+    align-items: center;
+    flex: none;
+    padding: 0.3rem 0.8rem;
+    border-radius: 999px;
+    border: 1px solid var(--ebs-hairline);
+    background: transparent;
+    color: var(--ebs-text-2);
+    font: inherit;
+    cursor: pointer;
+    transition: color var(--ebs-duration-s) var(--ebs-ease);
+  }
+  button:hover {
+    color: var(--ebs-accent);
+  }
+  button svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  /* Shared vocabulary of every scene's SVG. */
+  .ebs-scene :global(.box) {
+    fill: var(--ebs-bg);
+    stroke: var(--ebs-hairline);
+    stroke-width: 1.5;
+  }
+  .ebs-scene :global(.box.accent) {
+    fill: var(--ebs-accent-soft);
+    stroke: var(--ebs-accent);
+  }
+  .ebs-scene :global(.box.hit) {
+    fill: var(--ebs-hit-soft);
+    stroke: var(--ebs-hit);
+  }
+  .ebs-scene :global(.box.stale) {
+    fill: var(--ebs-stale-soft);
+    stroke: var(--ebs-stale);
+  }
+  .ebs-scene :global(.label) {
+    fill: var(--ebs-text);
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .ebs-scene :global(.sub) {
+    fill: var(--ebs-text-2);
+    font-size: 12px;
+  }
+  .ebs-scene :global(.mono) {
+    font-family: var(--ebs-font-mono);
+    fill: var(--ebs-text-2);
+    font-size: 11px;
+  }
+  .ebs-scene :global(.wire) {
+    fill: none;
+    stroke: var(--ebs-hairline);
+    stroke-width: 1.5;
+  }
+  .ebs-scene :global(.wire.accent) {
+    stroke: var(--ebs-accent);
+  }
+  .ebs-scene :global(.dot) {
+    fill: var(--ebs-accent);
+  }
+  .ebs-scene :global(.dot.hit) {
+    fill: var(--ebs-hit);
+  }
+  .ebs-scene :global(.tag-hit) {
+    fill: var(--ebs-hit);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .ebs-scene :global(.tag-run) {
+    fill: var(--ebs-accent);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .ebs-scene :global(.tag-stale) {
+    fill: var(--ebs-stale);
+    font-size: 12px;
+    font-weight: 600;
+  }
+</style>

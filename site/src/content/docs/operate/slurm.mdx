@@ -1,0 +1,32 @@
+---
+title: SLURM
+description: Prepare compute nodes - runner install, scratch-cleanup epilog, licenses, accounts and QOS.
+sidebar:
+  order: 5
+---
+
+import RepoDoc from '../../../components/RepoDoc.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Status">
+The SLURM executor is implemented and tested against a fake SLURM, but `ebs build` does not
+expose it yet: wiring it into the CLI and the acceptance run on a real partition are task P1-12.
+The node-side pieces below are complete and can be installed now. See
+[Dispatch on SLURM](/ebs/concepts/dispatch/).
+</Aside>
+
+## Grid requirements
+
+- **slurmdbd accounting** and **remote licenses**: define each FlexLM feature once with
+  `sacctmgr add resource msimhdlsim server=flexlm count=… type=license`. EBS requests
+  `-L <feature>@<[slurm].license_server>:N`, or the bare feature with `[slurm].license_fuzzy`
+  and `LicenseParameters=RemoteFuzzyMatch`.
+- **Accounts and QOS**: map flow projects to accounts in `[slurm.account_map]`, and give CI and
+  release builds a QOS in `[slurm.qos]`.
+- **Node features** for the OS image, used as `--constraint` through `[slurm].os_constraint`.
+- **Limits**: tell EBS your `MaxArraySize` and submission limits (`[slurm].max_array_size`,
+  `max_pending_jobs`, `max_submits_per_min`).
+
+## Node setup
+
+<RepoDoc path="deploy/slurm/README.md" />

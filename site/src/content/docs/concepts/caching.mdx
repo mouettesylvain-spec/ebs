@@ -1,0 +1,88 @@
+---
+title: Action keys and caching
+description: What goes into an action key, what stays out, and why EBS can stop a rebuild early.
+sidebar:
+  order: 2
+---
+
+import MakeVsEbsScene from '../../../scenes/make-vs-ebs/MakeVsEbsScene.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+An action reruns only if its **action key** changes. The key is a SHA-256 over a canonical JSON
+document of everything that can affect the result, and nothing else:
+
+```text
+key = SHA256(canon(rule kind + version, expanded command, params, declared env,
+                   toolchain id, { logical path → input id }))
+```
+
+| In the key | Out of the key |
+| --- | --- |
+| Rule kind and version, expanded command line, generated config files | CPUs, memory, time limit, partition, SLURM job id |
+| Every param (lib, top, test, seed, plusargs, options) | User, timestamps, absolute paths (actions see logical paths) |
+| Declared env vars | License server (`LM_LICENSE_FILE` and friends) |
+| Toolchain id: module, version, install fingerprint, captured env | Undeclared files: they are not staged, so the tool cannot see them |
+| The id of every input, by logical path | |
+
+Because resources are out of the key, giving a step more memory never invalidates the cache.
+Because user and paths are out, your result is a valid hit for a colleague and for CI.
+
+## Input ids
+
+- A **file** is identified by the digest of its content.
+- A **directory** is identified by the digest of its Merkle manifest (sorted name, mode and
+  digest of every entry).
+- An **output of another action** is identified by its content digest, unless it is marked
+  `deterministic: false`.
+
+## Early cutoff
+
+<MakeVsEbsScene />
+
+When an upstream action reruns but produces byte-identical outputs, every downstream key is
+unchanged and the rebuild stops there. That is why reports should be normalized (sorted, no
+dates, relative paths): a comment-only RTL edit reruns lint for one block, and the summary,
+the waivers check and everything after them come from the cache.
+
+## Nondeterministic outputs
+
+Some tools embed timestamps or random ids: Questa work libraries, compiled simulation models.
+Their bytes differ from run to run, which would defeat early cutoff and change every
+downstream key on every rebuild. Declare them `deterministic: false`:
+
+```yaml
+outputs: { worklib: { dir: "work/${row.lib}", deterministic: false } }
+```
+
+Consumers then key on the **producer's action key** instead of the bytes. The key changes when
+something that matters changes, and downstream hits stay stable. The stored bytes are those of
+whichever run landed first, which is fine: any of them is a correct result.
+
+## Test failures and infrastructure failures
+
+| Outcome | Cached? | Retried? |
+| --- | --- | --- |
+| Passed | yes | no |
+| Failed: the tool ran and reported a failure (UVM_ERROR, lint error, `exit 1`) | **yes**: the same inputs fail the same way | no; `--rerun-failed` forces it |
+| Infrastructure: license timeout, OOM, node failure, preemption, crash signal | **never** | yes, automatically, with more memory after an OOM |
+
+The rule plugin decides which is which; see [Write a rule plugin](/ebs/tutorials/rule-plugin/).
+
+## Why a stale timestamp cannot cause a wrong build
+
+Timestamps are only ever a hint to skip rehashing a file. Several guards stop a stale stat
+from deciding anything:
+
+1. Clean git-tracked files use git's own blob ids.
+2. A stat entry recorded within a few seconds of the file's modification time is treated as
+   dirty (git's racy-clean rule); the stat key also includes ctime, device and inode.
+3. Sources are snapshotted into the CAS at plan time, and actions run on the snapshot.
+4. `--rehash` ignores the stat cache, and `[stat_cache].untrusted_mounts` turns it off for
+   given mounts.
+5. The runner re-verifies input digests before executing, and a sampled audit rehashes a
+   fraction of stat-cache hits on every plan.
+
+<Aside type="caution" title="Changing what goes into a key">
+Code that changes the key document or canonical JSON must bump `KEY_SCHEMA_VERSION`, so old
+cache entries can never be mistaken for new ones. Rule plugins bump their own `version`.
+</Aside>

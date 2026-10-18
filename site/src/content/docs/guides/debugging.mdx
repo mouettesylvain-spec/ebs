@@ -1,0 +1,62 @@
+---
+title: Debugging a failed action
+description: status, logs, debug and reproduce - from "something failed" to a shell in the exact sandbox.
+sidebar:
+  order: 3
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+Every failing action can be inspected and replayed from your terminal, without searching SLURM
+spool directories. Actions are named by their id or any unique prefix of it, and commands
+default to the latest build in the current directory (`--build` picks another).
+
+<Steps>
+
+1. **See what failed.**
+
+   ```sh
+   ebs status            # actions per step and state; pending split into licenses / resources
+   ebs status --watch    # refresh until the build ends
+   ```
+
+2. **Read the log.** Finished actions are read from the CAS, running ones from the live log:
+
+   ```sh
+   ebs logs 'sim[seed=7,test=random]'
+   ebs logs 'sim[seed=7' -f      # a unique prefix works; -f follows a running action
+   ```
+
+3. **See everything about the action**: state, error, key, the exact command, declared env,
+   toolchain, every staged input with its digest and origin, the SLURM job, and the debug
+   directory:
+
+   ```sh
+   ebs debug 'sim[seed=7,test=random]'
+   ```
+
+   The debug directory holds `tool.log`, `command.json` and the files the step lists in
+   `debug.collect`, copied on failure (and on success with `debug.on_success`).
+
+4. **Reproduce it.** `ebs reproduce` rebuilds the action's sandbox exactly as the runner did:
+   same inputs from the CAS, same config files, same environment.
+
+   ```sh
+   ebs reproduce 'sim[seed=7,test=random]' --run            # rerun and compare the outputs
+   ebs reproduce 'sim[seed=7,test=random]' --interactive    # a bash in the sandbox, with its env
+   ebs reproduce 'sim[seed=7,test=random]' --salloc --interactive   # same, on a compute node
+   ```
+
+   In an interactive sandbox you can open the tool's GUI on the failing test, add prints, or
+   run the command by hand. Nothing you do there changes the build or the cache.
+
+</Steps>
+
+## Common failures
+
+| Symptom | Likely cause |
+| --- | --- |
+| `No such file or directory` for a file that exists in your checkout | it is not a declared input, so it was not staged |
+| A tool reads `~/.something` and behaves differently than in your shell | `HOME` is empty in the sandbox; declare what the tool needs as an input or env |
+| `command not found` (exit 127) | the tool is not in the toolchain's `PATH`; check the toolchain with `ebs toolchain show` |
+| Flow error with `file:line:col` | the message points at the YAML node; `${…}` typos get a "did you mean" |

@@ -1,0 +1,74 @@
+---
+// One comment-only edit, two build systems: Make reruns the whole chain (timestamps),
+// EBS reruns one action and stops at the identical report (content digests, early cutoff).
+import SceneFrame from '../_lib/SceneFrame.astro';
+
+const nodes = ['lint alu', 'report', 'summary', 'sign-off'];
+const X = [190, 340, 490, 640];
+const lanes = [
+  { id: 'make', y: 70, title: 'Make', note: 'newer timestamp → rerun everything after it' },
+  { id: 'ebs', y: 220, title: 'EBS', note: 'same report digest → stop here' },
+];
+const ebsState = ['run', 'same', 'hit', 'hit'];
+const tagText: Record<string, string> = {
+  run: 'reruns',
+  same: 'identical bytes',
+  hit: 'cached',
+  stale: 'reruns',
+};
+---
+
+<SceneFrame
+  name="make-vs-ebs"
+  viewBox="0 0 760 330"
+  caption="A comment-only edit to alu.sv. Make sees a newer file and rebuilds the whole chain; EBS reruns lint, finds an identical report and reuses everything after it."
+  label="Two rows of four steps. In the Make row, all four steps rerun after a comment edit. In the EBS row, only lint reruns; its report is identical, so summary and sign-off come from the cache."
+>
+  {
+    lanes.map((lane) => (
+      <g class={`lane lane-${lane.id}`}>
+        <text class="label" x="20" y={lane.y - 30}>{lane.title}</text>
+        <text class="sub" x="20" y={lane.y + 62}>{lane.note}</text>
+        <g class="source">
+          <rect class="box" x="20" y={lane.y - 18} width="110" height="40" rx="10" />
+          <text class="mono" x="36" y={lane.y + 6}>alu.sv</text>
+          <circle class="dot edit" cx="122" cy={lane.y - 18} r="6" />
+        </g>
+        {X.map((x, i) => (
+          <g class="node" data-i={i}>
+            <line class="wire" x1={x - 50} y1={lane.y + 2} x2={x - 10} y2={lane.y + 2} />
+            <rect class="box" x={x - 10} y={lane.y - 18} width="120" height="40" rx="10" />
+            <rect
+              class={`box overlay ${lane.id === 'make' ? 'stale' : ebsState[i] === 'run' ? 'accent' : 'hit'}`}
+              x={x - 10}
+              y={lane.y - 18}
+              width="120"
+              height="40"
+              rx="10"
+            />
+            <text class="label" x={x + 50} y={lane.y + 7} text-anchor="middle" style="font-size:13px">
+              {nodes[i]}
+            </text>
+            <text
+              class={`tag ${lane.id === 'make' ? 'tag-stale' : ebsState[i] === 'run' ? 'tag-run' : 'tag-hit'}`}
+              x={x + 50}
+              y={lane.y + 40}
+              text-anchor="middle"
+            >
+              {lane.id === 'make' ? tagText.stale : tagText[ebsState[i] ?? 'hit']}
+            </text>
+          </g>
+        ))}
+        <text class={`total ${lane.id === 'make' ? 'tag-stale' : 'tag-run'}`} x="740" y={lane.y - 30} text-anchor="end" style="font-size:14px">
+          {lane.id === 'make' ? '4 of 4 rerun' : '1 of 4 rerun'}
+        </text>
+      </g>
+    ))
+  }
+</SceneFrame>
+
+<script>
+  import { mountScene } from '../_lib/scene';
+  import { buildMakeVsEbs } from './make-vs-ebs';
+  mountScene('make-vs-ebs', buildMakeVsEbs);
+</script>

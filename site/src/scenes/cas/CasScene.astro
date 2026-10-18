@@ -1,0 +1,67 @@
+---
+// Content-addressed store: hash, stage in tmp/, fsync, atomic rename, deduplicate.
+import SceneFrame from '../_lib/SceneFrame.astro';
+
+const files = [
+  { y: 60, name: 'rtl/alu/alu.sv', sub: 'your checkout' },
+  { y: 150, name: 'rtl/counter/counter.sv', sub: 'your checkout' },
+  { y: 240, name: 'rtl/alu/alu.sv', sub: 'a colleague, same bytes' },
+];
+const rows = [
+  { y: 196, path: '3f/a9/3fa9c1…', what: 'alu.sv' },
+  { y: 236, path: 'b2/07/b2075e…', what: 'counter.sv' },
+];
+---
+
+<SceneFrame
+  name="cas"
+  viewBox="0 0 720 360"
+  caption="Each file is stored once, under its SHA-256 digest. Writes land in tmp/, are fsynced, then renamed into place atomically."
+  label="Three files are hashed with SHA-256. The first two are written to the store through a tmp directory and an atomic rename. The third has the same bytes as the first, so it is deduplicated."
+>
+  {
+    files.map((f, i) => (
+      <g class="file" data-i={i}>
+        <rect class="box" x="20" y={f.y} width="180" height="56" rx="12" />
+        <text class="label" x="36" y={f.y + 24} style="font-size:13px">{f.name}</text>
+        <text class="sub" x="36" y={f.y + 43}>{f.sub}</text>
+      </g>
+    ))
+  }
+
+  <g class="hasher">
+    <circle class="box accent hasher-ring" cx="300" cy="178" r="44" />
+    <text class="label" x="300" y="176" text-anchor="middle">SHA-256</text>
+    <text class="sub" x="300" y="194" text-anchor="middle">digest</text>
+  </g>
+  <text class="mono digest" x="300" y="250" text-anchor="middle">sha256:3fa9c1…</text>
+
+  <rect class="box" x="400" y="20" width="300" height="320" rx="16" />
+  <text class="label" x="420" y="48">/cas/cpu-nda</text>
+  <text class="sub" x="590" y="48">group cpu-nda, 2750</text>
+
+  <rect class="box tmp" x="420" y="66" width="260" height="58" rx="10" />
+  <text class="mono" x="434" y="86">tmp/</text>
+  <text class="tag-run fsync" x="434" y="110">write → fsync → rename</text>
+
+  <text class="mono" x="420" y="178">blobs/sha256/</text>
+  {
+    rows.map((r, i) => (
+      <g class="row" data-i={i}>
+        <rect class="box row-box" x="420" y={r.y} width="260" height="30" rx="8" />
+        <text class="mono" x="434" y={r.y + 19}>{r.path}</text>
+        <text class="sub" x="664" y={r.y + 19} text-anchor="end">{r.what}</text>
+      </g>
+    ))
+  }
+  <text class="tag-hit dedupe" x="420" y="300">Same digest: already stored, nothing copied</text>
+  <text class="sub" x="420" y="322">Read-only, immutable, shared by every user of the domain</text>
+
+  <circle class="dot packet" cx="200" cy="88" r="7" opacity="0" />
+</SceneFrame>
+
+<script>
+  import { mountScene } from '../_lib/scene';
+  import { buildCas } from './cas';
+  mountScene('cas', buildCas);
+</script>

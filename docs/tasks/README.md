@@ -76,6 +76,12 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P3-05 | Revalidation jobs and comparators | P3-04 | 3 | todo |
 | P3-09 | Phase 3 acceptance | all P3 | 4 | todo |
 
+## Documentation (exit: site deployed from main; its tutorials executed in CI)
+
+| ID | Task | Depends on | Wave | Status |
+| --- | --- | --- | --- | --- |
+| D-01 | Documentation site (Astro + Starlight, GitHub Pages) | P0-17 | any | review |
+
 ## Phase 4 — More flows
 
 Backlog outlines in `phase-4-backlog.md`; they get full task files once phase 3 starts.

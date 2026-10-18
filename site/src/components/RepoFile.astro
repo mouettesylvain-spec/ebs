@@ -1,0 +1,43 @@
+---
+// Shows a repository file, read at build time: the page always matches the code.
+//   <RepoFile path="examples/lint-make/flow.yaml" />
+//   <RepoFile path="deploy/gc/gc.toml.example" lines="1-20" lang="toml" />
+import { Code } from '@astrojs/starlight/components';
+import { languageOf, readRepoFile, repoUrl, sliceLines } from '../lib/repo';
+
+interface Props {
+  path: string;
+  /** "12-30", "12-" or "12": 1-based, inclusive. Prefer whole files: ranges drift. */
+  lines?: string;
+  lang?: string;
+  /** Lines to highlight, in Expressive Code syntax ("3", "3-5"), relative to the shown text. */
+  mark?: string;
+}
+
+const { path, lines, lang, mark } = Astro.props;
+const code = sliceLines(readRepoFile(path), lines);
+const title = lines ? `${path} (lines ${lines})` : path;
+---
+
+<figure class="repo-file">
+  <Code code={code} lang={lang ?? languageOf(path)} title={title} mark={mark} />
+  <figcaption><a href={repoUrl(path)}>View {path} on GitHub</a></figcaption>
+</figure>
+
+<style>
+  .repo-file {
+    margin: 1.25rem 0;
+  }
+  figcaption {
+    margin-top: 0.4rem;
+    font-size: var(--ebs-text-small);
+    text-align: right;
+  }
+  figcaption a {
+    color: var(--ebs-text-2);
+    text-decoration: none;
+  }
+  figcaption a:hover {
+    color: var(--ebs-accent);
+  }
+</style>

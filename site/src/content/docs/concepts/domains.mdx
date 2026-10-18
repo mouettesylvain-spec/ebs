@@ -1,0 +1,45 @@
+---
+title: Domains
+description: Confidentiality scopes that keep NDA data, caches and logs apart.
+sidebar:
+  order: 6
+---
+
+A **domain** is a confidentiality scope: one NDA, one project, one foundry's PDK. Every flow
+names its domain (`domain: cpu-nda`), and everything EBS stores for it is kept apart:
+
+| | Per domain |
+| --- | --- |
+| Content-addressed store | `/cas/<domain>/`, group `<domain>`, mode 2750 |
+| Debug area | `/debug/<domain>/` |
+| Action cache | lookups only ever match entries of the same domain |
+| Releases | belong to the domain of their build |
+| Access | the domain's Unix group, resolved through NSS (LDAP/SSSD) |
+
+## Why the cache is scoped
+
+Without scoping, a cache lookup would leak information: a hit would reveal that someone else
+built identical content, which for NDA designs can be confidential in itself. EBS never
+deduplicates or reuses results across domains, even for byte-identical inputs.
+
+## Enforced by the operating system
+
+Jobs run as the user, so filesystem permissions do the enforcing, not EBS: a user outside the
+group cannot read `/cas/<domain>` whatever the tool does. The metadata service applies the same
+group check to every query. Outside their domains, callers get 403, a build or release named by
+id returns 404, and every cache lookup is a miss.
+
+## Moving data between domains
+
+Only `ebs release export --to <domain>` does it: it copies blobs (never links them), requires
+membership in both domains, and is audited. A PDK can live in its own domain and be exported
+read-only to the design domains allowed to see it.
+
+## Commands
+
+```sh
+ebs domain list      # configured domains and whether you are a member
+ebs domain check     # modes, groups and free space of each domain (exit 3 on a problem)
+```
+
+Creating a domain is an admin task: [Storage and domains](/ebs/operate/storage-and-domains/).

@@ -1,0 +1,44 @@
+---
+title: Toolchains (admin)
+description: Register environment modules as immutable toolchains and watch them for drift.
+sidebar:
+  order: 6
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Registering a toolchain makes it current for every later build, so only service tokens and the
+users in `[meta_service].toolchain_admins` may do it.
+
+## Register
+
+```sh
+ebs toolchain register questa/2025.2 --root /tools/uvm-1.2 --root /tools/vip/axi
+```
+
+1. Detects Environment Modules 4+ or Lmod.
+2. In a clean shell (empty `HOME`, `PATH=/usr/bin:/bin`), runs `module purge` then
+   `module load questa/2025.2`, and keeps the variables the load changed. License variables
+   (`LM_LICENSE_FILE`, `*_LICENSE_FILE`) and `SLURM_*` are left out: they never enter a key.
+3. Derives the install roots from the changed paths, adds each `--root`, and fingerprints them.
+4. Stores the snapshot under its id. Registering an unchanged module reports `unchanged`; a
+   changed one gets a new id and prints the files that differ.
+
+The module must be named `<name>/<version>`. A path naming the registering user is refused
+unless it lies inside an install root, so ids do not depend on who registered them.
+
+## Inspect and check
+
+```sh
+ebs toolchain list                 # the current toolchain of every module (--all: superseded too)
+ebs toolchain show questa/2025.2   # env, roots, fingerprint, id
+ebs toolchain check --days 30      # re-fingerprint toolchains used in the last 30 days
+```
+
+`check` changes nothing and exits 1 on drift, which makes it a good nightly job: someone patched
+an install in place, and new builds will miss the cache until the module is registered again.
+
+<Aside type="tip">
+Never fix a broken install in place. Install the fix as a new module version, register it, and
+move flows to it deliberately: old results stay reproducible with the old toolchain.
+</Aside>

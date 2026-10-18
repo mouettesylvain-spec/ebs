@@ -1,4 +1,9 @@
-# Quickstart
+---
+title: Quickstart
+description: Build two example flows on your machine, watch the cache work, then change one file.
+sidebar:
+  order: 3
+---
 
 This walk-through runs the two examples in `examples/` on your machine with the local executor.
 They need no EDA tool or license: each ships a small fake tool written in bash and awk, and each
@@ -9,16 +14,20 @@ also has a `flow.verilator.yaml` for real [Verilator](https://verilator.org).
 - `examples/verilator-sim`: compile a model once, simulate a regression table (one action per test
   and seed), aggregate the results.
 
-The commands in the `console` blocks below are run by `tests/e2e/test_docs.py` in CI (ready pull
-requests and `main`), so they stay correct. The `sed -i` edits assume GNU sed (Linux). Lines with `…` stand for text that changes from run to run.
+:::tip[These commands are tested]
+Every `console` block on this page is executed by `tests/e2e/test_docs.py` in CI, against a
+fresh database and a fresh copy of `examples/`, so what you read is what you get. The `sed -i`
+edits assume GNU sed (Linux). Lines with `…` stand for text that changes from run to run.
+:::
 
 ## 1. Set up
 
 You need Python 3.11+, [uv](https://docs.astral.sh/uv/) and a PostgreSQL 16+ database you can
-create tables in (`deploy/postgres` will provide a production setup).
+create tables in. [Install the CLI](/ebs/start/install/) has the details; a team setup is
+described under [Operate](/ebs/operate/prerequisites/).
 
 ```sh
-git clone <this repository> ebs && cd ebs
+git clone https://github.com/mouettesylvain-spec/ebs.git && cd ebs
 uv sync
 source .venv/bin/activate     # puts `ebs` and `ebs-runner` on PATH
 python -c 'from ebs.meta import migrations; migrations.upgrade("postgresql+psycopg://me@dbhost/ebs")'
@@ -167,8 +176,10 @@ Changing one seed in `tests.csv` reruns that one simulation and the `report`, no
 
 `flow.verilator.yaml` runs the same steps with Verilator, declared as a **toolchain**: its
 version, install tree and environment are part of every action key, so a result of the fake tool
-is never reused for Verilator (or for another Verilator version). Until `ebs toolchain register`
-exists (P1-07), describe it in `.ebs/toolchains.yaml` next to the flow:
+is never reused for Verilator (or for another Verilator version). On a site with environment
+modules an admin registers it once with `ebs toolchain register` (see
+[Custom toolchains](/ebs/tutorials/custom-toolchain/)); on your own machine, describe it in
+`.ebs/toolchains.yaml` next to the flow:
 
 ```yaml
 version: 1
@@ -193,4 +204,6 @@ exit code 127.
 - `ebs plan --diff <build>` explains every difference from an earlier build.
 - `ebs build -k` keeps going past failed actions; `ebs logs <action>` shows any action's log, by
   a unique prefix of its id.
-- Flow syntax: `docs/architecture.md` § Flow description format.
+- [Wrap a Makefile](/ebs/tutorials/wrap-a-makefile/) explains the lint example line by line.
+- [How a build runs](/ebs/concepts/execution/) shows what happened behind each command.
+- Every flow key: [Flow schema](/ebs/reference/flow-schema/).

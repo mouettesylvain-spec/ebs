@@ -1,0 +1,39 @@
+---
+title: CI (GitHub Actions, GitLab)
+description: Run ebs in CI so every merge request fills the shared cache for the whole team.
+sidebar:
+  order: 4
+---
+
+import RepoFile from '../../../components/RepoFile.astro';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+CI is where the cache pays off most. CI builds with `--cache write`, so its results become
+cache hits for every engineer who builds the same inputs afterwards. Personal builds default to
+`--cache read`.
+
+## Requirements for the runner
+
+- It reaches the CAS (the NFS mount) and the metadata service or database.
+- It authenticates with a **CI bearer token** scoped to the flow's domain: an admin creates it
+  with `python -m ebs.meta.service token create ci-cpu --kind ci --team <project>`
+  ([Metadata service](/ebs/operate/metadata-service/)). Pass it as `EBS_META_TOKEN`.
+- `ebs` and `ebs-runner` are installed on it, and an `ebs.toml` points at the site.
+
+<Tabs>
+<TabItem label="GitHub Actions">
+<RepoFile path="integrations/ci/github-actions.yml" />
+</TabItem>
+<TabItem label="GitLab CI">
+<RepoFile path="integrations/ci/gitlab-ci.yml" />
+</TabItem>
+</Tabs>
+
+`ebs build` exits 1 when tests fail and 3 on an infrastructure error, so the job fails in
+both cases ([Exit codes](/ebs/reference/exit-codes/)). `ebs build --json` prints one event per
+line plus a final result document, for your own reporting.
+
+<Aside type="note" title="Coming">
+A `--ci` mode with JUnit XML for merge-request test reports, and gating channel promotion on CI,
+are task P2-07 on the [Roadmap](/ebs/reference/roadmap/).
+</Aside>

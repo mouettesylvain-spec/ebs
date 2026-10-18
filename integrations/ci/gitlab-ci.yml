@@ -1,0 +1,19 @@
+# Include from .gitlab-ci.yml. Runs on a runner tagged `ebs` that can reach the site's CAS and
+# metadata service; CI fills the shared cache (--cache write) for everyone else.
+ebs-build:
+  tags: [ebs]
+  variables:
+    EBS_CONFIG: /etc/ebs/ci.toml            # site config: CAS root, metadata URL
+    # EBS_META_TOKEN: set as a masked CI/CD variable (a CI token scoped to the domain)
+  script:
+    - ebs plan
+    - ebs build --cache write -k
+  after_script:
+    - ebs status
+    - ebs fetch summary -o ebs-out
+  artifacts:
+    when: always
+    paths: [ebs-out/]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

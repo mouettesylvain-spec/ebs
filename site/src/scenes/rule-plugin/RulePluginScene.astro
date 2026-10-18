@@ -1,0 +1,63 @@
+---
+// A rule plugin's life: expand() turns a step into an ActionTemplate at plan time; on the node,
+// classify() decides passed / failed (cached) / infra (retried).
+import SceneFrame from '../_lib/SceneFrame.astro';
+
+const step = ['kind: verilator.lint', 'inputs: { rtl: rtl/alu/*.sv }', 'params: { top: alu }'];
+const template = ['argv: bash .ebs/verilator_lint.sh', 'config_files: .ebs/verilator_lint.sh', 'outputs: { log: lint.log }'];
+const outcomes = [
+  { y: 60, label: 'PASSED', cls: 'hit', note: 'cached' },
+  { y: 130, label: 'FAILED', cls: 'stale', note: 'cached: a lint error is a result' },
+  { y: 200, label: 'INFRA', cls: 'accent', note: 'never cached: retried' },
+];
+---
+
+<SceneFrame
+  name="rule-plugin"
+  viewBox="0 0 780 290"
+  caption="expand() runs at plan time and returns the command, generated files and outputs; their exact text is part of the action key. After the tool exits, classify() on the node decides: a pass or a real failure is cached, an infrastructure problem is retried."
+  label="A flow step goes through the plugin's expand method and becomes an action template with argv, config files and outputs. The runner executes it and the plugin's classify method maps the exit to passed, failed or infrastructure failure."
+>
+  <g class="step">
+    <rect class="box" x="20" y="70" width="210" height="110" rx="14" />
+    <text class="sub" x="36" y="94">flow.yaml step</text>
+    {step.map((line, i) => <text class="mono" x="36" y={118 + i * 20}>{line}</text>)}
+  </g>
+
+  <g class="expand">
+    <rect class="box accent" x="254" y="105" width="96" height="40" rx="20" />
+    <text class="tag-run" x="302" y="130" text-anchor="middle">expand()</text>
+  </g>
+
+  <g class="template">
+    <rect class="box" x="374" y="70" width="230" height="110" rx="14" />
+    <text class="sub" x="390" y="94">ActionTemplate (in the key)</text>
+    {template.map((line, i) => <text class="mono" x="390" y={118 + i * 20}>{line}</text>)}
+  </g>
+
+  <g class="classify">
+    <rect class="box accent" x="420" y="210" width="140" height="40" rx="20" />
+    <text class="tag-run" x="490" y="235" text-anchor="middle">runner: classify()</text>
+  </g>
+  <path class="wire" d="M230 125 H254 M350 125 H374 M490 180 V210" />
+  <path class="wire" d="M560 230 C600 230 600 75 630 75 M560 230 C600 230 600 145 630 145 M560 230 C600 230 600 215 630 215" />
+
+  {
+    outcomes.map((o, i) => (
+      <g class="outcome" data-i={i}>
+        <rect class={`box ${o.cls}`} x="630" y={o.y} width="130" height="30" rx="15" />
+        <text class={o.cls === 'hit' ? 'tag-hit' : o.cls === 'stale' ? 'tag-stale' : 'tag-run'} x="695" y={o.y + 20} text-anchor="middle">
+          {o.label}
+        </text>
+        <text class="sub" x="695" y={o.y + 46} text-anchor="middle">{o.note}</text>
+      </g>
+    ))
+  }
+  <circle class="dot packet" cx="490" cy="230" r="6" opacity="0" />
+</SceneFrame>
+
+<script>
+  import { mountScene } from '../_lib/scene';
+  import { buildRulePlugin } from './rule-plugin';
+  mountScene('rule-plugin', buildRulePlugin);
+</script>

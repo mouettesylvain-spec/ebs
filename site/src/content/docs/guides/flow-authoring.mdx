@@ -1,0 +1,138 @@
+---
+title: Writing flows
+description: Steps, inputs, params, outputs, matrices and references - the flow.yaml you will write every day.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A flow is a `flow.yaml` checked into your repository, next to its tables. This guide covers the
+parts you use every day; [Flow schema](/ebs/reference/flow-schema/) lists every key.
+
+```yaml title="example/flow.yaml"
+version: 1
+project: rv32x-cpu          # maps to the SLURM account; names the build
+domain: cpu-nda             # confidentiality scope: CAS root, cache, permissions
+
+toolchains:
+  questa: { module: questa/2025.2, licenses: { msimhdlsim: 1 } }
+
+steps:
+  compile:
+    kind: questa.compile
+    toolchain: questa
+    matrix: { table: libs.csv }                 # columns: lib, filelist
+    inputs:
+      srcs: "rtl/**/*.sv"
+      filelist: "${row.filelist}"
+    params: { lib: "${row.lib}", vlog_opts: "-sv -timescale 1ns/1ps" }
+    resources: { cpus: 2, mem: 8G, time: 30m }
+```
+
+## Steps and kinds
+
+Each entry of `steps:` is a step; `kind` picks the rule that turns it into commands:
+
+| Kind | Runs | Use for |
+| --- | --- | --- |
+| `shell` | `script:` (bash, `-eo pipefail`) or `command:` (an argv list, no shell) | most tools |
+| `make` | `make -C <workdir> [target] VAR=value…` | wrapping Makefiles |
+| `tcl` | `tool .ebs/ebs_main.tcl args…`, which sets `::ebs(param)` then sources your script | Tcl-driven tools |
+| `questa.compile`, `questa.opt`, `questa.sim` | the Questa rule pack | Questa flows |
+
+`ebs rules list` shows the kinds installed, including [plugins](/ebs/tutorials/rule-plugin/).
+
+## Inputs
+
+Inputs are what the action may read. They are staged in the action's scratch directory at the
+same relative paths; nothing else is.
+
+```yaml
+inputs:
+  rtl: "rtl/${row.block}/*.sv"                 # a glob, relative to the flow directory
+  incs: ["rtl/include/*.svh", "rtl/pkg/*.sv"]  # several patterns
+  model: "${steps.compile.outputs.model}"      # another action's output: a graph edge
+  db: { from: "data/big.db", writable: true }  # long form: stage a private writable copy
+```
+
+Absolute paths and paths escaping the flow directory are rejected at plan time: they would
+make results depend on a machine.
+
+## Params and env
+
+`params` are the knobs of a step. They are part of the action key and are passed in a
+kind-specific way: make variables for `make`, `::ebs(name)` for `tcl`, `${params.x}` anywhere
+in a `shell` script or command.
+
+`env` declares environment variables for the tool. Only declared variables reach it (plus the
+toolchain's env and a few the runner sets). Your shell's environment never leaks in.
+
+## Outputs
+
+```yaml
+outputs:
+  report: "reports/${row.block}.rpt"                       # short form: a file
+  worklib: { dir: "work/${row.lib}", deterministic: false } # a directory; key on the producer
+  cov: { file: cov.ucdb, optional: true }                  # may be missing without failing
+```
+
+Everything not declared is discarded with the scratch directory. A missing non-optional output
+fails the action.
+
+## Matrices
+
+A matrix expands a step into one action per row:
+
+```yaml
+matrix: { table: tests.csv }                         # one table
+matrix: { cross: [tests.csv, configs.csv] }          # every combination
+matrix: { zip: [tests.csv, seeds.csv] }              # row i with row i
+matrix: { table: tests.csv, filter: { suite: [smoke, nightly] } }
+matrix: { table: tests.csv, id: [test, seed] }       # columns that name the action
+```
+
+Tables are CSV (with a header) or YAML (a list of flat maps). Values are text, as written. The
+action id lists the id columns, sorted: `sim[seed=7,test=random]`.
+
+## References
+
+`${…}` is resolved at plan time, never by a shell:
+
+| Reference | Means |
+| --- | --- |
+| `${row.col}` | a column of the current matrix row |
+| `${params.name}` | a resolved param of the same step |
+| `${env.NAME}` | a declared env var of the same step |
+| `${steps.s.outputs.o}` | the output `o` of step `s` (one instance) |
+| `${steps.s.outputs.o[*]}` | the outputs of every instance of `s` (fan-in) |
+| `${steps.s.outputs.o[test=smoke]}` | the instances whose row matches |
+
+Unknown references are errors with a "did you mean" hint. To pass a literal `${` to bash, write
+`$${`, for example `$${HOME}` or `$${status:-0}`.
+
+## Resources and licenses
+
+```yaml
+resources: { cpus: 4, mem: 16G, time: 2h, max_parallel: 50, constraint: avx512 }
+licenses: { msimhdlsim: 1 }
+```
+
+Resources are **not** in the action key: tuning them never invalidates the cache. A toolchain's
+`resources` and `licenses` are defaults that steps override. `max_parallel` throttles a step's
+job arrays on SLURM.
+
+## Debug files
+
+```yaml
+debug: { collect: ["transcript", "*.log"], max_size: 2G, on_success: false }
+```
+
+Copied to the debug area when the action fails (or always, with `on_success: true`), capped at
+`max_size`. `ebs debug ACTION` prints where.
+
+<Aside type="tip" title="Editor support">
+Point your editor at the flow JSON Schema to get completion and validation while you type:
+[VS Code](/ebs/integrations/vscode/), [JetBrains](/ebs/integrations/jetbrains/),
+[Neovim](/ebs/integrations/neovim/).
+</Aside>

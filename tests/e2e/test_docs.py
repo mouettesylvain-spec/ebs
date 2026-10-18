@@ -1,9 +1,11 @@
-"""Docs that run (P0-17 R5): every `console` block of docs/user/quickstart.md is executed.
+"""Docs that run (P0-17 R5, D-01 R1): every `console` block of every page of the site's
+"start" and "tutorials" sections (site/src/content/docs/) is executed, one page per test.
 
 A block line starting with `$ ` is a command; the lines after it, up to the next command, are
 expected output. Each expected line must equal some line of the command's stdout, where `…`
 matches any text (UUIDs, timings). `cd` changes the working directory, other commands run as
-argv lists (never through a shell) from a copy of the repository's `examples/`.
+argv lists (never through a shell) from a fresh copy of the repository's `examples/`, against a
+fresh site and database.
 """
 
 from __future__ import annotations
@@ -23,8 +25,10 @@ from tests.helpers.pg import _pg_truncate_engine, pg_migrated, pg_server, pg_url
 
 __all__ = ["_pg_truncate_engine", "pg_migrated", "pg_server", "pg_url"]
 
-QUICKSTART = REPO_ROOT / "docs" / "user" / "quickstart.md"
-_BLOCK = re.compile(r"^```console\n(.*?)^```", re.MULTILINE | re.DOTALL)
+DOCS = REPO_ROOT / "site" / "src" / "content" / "docs"
+EXECUTED_SECTIONS = ("start", "tutorials")
+# A fence may be indented (a block inside a list item); its lines share that indentation.
+_BLOCK = re.compile(r"^([ \t]*)```console\b[^\n]*\n(.*?)^\1```", re.MULTILINE | re.DOTALL)
 
 
 @dataclass
@@ -35,8 +39,9 @@ class Command:
 
 def console_commands(markdown: str) -> list[Command]:
     commands: list[Command] = []
-    for block in _BLOCK.findall(markdown):
-        for line in block.splitlines():
+    for indent, block in _BLOCK.findall(markdown):
+        for raw in block.splitlines():
+            line = raw.removeprefix(indent)
             if line.startswith("$ "):
                 commands.append(Command(shlex.split(line[2:])))
             elif line.strip():
@@ -55,14 +60,39 @@ def test_console_commands_parse() -> None:
     )
     assert [c.argv for c in commands] == [["cd", "a"], ["ebs", "build"]]
     assert commands[1].expected == ["build … passed"]
+    indented = console_commands("1. x\n\n   ```console\n   $ cd a\n     out\n   ```\n")
+    assert [c.argv for c in indented] == [["cd", "a"]]
+    assert indented[0].expected == ["  out"]
+    titled = console_commands('```console title="x"\n$ ebs plan\n```\n')
+    assert [c.argv for c in titled] == [["ebs", "plan"]]
     assert _pattern("build … passed").fullmatch("build 1234 passed")
     assert not _pattern("build … passed").fullmatch("build 1234 failed")
 
 
-# R5
-def test_quickstart_blocks(tmp_path: Path, pg_url: URL) -> None:
-    commands = console_commands(QUICKSTART.read_text(encoding="utf-8"))
-    assert any(c.argv[0] == "ebs" for c in commands), "the quickstart runs no ebs command"
+def executed_pages() -> list[Path]:
+    """Pages whose console blocks run: every .md/.mdx page of EXECUTED_SECTIONS with one."""
+    pages = sorted(
+        page
+        for section in EXECUTED_SECTIONS
+        for page in (DOCS / section).rglob("*.md*")
+        if page.suffix in {".md", ".mdx"} and _BLOCK.search(page.read_text(encoding="utf-8"))
+    )
+    return pages
+
+
+def test_executed_pages_include_quickstart() -> None:
+    names = {page.relative_to(DOCS).as_posix() for page in executed_pages()}
+    assert "start/quickstart.md" in names
+    assert any(name.startswith("tutorials/") for name in names), names
+
+
+# P0-17 R5, D-01 R1
+@pytest.mark.parametrize(
+    "page", executed_pages(), ids=lambda p: p.relative_to(DOCS).with_suffix("").as_posix()
+)
+def test_page_blocks(page: Path, tmp_path: Path, pg_url: URL) -> None:
+    commands = console_commands(page.read_text(encoding="utf-8"))
+    assert any(c.argv[0] == "ebs" for c in commands), f"{page.name} runs no ebs command"
     site = Site(tmp_path / "site", pg_url)
     repo = tmp_path / "repo"
     (repo / "docs").mkdir(parents=True)

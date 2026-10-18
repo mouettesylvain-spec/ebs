@@ -1,0 +1,44 @@
+---
+title: Releases and channels
+description: Builds, releases and channels - how teams publish and consume each other's work.
+sidebar:
+  order: 5
+---
+
+import ReleaseScene from '../../../scenes/release/ReleaseScene.astro';
+
+Versioning works like software packages, in three layers:
+
+| Object | Mutable? | What it is |
+| --- | --- | --- |
+| **Build** | no | One run of a flow: its plan, results, timings, who ran it. |
+| **Release** | no (it can be *yanked*, never deleted) | A name and version (`rtl-team/cpu 2026.09.3`) for selected outputs of one build, by digest, with notes. |
+| **Channel** | yes, with full history | A pointer such as `rtl-team/cpu:stable` to one release, optionally guarded by a gate build. |
+
+<ReleaseScene />
+
+## Why three layers
+
+- Builds are cheap and frequent; most are never released.
+- A release is a decision a team takes and can explain: which build, which outputs, why.
+  Because it records digests, the bytes are exactly the ones that were tested, and the CAS
+  keeps them as long as the release exists.
+- A channel lets consumers follow `stable` without editing anything, while the producing team
+  decides when `stable` moves. A gate (`[release.gates]`) can require a passing build of a
+  given project for that release first.
+
+## Teams work asynchronously
+
+A downstream team (verification, DfT, backend) follows a channel, and its flows will pin the
+exact release they used in a `flow.lock` committed to git (task P2-03). Each team then upgrades
+on its own schedule, and every build records exactly which upstream versions it consumed. That
+is the basis for provenance queries such as "which tests ran on the RTL behind this netlist"
+(task P2-04).
+
+## Across domains
+
+Releases live in the [domain](/ebs/concepts/domains/) of the build they come from. Sharing with
+another NDA scope is an explicit, audited copy, `ebs release export --to <domain>`, which needs
+membership in both domains and never links objects across them.
+
+Try it: [Publish a release](/ebs/tutorials/releases/).

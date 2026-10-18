@@ -1,0 +1,56 @@
+---
+title: EBS
+description: The EDA Build System. Hash-based builds of EDA flows on SLURM, with a shared cache, team releases and provenance.
+template: splash
+editUrl: false
+lastUpdated: false
+pagefind: false
+hero:
+  title: Build silicon flows once.
+  tagline: EBS reruns an EDA action only when what it depends on actually changed, and shares every result with your whole team.
+  actions:
+    - text: Get started
+      link: /ebs/start/quickstart/
+      variant: primary
+    - text: Why EBS
+      link: /ebs/start/introduction/
+      variant: secondary
+---
+
+import Section from '../../components/landing/Section.astro';
+import Gains from '../../components/landing/Gains.astro';
+import Features from '../../components/landing/Features.astro';
+import ExecutionScene from '../../scenes/execution-flow/ExecutionScene.astro';
+import CasScene from '../../scenes/cas/CasScene.astro';
+import RepoFile from '../../components/RepoFile.astro';
+
+<Section eyebrow="Measured, not promised" title="Less work on every build." lead="Numbers from the examples in the repository, regenerated on every deploy.">
+  <Gains />
+</Section>
+
+<Section eyebrow="How it works" title="Plan, look up, run only what missed." lead="Every action gets a digest of everything that can change its result. Hits cost one database lookup; misses are dispatched, run in a clean sandbox and stored.">
+  <ExecutionScene />
+</Section>
+
+<Section eyebrow="Built for EDA" title="Everything a Makefile can't do." >
+  <Features />
+</Section>
+
+<Section eyebrow="Storage" title="Every byte stored once." lead="A content-addressed store per NDA domain: immutable, deduplicated, written atomically.">
+  <CasScene />
+</Section>
+
+<Section eyebrow="Readable" title="A flow is a short YAML file." lead="Compile once, simulate a table of tests and seeds, aggregate. This one runs in the Quickstart.">
+  <RepoFile path="examples/verilator-sim/flow.yaml" />
+</Section>
+
+<Section title="Try it in ten minutes." lead="No EDA license needed: the examples ship with stand-in tools, and real Verilator flows next to them.">
+  <p class="cta not-content">
+    <a href="/ebs/start/quickstart/">Start the Quickstart ›</a>
+  </p>
+</Section>
+
+<style>{`
+  .cta { text-align: center; font-size: var(--ebs-text-lead); }
+  .cta a { color: var(--ebs-accent); text-decoration: none; font-weight: 500; }
+`}</style>

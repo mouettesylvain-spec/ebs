@@ -1,0 +1,90 @@
+/*
+ * Design tokens: the only place colours, type, spacing and motion are defined.
+ * Starlight variables (starlight.css), the landing page and the scenes all read these.
+ * Starlight sets data-theme="light" | "dark" on <html>; dark is its default.
+ */
+
+:root {
+  /* Type: the platform's own UI font first (SF Pro on Apple devices), Inter if installed. */
+  --ebs-font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --ebs-font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', 'Segoe UI',
+    Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --ebs-font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono',
+    monospace;
+
+  --ebs-text-hero: clamp(2.75rem, 7vw, 5.5rem);
+  --ebs-text-headline: clamp(2rem, 4.5vw, 3.5rem);
+  --ebs-text-title: clamp(1.375rem, 2.4vw, 1.75rem);
+  --ebs-text-lead: clamp(1.125rem, 1.8vw, 1.5rem);
+  --ebs-text-body: 1.0625rem;
+  --ebs-text-small: 0.875rem;
+  --ebs-tracking-tight: -0.022em;
+
+  --ebs-space-1: 0.25rem;
+  --ebs-space-2: 0.5rem;
+  --ebs-space-3: 1rem;
+  --ebs-space-4: 1.5rem;
+  --ebs-space-5: 2.5rem;
+  --ebs-space-6: 4rem;
+  --ebs-space-7: 7rem;
+  --ebs-gutter: 16px;
+  --ebs-content: 980px;
+  --ebs-content-wide: 1200px;
+
+  --ebs-radius-s: 8px;
+  --ebs-radius-m: 14px;
+  --ebs-radius-l: 22px;
+
+  /* Motion: one easing family, three durations. Scenes use these through scene.ts. */
+  --ebs-ease: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --ebs-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ebs-duration-s: 200ms;
+  --ebs-duration-m: 450ms;
+  --ebs-duration-l: 900ms;
+
+  /* Dark (Starlight's default theme). */
+  --ebs-bg: #000000;
+  --ebs-surface: #161617;
+  --ebs-surface-2: #1d1d1f;
+  --ebs-text: #f5f5f7;
+  --ebs-text-2: #a1a1a6;
+  --ebs-text-3: #6e6e73;
+  --ebs-hairline: #2d2d30;
+  --ebs-accent: #2997ff;
+  --ebs-accent-strong: #0a84ff;
+  --ebs-accent-soft: rgba(41, 151, 255, 0.16);
+  --ebs-on-accent: #ffffff;
+  /* Scene semantics: a cache hit is calm green, work that runs is the accent. */
+  --ebs-hit: #30d158;
+  --ebs-hit-soft: rgba(48, 209, 88, 0.16);
+  --ebs-stale: #ff9f0a;
+  --ebs-stale-soft: rgba(255, 159, 10, 0.16);
+  --ebs-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+:root[data-theme='light'] {
+  --ebs-bg: #ffffff;
+  --ebs-surface: #f5f5f7;
+  --ebs-surface-2: #fbfbfd;
+  --ebs-text: #1d1d1f;
+  --ebs-text-2: #6e6e73;
+  --ebs-text-3: #86868b;
+  --ebs-hairline: #d2d2d7;
+  --ebs-accent: #0071e3;
+  --ebs-accent-strong: #0066cc;
+  --ebs-accent-soft: rgba(0, 113, 227, 0.1);
+  --ebs-hit: #248a3d;
+  --ebs-hit-soft: rgba(36, 138, 61, 0.12);
+  --ebs-stale: #c93400;
+  --ebs-stale-soft: rgba(201, 52, 0, 0.1);
+  --ebs-shadow: 0 20px 60px rgba(0, 0, 0, 0.12);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --ebs-duration-s: 0ms;
+    --ebs-duration-m: 0ms;
+    --ebs-duration-l: 0ms;
+  }
+}

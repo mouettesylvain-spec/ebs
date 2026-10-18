@@ -1,0 +1,64 @@
+---
+// The life of a build: expand, key, look up, then only the misses are dispatched and run.
+import SceneFrame from '../_lib/SceneFrame.astro';
+
+const stages = [
+  { x: 20, title: 'flow.yaml', sub: 'steps + tables' },
+  { x: 170, title: 'Plan', sub: 'matrix → actions' },
+  { x: 320, title: 'Keys', sub: 'SHA-256 per action' },
+  { x: 470, title: 'Cache', sub: 'lookup by key' },
+];
+// Five actions: three were built before (hit), two are new (miss).
+const tokens = [
+  { y: 130, hit: true },
+  { y: 142, hit: false },
+  { y: 154, hit: true },
+  { y: 166, hit: false },
+  { y: 178, hit: true },
+];
+---
+
+<SceneFrame
+  name="execution"
+  viewBox="0 0 800 300"
+  caption="Five actions are planned and keyed. Three keys are already in the cache and are reused at once; only the two misses are dispatched, run and stored."
+  label="Actions flow from flow.yaml through planning and key computation to a cache lookup. Three are cache hits and reuse their results; two are misses, which run on the executor and store their outputs in the CAS."
+>
+  {
+    stages.map((s) => (
+      <g class="stage-box">
+        <rect class="box" x={s.x} y="120" width="120" height="70" rx="14" />
+        <text class="label" x={s.x + 60} y="150" text-anchor="middle">{s.title}</text>
+        <text class="sub" x={s.x + 60} y="170" text-anchor="middle">{s.sub}</text>
+      </g>
+    ))
+  }
+  <path class="wire" d="M140 155 H170 M290 155 H320 M440 155 H470" />
+  <path class="wire branch-hit" d="M590 140 C620 140 620 60 650 60" />
+  <path class="wire branch-miss" d="M590 170 C620 170 620 240 650 240" />
+
+  <g class="out-hit">
+    <rect class="box hit" x="650" y="30" width="130" height="60" rx="14" />
+    <text class="label" x="715" y="56" text-anchor="middle">Reuse</text>
+    <text class="sub" x="715" y="75" text-anchor="middle">result from cache</text>
+  </g>
+  <g class="out-miss">
+    <rect class="box accent" x="650" y="210" width="130" height="60" rx="14" />
+    <text class="label" x="715" y="236" text-anchor="middle">Run</text>
+    <text class="sub" x="715" y="255" text-anchor="middle">executor → CAS</text>
+  </g>
+  <text class="tag-hit count-hit" x="715" y="110" text-anchor="middle">3 cached</text>
+  <text class="tag-run count-miss" x="715" y="290" text-anchor="middle">2 run</text>
+
+  {
+    tokens.map((t, i) => (
+      <circle class={`dot token ${t.hit ? 'hit' : ''}`} data-hit={String(t.hit)} data-i={i} cx="715" cy={t.hit ? 60 : 240} r="5" opacity="0" />
+    ))
+  }
+</SceneFrame>
+
+<script>
+  import { mountScene } from '../_lib/scene';
+  import { buildExecution } from './execution';
+  mountScene('execution', buildExecution);
+</script>

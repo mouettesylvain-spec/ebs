@@ -1,0 +1,26 @@
+---
+title: Neovim
+description: yaml-language-server schema for flow.yaml, :Ebs commands and flow errors in the quickfix list.
+sidebar:
+  order: 3
+---
+
+import RepoFile from '../../../components/RepoFile.astro';
+
+Needs Neovim 0.11+ (built-in `vim.lsp.config`) and
+[yaml-language-server](https://github.com/redhat-developer/yaml-language-server) on `PATH`
+(`npm install -g yaml-language-server`, or through mason.nvim). Copy the file to
+`~/.config/nvim/plugin/ebs.lua`:
+
+<RepoFile path="integrations/nvim/ebs.lua" />
+
+| Command | Does |
+| --- | --- |
+| `:EbsPlan` | `ebs plan` in a terminal split, from the current file's directory |
+| `:EbsBuild [args]` | `ebs build -k [args]`, e.g. `:EbsBuild --cache write lint` |
+| `:EbsStatus` | `ebs status` |
+| `:EbsLogs ACTION` | `ebs logs ACTION` (a unique prefix is enough) |
+| `:EbsCheck` | plans the current flow and puts errors in the quickfix list |
+
+With nvim-lspconfig on an older Neovim, pass the same `settings` table to
+`require('lspconfig').yamlls.setup{}`.

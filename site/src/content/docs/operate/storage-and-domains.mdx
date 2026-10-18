@@ -1,0 +1,57 @@
+---
+title: Storage and domains
+description: Create a confidentiality domain - Unix group, CAS and debug directories, configuration.
+sidebar:
+  order: 4
+---
+
+import RepoFile from '../../../components/RepoFile.astro';
+import { Steps } from '@astrojs/starlight/components';
+
+Each [domain](/ebs/concepts/domains/) owns a directory in the CAS and in the debug area, both
+group-owned by the domain's Unix group. Plan for one NFS export (or one directory of an export)
+per domain, sized for the domain's quota.
+
+<Steps>
+
+1. Create the Unix group in LDAP/SSSD, with the domain's users and the `ebs-meta` and `ebs-gc`
+   service accounts as members.
+
+2. As root, create the directories:
+
+   ```sh
+   deploy/admin/create_domain.sh cpu-nda cpu-nda --cas-root /cas --debug-root /debug
+   ```
+
+   It is idempotent: run it again to repair modes and groups.
+
+3. Declare the domain in the site config and in the metadata service's `[meta_service].domains`:
+
+   ```toml
+   [[domains]]
+   name = "cpu-nda"
+   unix_group = "cpu-nda"
+   # ttl_days = 30
+   # quota = "50T"
+   ```
+
+4. Check it as a member of the group:
+
+   ```sh
+   ebs domain list
+   ebs domain check      # modes, groups, free space; exits 3 on a problem
+   ```
+
+</Steps>
+
+## The script
+
+<RepoFile path="deploy/admin/create_domain.sh" />
+
+## Sizing
+
+- Objects are deduplicated within a domain, never across domains.
+- Retention is set per domain in the database (`ttl_days`, `quota_bytes`, high and low water
+  marks); see [Garbage collection](/ebs/operate/gc/).
+- The CAS stages uploads in `<domain>/tmp/` on the same filesystem, so renames stay atomic: do
+  not put `tmp/` on another mount.

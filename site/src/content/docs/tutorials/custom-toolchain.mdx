@@ -1,0 +1,127 @@
+---
+title: Custom toolchains
+description: Declare a tool as a toolchain so its version, install tree and environment are part of every action key.
+sidebar:
+  order: 3
+---
+
+import RepoFile from '../../../components/RepoFile.astro';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+A **toolchain** is a tool environment EBS can identify exactly: a module name and version, the
+fingerprint of its install tree, and the environment it needs. Its id is part of every action
+key that uses it. When an admin silently patches an install, the id changes and every result
+produced by the old bits is rerun. Nothing stale is reused.
+
+This tutorial declares a toolchain for a stand-in simulator, `fakesim`, shipped as a small
+install tree in `examples/custom-toolchain/tools/fakesim-1.0`. The concepts page
+[Toolchains](/ebs/concepts/toolchains/) explains how the id is computed.
+
+:::tip[These commands are tested]
+The `console` blocks run in CI on a fresh copy of `examples/` (`tests/e2e/test_docs.py`).
+:::
+
+## 1. Refer to the toolchain from the flow
+
+A flow names its toolchains by module, `<name>/<version>`, and steps pick one by its
+flow-level name:
+
+<RepoFile path="examples/custom-toolchain/flow.yaml" />
+
+The step calls `fakesim` by name: it is found through the toolchain's `PATH` and nowhere else.
+EBS scrubs the environment, so whatever your shell's `PATH` holds does not leak into the tool.
+
+## 2. Describe the toolchain
+
+There are two ways to tell EBS what `fakesim/1.0` is.
+
+<Tabs>
+<TabItem label="On your machine: .ebs/toolchains.yaml">
+
+A YAML file next to the flow, keyed by module. `configure.py` writes it for this example,
+because the `PATH` must be absolute and the example can live anywhere:
+
+<RepoFile path="examples/custom-toolchain/configure.py" lines="16-25" lang="python" />
+
+| Key | Meaning |
+| --- | --- |
+| `version` | Defaults to the text after the last `/` of the module name. |
+| `install_roots` | Directories fingerprinted: paths, sizes, modification times, and content hashes of executables and scripts. Relative to the file. |
+| `env` | The tool's complete environment. Only these variables (plus a few the runner sets) reach the tool. |
+| `fingerprint` | Optional: pins the digest instead of walking the roots, for trees whose mtimes differ between checkouts. |
+
+</TabItem>
+<TabItem label="On a site: ebs toolchain register">
+
+An admin snapshots an environment module once, and every user and CI job resolves the module
+to the same immutable id through the metadata service:
+
+```sh
+ebs toolchain register questa/2025.2 --root /tools/uvm-1.2 --root /tools/vip/axi
+ebs toolchain list
+ebs toolchain show questa/2025.2
+```
+
+`register` runs `module purge; module load questa/2025.2` in a clean shell, keeps the variables
+the load changed, derives the install roots from them (plus each `--root`), and fingerprints
+them. Registering again after an install was patched records a new id and prints the files that
+changed. `ebs toolchain check` (nightly, for example) re-fingerprints recently used toolchains
+and reports drift without changing anything. See [Operate › Toolchains](/ebs/operate/toolchains/).
+
+</TabItem>
+</Tabs>
+
+## 3. Build, then patch the tool
+
+```console
+$ cd examples/custom-toolchain
+$ python3 configure.py
+wrote .ebs/toolchains.yaml (fakesim/1.0 in …)
+$ ebs build --cache write
+build …: build passed (done=2)
+$ ebs logs 'sim[seed=1,test=smoke]'
+fakesim 1.0.0
+PASS smoke seed=1
+$ ebs build --cache write
+build …: build passed (cached=2)
+```
+
+Now patch the installed tool in place, as a careless update would, without changing its
+module name or version:
+
+```console
+$ sed -i 's/^VERSION=1.0.0$/VERSION=1.0.1/' tools/fakesim-1.0/bin/fakesim
+$ ebs plan
+  sim[seed=1,test=smoke]: toolchain
+  sim[seed=7,test=random]: toolchain
+$ ebs build --cache write
+build …: build passed (done=2)
+$ ebs logs 'sim[seed=1,test=smoke]'
+fakesim 1.0.1
+PASS smoke seed=1
+```
+
+The fingerprint of the install tree changed, so the toolchain id changed, so both simulations
+reran. Results produced by `1.0.0` stay in the cache under their own keys, which is what makes a
+rollback free.
+
+## What belongs in a toolchain
+
+<Aside type="tip" title="Rule of thumb">
+Anything the tool reads that is not a declared input of the step belongs in the toolchain:
+the tool's binaries, its bundled libraries (UVM, VIPs, cell models it ships) and the
+environment variables it needs (`*_HOME`, `PATH`, `LD_LIBRARY_PATH`).
+</Aside>
+
+- **License servers stay out.** `LM_LICENSE_FILE` and `*_LICENSE_FILE` are passed through by
+  the runner from your environment and never enter a key: the same tool gives the same result
+  whichever server granted the license.
+- **Licenses and default resources** go on the flow's toolchain entry and apply to every step
+  that uses it:
+
+  ```yaml
+  toolchains:
+    questa: { module: questa/2025.2, licenses: { msimhdlsim: 1 }, resources: { mem: 8G } }
+  ```
+
+- **One module, several flow names** is fine: the flow-level name is not part of the id.

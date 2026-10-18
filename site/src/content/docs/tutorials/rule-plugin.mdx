@@ -1,0 +1,103 @@
+---
+title: Write a rule plugin
+description: Add a step kind in Python, as an installable package, with the RulePlugin API.
+sidebar:
+  order: 4
+---
+
+import RepoFile from '../../../components/RepoFile.astro';
+import RulePluginScene from '../../../scenes/rule-plugin/RulePluginScene.astro';
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+`shell`, `make` and `tcl` steps run any command, which is enough to wrap most flows. A **rule
+plugin** goes further: it turns a few params into the exact command line, writes the tool's
+config files, declares outputs the user does not have to repeat, and classifies the tool's exit
+(a lint error is a result; a missing license is retried). The built-in `questa.compile`,
+`questa.opt` and `questa.sim` are plugins like the one you will write here.
+
+This tutorial walks through `examples/rule-plugin`, a complete `verilator.lint` kind.
+
+<RulePluginScene />
+
+## The contract
+
+A plugin is any object with these members. `BaseRule` provides sensible defaults for all but
+`kind`, `version` and `expand`:
+
+```python
+class RulePlugin(Protocol):
+    kind: str          # the step kind, e.g. "verilator.lint"
+    version: str       # part of every action key: bump it when the generated command changes
+    def validate(self, step: StepDef) -> None: ...                       # reject bad steps early
+    def expand(self, step: StepDef, ctx: ExpandContext) -> ActionTemplate: ...   # plan time
+    def classify(self, exit_code: int, log_tail: str, outputs: Mapping[str, Path]) -> Classification: ...
+    def summarize(self, outputs: Mapping[str, Path], log: Path) -> dict[str, str | int]: ...
+```
+
+- `expand` runs on the planner, once per action. It returns an `ActionTemplate`: `argv`,
+  declared `env`, `config_files` (written into the work dir **and hashed into the key**),
+  implicit `inputs` and `outputs`, and a `runtime_env` that is *not* part of the key.
+- `classify` runs on the runner, after the tool exits: `PASSED`, `FAILED` (cached, like a test
+  failure) or `INFRA(reason)` (never cached, retried).
+- `summarize` runs after the outputs are collected; its key/value pairs are stored in the
+  action's result manifest next to the output digests.
+
+The full API, generated from the code, is in [Rule plugin API](/ebs/reference/rule-api/).
+
+## Walk through the example
+
+<RepoFile path="examples/rule-plugin/src/ebs_verilator_lint/__init__.py" />
+
+Points worth copying:
+
+- **Generated scripts are config files.** The command lives in `.ebs/verilator_lint.sh`, a
+  config file, so its exact text is in the action key. Editing the generator without bumping
+  `version` would still change keys, but bumping it documents the change.
+- **Inputs stay globs until run time.** `ctx.render` resolves `${row…}` and `${steps…}`
+  references but leaves patterns like `rtl/alu/*.sv` alone. The script expands them in the work
+  directory, where exactly the declared files are staged. `glob_word` quotes everything except
+  the glob characters, so a path with spaces or `$` is safe.
+- **Classification adds, then defers.** Exit 126/127 means the tool is missing (an
+  infrastructure problem, so retry elsewhere); an `%Error` with a non-zero exit is a real lint
+  failure; everything else goes to `BaseRule.classify`, which already handles crash signals and
+  license errors.
+
+## Package and register it
+
+<RepoFile path="examples/rule-plugin/pyproject.toml" />
+
+<Steps>
+
+1. Install the package into the same environment as `ebs`:
+
+   ```sh
+   uv pip install -e examples/rule-plugin
+   ```
+
+2. Check that EBS sees the new kind:
+
+   ```sh
+   ebs rules list
+   ```
+
+   The entry point's name must equal the plugin's `kind`; a mismatch, a missing method or an
+   empty `version` is reported with the package to fix.
+
+3. Use it in a flow:
+
+   <RepoFile path="examples/rule-plugin/flow.yaml" />
+
+</Steps>
+
+## Test it
+
+Plugins are plain Python, so test them without running EBS. These tests are the ones the
+repository runs for the example:
+
+<RepoFile path="tests/unit/examples/test_rule_plugin.py" />
+
+<Aside type="caution" title="Plugins run on every node">
+`expand` runs where `ebs plan` runs; `classify` and `summarize` run inside `ebs-runner` on the
+compute node. Install the plugin wherever the runner is installed, and keep it free of network
+access and global state: the same inputs must always give the same template.
+</Aside>

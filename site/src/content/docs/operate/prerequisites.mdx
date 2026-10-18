@@ -1,0 +1,73 @@
+---
+title: Prerequisites
+description: What a site needs before engineers can use EBS, and in which order to set it up.
+sidebar:
+  order: 1
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+EBS runs as the user and uses infrastructure most EDA sites already have. There is no root
+daemon: one small metadata service, a database, an NFS directory per confidentiality domain, and
+optional node-side pieces.
+
+## Checklist
+
+| Component | Requirement | Why |
+| --- | --- | --- |
+| **PostgreSQL** | 16+ (17 recommended), ideally a primary with a streaming standby and backups | Action cache, builds, releases, toolchains, GC state |
+| **Metadata service host** | A small VM running the FastAPI service (container or systemd), behind your TLS reverse proxy, with `munged` running | Runners and CLIs never hold database credentials |
+| **CAS storage** | An NFS export reachable from login and compute nodes, one directory per domain | Shared, immutable store of every input and output |
+| **Unix groups** | One group per domain (LDAP/SSSD), with the users and the service accounts as members | The OS enforces NDA boundaries |
+| **Python** | 3.11+ on login and compute nodes, with `ebs` and `ebs-runner` installed (same version everywhere) | The CLI and the per-action runner |
+| **Node-local scratch** | Fast local disk on compute nodes (`[scratch].dir`) | Actions run there, never on NFS |
+| **Environment modules** | Environment Modules 4+ or Lmod, if your tools are installed as modules | `ebs toolchain register` snapshots them |
+| **SLURM** (for grid execution) | slurmdbd accounting, remote licenses (`sacctmgr add resource`), accounts/QOS per team, the scratch epilog | License-aware dispatch, fair-share. See the status note in [SLURM](/ebs/operate/slurm/) |
+| **Service accounts** | `ebs-meta` (metadata service), `ebs-gc` (garbage collection), each in the groups of the domains it serves | Least privilege |
+
+## Order of installation
+
+<Steps>
+
+1. **Database**: [PostgreSQL](/ebs/operate/postgres/), then create the schema with the
+   migrations.
+2. **Domains and storage**: create the Unix groups, then each domain's CAS and debug
+   directories ([Storage and domains](/ebs/operate/storage-and-domains/)).
+3. **Metadata service**: deploy it and list the domains it serves
+   ([Metadata service](/ebs/operate/metadata-service/)).
+4. **Site configuration**: write `/etc/ebs/config.toml` for everyone
+   ([Site configuration](/ebs/reference/config/)).
+5. **Toolchains**: register the modules teams use
+   ([Toolchains](/ebs/operate/toolchains/)).
+6. **Compute nodes**: install `ebs-runner` and the scratch epilog ([SLURM](/ebs/operate/slurm/)).
+7. **Garbage collection**: one timer per domain ([Garbage collection](/ebs/operate/gc/)).
+8. **Check**: `ebs domain check` as a user, then the [Quickstart](/ebs/start/quickstart/)
+   against the site.
+
+</Steps>
+
+## A minimal site config
+
+```toml
+# /etc/ebs/config.toml (users and CI may override keys in ~/.config/ebs/config.toml)
+[metadata]
+url = "https://ebs-meta.example"
+
+[cas]
+root = "/cas"
+
+[debug]
+root = "/debug"
+
+[scratch]
+dir = "/local/scratch/ebs"
+
+[[domains]]
+name = "cpu-nda"
+unix_group = "cpu-nda"
+```
+
+<Aside type="tip" title="Trying EBS first">
+A single machine with a local PostgreSQL and a local directory as the CAS is enough to evaluate
+EBS: that is exactly how the [Quickstart](/ebs/start/quickstart/) and the test suite run.
+</Aside>

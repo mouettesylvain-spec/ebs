@@ -1,0 +1,48 @@
+---
+title: Toolchains
+description: How a tool environment becomes an immutable id inside every action key.
+sidebar:
+  order: 7
+---
+
+import ToolchainScene from '../../../scenes/toolchain/ToolchainScene.astro';
+
+EDA tools are not just a binary: they come with install trees (UVM, VIPs, simulation
+libraries), environment variables and site patches. EBS turns all of that into one digest, the
+**toolchain id**, and puts it in every action key that uses the tool.
+
+<ToolchainScene />
+
+## What the id covers
+
+```text
+toolchain id = digest({ module, version, fingerprint, env })
+```
+
+- **Module and version**, for example `questa/2025.2`.
+- **Fingerprint** of the install roots: every entry's path, kind, size and modification time,
+  plus the content hash of executables, shared libraries and scripts (`.so`, `.sh`, `.tcl`,
+  `.py`). Symlinks are recorded by target, never followed.
+- **Captured environment**: the variables loading the module sets, captured in a clean shell
+  started with an empty `HOME`. Volatile variables (`PWD`, `SHLVL`…) are dropped, and site
+  license variables never enter.
+
+The flow-level name (`questa` in `toolchains: { questa: … }`) is not part of the id, so flows
+may name the same module differently.
+
+## Immutable, with drift detection
+
+A registered toolchain never changes. If someone patches the install in place, registering the
+module again produces a **new id** and prints the files that changed; builds planned before keep
+pointing at the old snapshot in their plans. `ebs toolchain check` re-fingerprints recently
+used toolchains and reports drift without changing anything, which makes a good nightly job.
+
+## Where toolchains come from
+
+- **`ebs toolchain register <module>`**: the site way. An admin snapshots an environment module
+  (Environment Modules 4+ or Lmod) once; everyone resolves it through the metadata service.
+  See [Operate › Toolchains](/ebs/operate/toolchains/).
+- **`.ebs/toolchains.yaml`** next to a flow: the local way, for laptops, demos and tools
+  without modules. See [Custom toolchains](/ebs/tutorials/custom-toolchain/).
+
+The full API, generated from the code, is in [Toolchain API](/ebs/reference/toolchain-api/).

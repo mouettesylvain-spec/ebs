@@ -1,0 +1,40 @@
+---
+title: Getting results out
+description: List and fetch outputs from the CAS, and keep a build from garbage collection.
+sidebar:
+  order: 4
+---
+
+The runner deletes its scratch directory, so outputs live only in the CAS. Two commands bring
+them back.
+
+## List
+
+```sh
+ebs outputs                 # every output of the latest build: action, path, type, size, digest
+ebs outputs --build 42
+```
+
+## Fetch
+
+```sh
+ebs fetch summary                      # ./ebs-out/summary/summary.txt
+ebs fetch lint --flat                  # a step name fetches all its actions; --flat drops the action dir
+ebs fetch 'sim[seed=7,test=random].result' -o results/
+ebs fetch report --mode symlink        # link into the CAS instead of copying (read-only)
+```
+
+`--mode hardlink` and `--mode symlink` avoid copying large outputs; the files are then the
+read-only CAS objects themselves. `--force` replaces destinations that exist.
+
+## Keep a build
+
+Unreleased builds are collected after the domain's TTL (30 days by default) once nothing uses
+them. To keep one, for example the build you sent to a reviewer:
+
+```sh
+ebs pin 42 --reason "tapeout review, keep until sign-off"
+ebs unpin 42
+```
+
+A pinned build keeps its plan, outputs and logs. Releases are kept the same way, automatically.

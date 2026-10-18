@@ -1,0 +1,57 @@
+{
+  "v": 1,
+  "commit": "1cef6b8",
+  "measured_at": "2026-10-18T07:11:58Z",
+  "scenarios": [
+    {
+      "id": "lint-cold",
+      "example": "lint-make",
+      "label": "First build",
+      "executed": 3,
+      "cached": 0,
+      "total": 3,
+      "wall_s": 3.03
+    },
+    {
+      "id": "lint-warm",
+      "example": "lint-make",
+      "label": "Fresh checkout, cache filled before",
+      "executed": 0,
+      "cached": 3,
+      "total": 3,
+      "wall_s": 0.74
+    },
+    {
+      "id": "lint-comment",
+      "example": "lint-make",
+      "label": "Comment edit in one RTL file",
+      "executed": 1,
+      "cached": 2,
+      "total": 3,
+      "wall_s": 1.81
+    },
+    {
+      "id": "sim-cold",
+      "example": "verilator-sim",
+      "label": "First regression",
+      "executed": 5,
+      "cached": 0,
+      "total": 5,
+      "wall_s": 3.86
+    },
+    {
+      "id": "sim-seed",
+      "example": "verilator-sim",
+      "label": "One seed changed",
+      "executed": 2,
+      "cached": 3,
+      "total": 5,
+      "wall_s": 2.86
+    }
+  ],
+  "make": {
+    "example": "lint-make",
+    "executed": 2,
+    "total": 2
+  }
+}

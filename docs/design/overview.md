@@ -70,6 +70,10 @@ Dev: `pytest`, `pytest-cov`, `hypothesis`, `jsonschema` (schema tests, P0-04), `
 `syrupy` (golden files), `import-linter`, `mypy`, `ruff`, `respx` (httpx mocks).
 The runner entry point must import only stdlib + `pydantic` + `httpx` + `core`/`cas`/`runner`.
 
+Documentation site (`site/`, D-01; Node, never shipped with the package): `astro`,
+`@astrojs/starlight`, `animejs`, `sharp`; dev: `@astrojs/check`, `typescript`,
+`starlight-links-validator`. Exact versions are pinned in `site/package.json` and its lockfile.
+
 ## Site configuration (`ebs.toml`)
 
 Looked up in order: `$EBS_CONFIG`, `./.ebs/config.toml`, `~/.config/ebs/config.toml`,

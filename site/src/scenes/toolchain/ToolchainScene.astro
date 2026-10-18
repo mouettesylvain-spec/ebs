@@ -1,0 +1,56 @@
+---
+// A toolchain id: module + version, install-tree fingerprint and captured env, hashed into one
+// digest that enters every action key. A patched file changes the fingerprint, hence the id.
+import SceneFrame from '../_lib/SceneFrame.astro';
+
+const files = ['bin/vsim', 'bin/vlog', 'linux_x86_64/libmti.so', 'verilog_src/uvm-1.2/'];
+const env = ['PATH=/tools/questa/2025.2/bin:…', 'MTI_HOME=/tools/questa/2025.2', 'UVM_HOME=…/uvm-1.2'];
+---
+
+<SceneFrame
+  name="toolchain"
+  viewBox="0 0 780 330"
+  caption="Loading the module in a clean shell gives the environment; the install tree is fingerprinted. Together they hash to the toolchain id, which is part of every action key. Patch one file and the id, and every key using it, changes."
+  label="An install tree's files are fingerprinted and a module's environment is captured. Module, version, fingerprint and environment are hashed into a toolchain id, which feeds the action key. When one library file is patched, the fingerprint, the toolchain id and the action key all change."
+>
+  <text class="sub" x="20" y="28">install roots: fingerprinted</text>
+  {
+    files.map((f, i) => (
+      <g class="file" data-i={i}>
+        <rect class={`box ${i === 2 ? 'patched-target' : ''}`} x="20" y={40 + i * 36} width="230" height="28" rx="7" />
+        <text class="mono" x="32" y={58 + i * 36}>{f}</text>
+      </g>
+    ))
+  }
+  <rect class="box stale patch" x="20" y="112" width="230" height="28" rx="7" />
+  <text class="tag-stale patch" x="240" y="131" text-anchor="end">patched</text>
+
+  <text class="sub" x="20" y="208">module load questa/2025.2: captured env</text>
+  {
+    env.map((e, i) => (
+      <text class="mono env" data-i={i} x="20" y={232 + i * 20}>{e}</text>
+    ))
+  }
+
+  <path class="wire" d="M250 110 C300 110 300 165 340 165 M250 250 C300 250 300 175 340 175" />
+  <g class="fp">
+    <rect class="box" x="340" y="130" width="160" height="80" rx="14" />
+    <text class="label" x="420" y="160" text-anchor="middle">Toolchain id</text>
+    <text class="mono id-old" x="420" y="186" text-anchor="middle" opacity="0">sha256:4be1…</text>
+    <text class="mono id-new" x="420" y="186" text-anchor="middle" style="fill: var(--ebs-stale)">sha256:a07d…</text>
+  </g>
+  <path class="wire accent" d="M500 170 H560" />
+  <g class="key">
+    <rect class="box accent" x="560" y="120" width="200" height="100" rx="14" />
+    <text class="label" x="660" y="150" text-anchor="middle">Action key</text>
+    <text class="sub" x="660" y="172" text-anchor="middle">+ command, params, inputs</text>
+    <text class="tag-hit key-hit" x="660" y="200" text-anchor="middle" opacity="0">same key: cache hit</text>
+    <text class="tag-stale key-miss" x="660" y="200" text-anchor="middle">new key: rerun</text>
+  </g>
+</SceneFrame>
+
+<script>
+  import { mountScene } from '../_lib/scene';
+  import { buildToolchain } from './toolchain';
+  mountScene('toolchain', buildToolchain);
+</script>

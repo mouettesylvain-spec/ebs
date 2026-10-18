@@ -1,0 +1,87 @@
+---
+title: Publish a release
+description: Turn a build's outputs into an immutable, versioned release and point a channel at it.
+sidebar:
+  order: 5
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A build is a run; a **release** is a decision. When a team is happy with a build, it publishes
+selected outputs under a name and version, like tagging a commit. A **channel** such as
+`stable` is a movable pointer to one release, like a branch. The concepts page
+[Releases and channels](/ebs/concepts/releases/) shows how the pieces fit.
+
+:::tip[These commands are tested]
+The `console` blocks run in CI on a fresh copy of `examples/` and a fresh database, so the
+first build has id 1. On your site, use the id `ebs status` prints.
+:::
+
+## 1. Build what you want to release
+
+```console
+$ cd examples/lint-make
+$ ebs build --cache write
+build … (id 1)
+build …: build passed (done=3)
+$ ebs status
+build … (id 1): passed, 3 actions
+```
+
+## 2. Create the release
+
+Pick outputs by `step.output`. `[*]` takes the output of every matrix instance of the step:
+
+```console
+$ ebs release create demo/lint 2026.10.1 --build 1 --output 'lint.report[*]' --output summary.summary --notes 'first release'
+released demo/lint 2026.10.1 (3 output(s))
+  lint[block=alu].report      file  sha256:…
+  summary.summary             file  sha256:…
+```
+
+The release records digests, not copies: the bytes stay in the CAS, and the release keeps them
+from garbage collection. Only outputs of actions that passed can be released, unless you say
+why with `--allow-failed REASON`.
+
+## 3. Point a channel at it
+
+```console
+$ ebs channel set demo/lint stable 2026.10.1
+demo/lint:stable -> 2026.10.1
+$ ebs channel show demo/lint stable
+demo/lint:stable -> 2026.10.1
+$ ebs release list
+demo/lint 2026.10.1  build 1 …  3 output(s)
+```
+
+Every move of a channel is kept: `ebs channel history demo/lint stable` lists them, oldest
+first.
+
+## Gates
+
+A site can require a passing **gate build** before a channel moves, per channel, in `ebs.toml`:
+
+```toml
+[release.gates]
+stable = "cpu-gate"          # moving any release's `stable` needs a passed build of project cpu-gate
+"rtl-team/cpu:nightly" = "cpu-smoke"
+```
+
+`ebs channel set … --gate-build ID` names the gate build to check; by default any passing
+build of the gate project for that release qualifies.
+
+## Withdrawing a release
+
+```sh
+ebs release yank demo/lint 2026.10.1 --reason "wrong filelist"
+```
+
+A yanked release is never deleted: builds that used it stay reproducible, but no channel can
+point at it any more.
+
+<Aside type="note" title="Consuming releases from another team">
+Flows will import releases by channel and pin them in a reviewed `flow.lock` (task P2-03 on the
+[Roadmap](/ebs/reference/roadmap/)). Today a release already fixes the exact digests of what
+was published (`ebs release show`), and `ebs release export --to <domain>` copies a release
+into another confidentiality domain, audited.
+</Aside>
