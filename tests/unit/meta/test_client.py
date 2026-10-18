@@ -272,3 +272,9 @@ def test_build_create_round_trip_over_wire() -> None:
         cache_mode="read",
     )
     assert BuildCreate.model_validate_json(spec.model_dump_json()) == spec
+
+
+# Review: a final plan the wire model refuses is named in the error (not only the status).
+def test_finish_build_names_a_bad_final_plan(store: HttpMetadataStore) -> None:
+    with pytest.raises(MetadataError, match="final plan 'nope'"):
+        store.finish_build(BuildId(7), "passed", final_plan="nope")  # type: ignore[arg-type]

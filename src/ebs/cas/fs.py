@@ -171,7 +171,7 @@ class FsCAS:
         algo: Algo = expected.algo if expected is not None else self._algo
         tmp = self._tmp / f"{secrets.token_hex(16)}.tmp"
         try:
-            _makedirs(self._tmp)
+            _makedirs(self._tmp, self._base)
             # No O_EXCL: the random name already makes collisions impossible (R9).
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
             with open(fd, "wb", closefd=True) as out:
@@ -190,7 +190,7 @@ class FsCAS:
                     )
                 os.fchmod(fd, _OBJECT_MODE)
             target = self._path(area, digest)
-            _makedirs(target.parent)
+            _makedirs(target.parent, self._base)
             if os.path.lexists(target):
                 os.unlink(tmp)  # first writer wins; the object is immutable
                 return digest, size
@@ -356,11 +356,16 @@ class FsCAS:
         return removed
 
 
-def _makedirs(path: Path) -> None:
-    """`os.makedirs`, but each directory it creates gets `_DIR_MODE` (mkdir's mode is umasked)."""
+def _makedirs(path: Path, domain_dir: Path) -> None:
+    """`os.makedirs`, but each directory it creates below `domain_dir` gets `_DIR_MODE` (mkdir's
+    mode is umasked). The domain dir itself is the deployment's (group `<domain>`, 2750); a
+    missing one (a development CAS) is created with the plain umask, like its parents."""
     if path.is_dir():
         return
-    _makedirs(path.parent)
+    if path == domain_dir:
+        os.makedirs(path, exist_ok=True)
+        return
+    _makedirs(path.parent, domain_dir)
     try:
         os.mkdir(path, _DIR_MODE)
     except FileExistsError:

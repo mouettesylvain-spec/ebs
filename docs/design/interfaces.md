@@ -349,7 +349,8 @@ class CAS(Protocol):
 
 fs layout: `<root>/<domain>/blobs/<algo>/<ab>/<cd>/<hex>`, `…/trees/<algo>/<ab>/<cd>/<hex>.json`,
 `…/tmp/`. Blobs mode 0444. The domain dir is the deployment's (group `<domain>`, 2750); every dir
-the CAS creates below it is 2770 whatever the umask, so any member of the group can add objects.
+the CAS creates below it is 2770 whatever the umask, so any member of the group can add objects. A missing domain dir
+(a development CAS) is created with the plain umask.
 
 `has` is true for a blob or a tree manifest; `open`/`local_path` address blobs, `get_tree`
 manifests; `verify`, `delete` and `iter_digests` cover both. `materialize` requires that `dest`

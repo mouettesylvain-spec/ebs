@@ -40,6 +40,9 @@ def test_created_dirs_are_group_writable(tmp_path: Path) -> None:
                base / "blobs" / "sha256" / ab / cd, base / "trees" / "sha256"]  # fmt: skip
     for path in created:
         assert stat.S_IMODE(path.stat().st_mode) == 0o2770, path
+    # The domain dir and its parents are the deployment's: a missing one gets the plain umask.
+    for path in (base, tmp_path / "cas"):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o755, path
 
 
 def test_fs_cas_satisfies_protocol(cas: FsCAS) -> None:

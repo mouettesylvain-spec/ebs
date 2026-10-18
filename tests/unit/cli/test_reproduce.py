@@ -226,6 +226,20 @@ def test_salloc_time_override(site: Site, built: ReproBuild) -> None:
     assert "--time" in bad.stderr
 
 
+# Review: a [slurm] value SLURM cannot take (SbatchOptions' validators) is a usage error
+# naming the field, not an internal error.
+def test_salloc_bad_setting_is_usage_error(site: Site, built: ReproBuild) -> None:
+    config = site.root / "config.toml"
+    config.write_text(config.read_text().replace('"short"', '"short queue"'))
+    site.services._config = None  # re-read
+    fg = _Foreground()
+    site.services.run_foreground = fg  # type: ignore[method-assign]
+    result = site.invoke(["reproduce", SIM, "--salloc", "--interactive"])
+    assert result.exit_code == ExitCode.USAGE, result.output
+    assert "partition" in result.stderr
+    assert fg.calls == []
+
+
 # P1-10 follow-up: `--run` exits 1 when an output differs from the recorded result (CI can use
 # the comparison directly), 0 when every compared output is the same.
 def test_run_exit_code_follows_the_comparison(

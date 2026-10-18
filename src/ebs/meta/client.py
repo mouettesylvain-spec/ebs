@@ -613,7 +613,9 @@ class HttpMetadataStore:
         try:
             body = BuildFinish.model_validate({"status": status, "final_plan": final_plan})
         except ValidationError as exc:
-            raise MetadataError(f"{what}: invalid status {status!r}: {exc}") from None
+            raise MetadataError(
+                f"{what}: invalid status {status!r} or final plan {final_plan!r}: {exc}"
+            ) from None
         self._call("POST", f"/builds/{int(build)}/finish", what, body=body, idempotent=False)
 
     def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:

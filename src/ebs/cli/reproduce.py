@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import typer
+from pydantic import ValidationError
 
 from ebs.cli._context import SiteServices
 from ebs.cli._output import Output, UsageError, handle_errors, make_output
@@ -104,17 +105,24 @@ def salloc_argv(
     )
     if time_s is None and time is not None:
         time_s = time + JOB_TIME_GRACE_S
-    opts = SbatchOptions(
-        job_name=f"ebs:repro:{spec.step}",
-        partition=settings.default_partition,
-        account=policy.account,
-        qos=policy.qos,
-        cpus_per_task=cpus,
-        mem_mb=None if mem is None else max(1, math.ceil(mem / _MIB)),
-        time_limit_s=time_s,
-        licenses=licenses,
-        constraint=constraint,
-    )
+    try:
+        opts = SbatchOptions(
+            job_name=f"ebs:repro:{spec.step}",
+            partition=settings.default_partition,
+            account=policy.account,
+            qos=policy.qos,
+            cpus_per_task=cpus,
+            mem_mb=None if mem is None else max(1, math.ceil(mem / _MIB)),
+            time_limit_s=time_s,
+            licenses=licenses,
+            constraint=constraint,
+        )
+    except ValidationError as exc:  # a [slurm] value or a step resource SLURM cannot take
+        problems = "; ".join(f"{e['loc'][0]}: {e['msg']}" for e in exc.errors())
+        raise ConfigError(
+            f"action {spec.action_id}: cannot ask salloc for its allocation ({problems}); fix "
+            "the [slurm] settings or the step's resources"
+        ) from None
     return [command("salloc"), *job_options(opts), command("srun"), "--pty", *inner]
 
 
