@@ -1219,8 +1219,8 @@ class RegistryToolchainResolver:  # ToolchainResolver over the store
 
 Commands: `ebs plan`, `build`, `status`, `logs`, `outputs`, `fetch` (P1-13), `debug`,
 `reproduce` (P1-10), `rules list`,
-`seeds gen` (P1-11), `toolchain register|list|show|check` (P1-07); global `--debug` (tracebacks,
-debug logs). Exit codes: § 11. Every command has `--json`; `NO_COLOR` disables colors. The
+`seeds gen` (P1-11), `toolchain register|list|show|check` (P1-07); global `--install-completion` / `--show-completion` (D-01) and `--debug` (tracebacks,
+debug logs). Exit codes: § 11. Every command except `pin`, `unpin` and `release yank` has `--json`; `NO_COLOR` disables colors. The
 working directory holds `.ebs/` (config lookup, `builds/`, executor logs); `-f` names the flow
 (default `./flow.yaml`). `ebs.cli._context.SiteServices` builds the CAS, metadata store,
 executor, rules (`[rules]`) and stat cache from ebs.toml; tests pass a subclass as the Typer

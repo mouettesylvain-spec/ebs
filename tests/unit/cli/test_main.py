@@ -25,3 +25,11 @@ def test_dunder_version_comes_from_metadata() -> None:
 def test_no_arguments_shows_help() -> None:
     result = runner.invoke(app, [])
     assert "Usage" in result.output
+
+
+# D-01 (site: Integrations > Shell and Make)
+def test_completion_options_are_offered() -> None:
+    result = runner.invoke(app, ["--help"], env={"NO_COLOR": "1", "COLUMNS": "200"})
+    assert result.exit_code == 0
+    assert "--install-completion" in result.output
+    assert "--show-completion" in result.output
