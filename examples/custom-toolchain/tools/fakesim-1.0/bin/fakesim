@@ -1,0 +1,20 @@
+#!/bin/bash
+# fakesim: a stand-in for a vendor simulator, installed as a tool tree (tools/fakesim-1.0).
+#   fakesim +test=NAME +seed=N   prints a header and one PASS/FAIL line
+set -euo pipefail
+VERSION=1.0.0
+
+test=unnamed seed=0
+for arg in "$@"; do
+    case $arg in
+        +test=*) test=${arg#+test=} ;;
+        +seed=*) seed=${arg#+seed=} ;;
+        *) echo "fakesim: unknown argument $arg" >&2; exit 2 ;;
+    esac
+done
+echo "fakesim $VERSION"
+if [ "$test" = failing ]; then
+    echo "FAIL $test seed=$seed"
+    exit 1
+fi
+echo "PASS $test seed=$seed"

@@ -1,0 +1,16 @@
+# Lints rtl/alu with the example `verilator.lint` rule. Needs the plugin installed
+# (`uv pip install -e examples/rule-plugin`), Verilator, and .ebs/toolchains.yaml describing
+# `verilator/system` (site: Tutorials > Write a rule plugin).
+version: 1
+project: rule-plugin
+domain: examples
+
+toolchains:
+  verilator: { module: verilator/system }
+
+steps:
+  lint:
+    kind: verilator.lint
+    toolchain: verilator
+    inputs: { rtl: "rtl/alu/*.sv" }
+    params: { top: alu, opts: "-Wno-DECLFILENAME" }

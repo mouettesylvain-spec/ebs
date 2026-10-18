@@ -1,6 +1,6 @@
 # Wraps an existing lint Makefile as-is (kind: make), one action per RTL block, and
 # summarizes the reports. Runs anywhere: the default linter is tools/fake-lint (bash + awk).
-# flow.verilator.yaml runs the same Makefile with real Verilator (docs/user/quickstart.md).
+# flow.verilator.yaml runs the same Makefile with real Verilator (site: Start here > Quickstart).
 version: 1
 project: lint-make
 domain: examples

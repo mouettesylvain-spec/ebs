@@ -1,6 +1,6 @@
 # flow.yaml with real Verilator (needs a C++ compiler for --binary). Verilator is a toolchain,
 # so its version and install tree are part of the compile key (and, through the model, of every
-# sim key). Needs .ebs/toolchains.yaml describing `verilator/system` (docs/user/quickstart.md).
+# sim key). Needs .ebs/toolchains.yaml describing `verilator/system` (site: Start here > Quickstart).
 version: 1
 project: verilator-sim
 domain: examples

@@ -1,0 +1,20 @@
+# An example EBS rule plugin: install it next to ebs (`uv pip install -e examples/rule-plugin`)
+# and `ebs rules list` shows the kind `verilator.lint`.
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ebs-verilator-lint"
+version = "0.1.0"
+description = "Example EBS rule plugin: lint SystemVerilog with Verilator"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = ["ebs"]
+
+# The entry point name is the step kind; the value is a factory called with RuleSettings.
+[project.entry-points."ebs.rules"]
+"verilator.lint" = "ebs_verilator_lint:VerilatorLintRule"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ebs_verilator_lint"]

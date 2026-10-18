@@ -67,15 +67,15 @@ packages = ["src/ebs"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = ["src", "tests", "scripts"]
-extend-exclude = ["docs", ".claude"]  # design docs hold illustrative, not runnable, code
+src = ["src", "tests", "scripts", "examples/rule-plugin/src"]
+extend-exclude = ["docs", ".claude", "site"]  # design docs hold illustrative, not runnable, code
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "PT", "RUF", "S602", "S604", "S605"]
 
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]
-known-first-party = ["ebs", "tests"]
+known-first-party = ["ebs", "tests", "ebs_verilator_lint"]
 
 # --- mypy -------------------------------------------------------------------------------------
 [tool.mypy]
@@ -83,9 +83,9 @@ python_version = "3.11"
 strict = true
 disallow_any_explicit = false   # Pydantic models (see task P0-01 notes)
 warn_unreachable = true
-mypy_path = "src:."
+mypy_path = "src:.:examples/rule-plugin/src"
 explicit_package_bases = true
-files = ["src", "tests", "scripts"]
+files = ["src", "tests", "scripts", "examples/rule-plugin/src"]
 
 [[tool.mypy.overrides]]
 module = ["jsonschema", "jsonschema.*"]  # test-only dependency without type stubs (P0-04)
@@ -96,7 +96,7 @@ ignore_missing_imports = true
 minversion = "8.0"
 testpaths = ["tests"]
 addopts = ["--strict-markers", "--strict-config", "--import-mode=importlib", "-ra"]
-pythonpath = ["."]
+pythonpath = [".", "examples/rule-plugin/src"]  # the example plugin's tests (D-01)
 timeout = 120
 xfail_strict = true
 # markers are registered in tests/conftest.py so pytester runs see them too
