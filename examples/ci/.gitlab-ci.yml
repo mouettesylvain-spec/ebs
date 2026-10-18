@@ -1,0 +1,42 @@
+# GitLab CI template for an EBS flow (P2-07). Copy it into the flow's repository and adapt the
+# job tags, the release name and the channel. See docs/user/ci.md.
+#
+# Project CI/CD variables (Settings > CI/CD > Variables):
+#   EBS_META_TOKEN  the team's service-account token for the metadata service
+#                   (masked, protected; `ebs build --ci` refuses to run without it)
+
+stages: [build, release]
+
+variables:
+  EBS_RELEASE: rtl-team/cpu          # the release name this pipeline publishes
+  GIT_DEPTH: "0"                     # ebs records the flow's commit; keep full history
+
+.ebs:
+  tags: [ebs-login]                  # a runner on a login node with `ebs` and SLURM access
+  before_script:
+    - ebs --version
+
+build:
+  extends: .ebs
+  stage: build
+  script:
+    # --ci: --cache write, --rehash, CI QOS, CI job metadata; writes the three files below.
+    - ebs build --ci
+  artifacts:
+    when: always                     # failed tests still show up in the merge request
+    paths: [ebs-summary.md]
+    reports:
+      junit: ebs-junit.xml           # test results in the MR widget
+      dotenv: ebs.env                # EBS_BUILD_ID for the jobs below
+
+release:
+  extends: .ebs
+  stage: release
+  needs: [build]                     # also brings EBS_BUILD_ID from build's ebs.env
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - ebs release create "$EBS_RELEASE" "$CI_COMMIT_TAG" --build "$EBS_BUILD_ID" --output elab.model
+    # The gate: moves `stable` only if this pipeline's build passed (and the channel's
+    # [release.gates] policy, if any, accepts it); otherwise the job and the pipeline fail.
+    - ebs channel set "$EBS_RELEASE" stable "$CI_COMMIT_TAG" --if-passing

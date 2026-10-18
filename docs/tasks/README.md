@@ -57,7 +57,7 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P2-05 | Metadata service hardening (OIDC, SSE, pagination) | P1-06 | 1 | todo |
 | P2-03 | Imports and `flow.lock` | P2-02 | 2 | todo |
 | P2-04 | Provenance queries (`why`, `used-by`, `tests`) | P2-02 | 2 | todo |
-| P2-07 | GitLab CI integration (`--ci`, JUnit) | P2-02 | 2 | todo |
+| P2-07 | GitLab CI integration (`--ci`, JUnit) | P2-02 | 2 | review |
 | P2-08 | `--detach` driver job | P1-02 | 2 | todo |
 | P2-06 | Web dashboard v1 | P2-05, P2-04 | 3 | todo |
 | P2-09 | Phase 2 acceptance | all P2 | 4 | todo |

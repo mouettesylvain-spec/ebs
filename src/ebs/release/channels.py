@@ -12,6 +12,9 @@ service for API calls):
 The channel then moves only if a passed build of that flow (its `project`) consumed one of the
 release's outputs, as its `in` provenance edges record; the gate build found (or named with
 `--gate-build`) is stored with the move.
+
+`ebs channel set … --if-passing` (P2-07 R4, a CI gate job) also requires that one build (the
+pipeline's `$EBS_BUILD_ID`) passed; it becomes the gate build, recorded even without a policy.
 """
 
 from __future__ import annotations
@@ -20,9 +23,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from ebs.core.errors import ConfigError, ReleaseError
-from ebs.meta.api import BuildId, ChannelMove, GateCheck, ReleaseStore, ReleaseView
+from ebs.meta.api import (
+    BuildId,
+    BuildView,
+    ChannelMove,
+    GateCheck,
+    MetadataStore,
+    ReleaseStore,
+    ReleaseView,
+)
 
-__all__ = ["GatePolicy", "check_gate", "move_channel"]
+__all__ = ["GatePolicy", "check_gate", "move_channel", "require_passing"]
 
 
 @dataclass(frozen=True)
@@ -73,6 +84,23 @@ def check_gate(
     return GateCheck(flow=flow, build=builds[0])
 
 
+def require_passing(store: MetadataStore, build: BuildId, release: ReleaseView) -> BuildView:
+    """The build, if it is in the release's domain and passed; else ReleaseError (the gate
+    fails)."""
+    view = store.get_build(build)
+    if view.domain != release.domain:
+        raise ReleaseError(
+            f"gate: build {build} is in domain {view.domain!r}, not in {release.domain!r} of "
+            f"release {release.name} {release.version}; the channel was not moved"
+        )
+    if view.status != "passed":
+        raise ReleaseError(
+            f"gate: build {build} ({view.project}) is {view.status}, not passed; the channel was "
+            "not moved"
+        )
+    return view
+
+
 def move_channel(
     store: ReleaseStore,
     gates: GatePolicy,
@@ -81,13 +109,25 @@ def move_channel(
     *,
     by: str,
     gate_build: BuildId | None = None,
+    passed: BuildView | None = None,
 ) -> ChannelMove:
-    """Point `release.name:channel` at `release`, after its gate (if any) passes."""
+    """Point `release.name:channel` at `release`, after its gate (if any) passes.
+
+    `passed` (from `require_passing`) is the gate build: the policy checks it, and without a
+    policy it is recorded as the gate of the move.
+    """
+    if passed is not None:
+        gate_build = passed.id
     if release.yanked_at is not None:
         raise ReleaseError(
             f"release {release.name} {release.version} is yanked ({release.yank_reason}); a "
             "channel cannot point at it"
         )
     flow = gates.gate_for(release.name, channel)
-    gate = None if flow is None else check_gate(store, release, flow, gate_build=gate_build)
+    if flow is not None:
+        gate: GateCheck | None = check_gate(store, release, flow, gate_build=gate_build)
+    elif passed is not None:
+        gate = GateCheck(flow=passed.project, build=passed.id)
+    else:
+        gate = None
     return store.set_channel(release.domain, release.name, channel, release.id, by=by, gate=gate)

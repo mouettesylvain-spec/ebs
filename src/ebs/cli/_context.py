@@ -27,6 +27,7 @@ from ebs.core.errors import ConfigError, ExecutorError, MetadataError, SourceErr
 from ebs.domains import Domains, current_groups, group_id
 from ebs.exec.api import Executor
 from ebs.exec.local import LocalExecutor
+from ebs.exec.slurm.accounts import BuildKind
 from ebs.meta.api import GcStore, MetadataBackend
 from ebs.rules.api import DEFAULT_LICENSE_ERROR_PATTERNS, RuleSettings
 from ebs.rules.registry import RuleRegistry
@@ -332,8 +333,18 @@ class SiteServices:
         ).returncode
 
     @contextmanager
-    def open_executor(self, name: str, *, domain: str, log_dir: Path) -> Iterator[Executor]:
-        del domain  # the local executor passes it per batch
+    def open_executor(
+        self,
+        name: str,
+        *,
+        domain: str,
+        log_dir: Path,
+        project: str | None = None,
+        build_kind: BuildKind = "dev",
+    ) -> Iterator[Executor]:
+        """`project` and `build_kind` pick the SLURM account and QOS (P1-03 R3; `--ci` passes
+        "ci"); the local executor has neither."""
+        del domain, project, build_kind  # the local executor passes the domain per batch
         if name != "local":
             raise ExecutorError(f"unknown executor {name!r}; available: {', '.join(EXECUTORS)}")
         executor = LocalExecutor(log_dir=log_dir, runner_argv=self.runner_argv(), env=self.environ)

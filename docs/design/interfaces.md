@@ -965,7 +965,8 @@ floats): `submitted {job_id, attempt, batch_size}`, `pending {reason}`, `running
 `cache_hit {key, status}`, `infra_failed {reason, attempt, exit_code?, detail?, node?,
 excluded_node?}`, `retrying {attempt, delay_ms}`, `finished {state ∈
 done|failed|infra_failed|skipped|cancelled, exit_code?, attempts?, reasons?, reason?, hint?}`,
-`build_finished {status, counts}`. P1-05 R2: `attempt` numbers the submissions of an action
+`build_finished {status, counts}`, `build_started {uuid, user, cache_mode, ci?}` (`ci`: the
+`run_build(ci=…)` metadata, P2-07 R1). P1-05 R2: `attempt` numbers the submissions of an action
 (1, 2, …) in `submitted` and the driver's `infra_failed`; once any attempt failed for an
 infrastructure reason, the action's `finished` event has `attempts` (submissions) and
 `reasons` (one per failed attempt, in order). `attempt_history(events) -> {action_id:
@@ -977,6 +978,7 @@ Driver API (P0-15; used by the CLI, P0-16, and retry tuning, P1-05):
 ```python
 def run_build(plan: Plan, *, refiner: Refiner, cas: CAS, store: MetadataStore, executor: Executor,
               workdir: Path, user: str, config: DriverConfig | None = None, ci_job: str | None = None,
+              ci: Mapping[str, str] | None = None,   # P2-07: CI job metadata -> build_started.ci
               clock: Clock | None = None, retry: RetryPolicy | None = None,
               handle_sigint: bool = False) -> BuildOutcome: ...
 # BuildOutcome(build, uuid, status, exit_code, states: {action_id: final state}, plan (refined), events_path)
@@ -1239,8 +1241,13 @@ by `ebs build` on `build_started` and rewritten when the build ends:
 {"v": 1, "uuid": "…", "build": 7, "domain": "…", "project": "…", "flow": "/abs/flow.yaml",
  "plan": "sha256:… (as submitted)", "final_plan": "sha256:…|null (as refined, stored in CAS)",
  "status": "running|passed|failed|infra_failed|cancelled", "actions": {"<action_id>": "<step>"},
- "created_at": "…", "host": "<driver host>", "pid": 1234}
+ "created_at": "…", "host": "<driver host>", "pid": 1234,
+ "ci": {"project_path", "pipeline_id", "job_url", "commit"} | null}
 ```
+
+`ci` (P2-07 R1) is set by `ebs build --ci` from `CI_PROJECT_PATH`, `CI_PIPELINE_ID`, `CI_JOB_URL`
+and `CI_COMMIT_SHA` (only those present); the store's build gets `ci_job` = the job URL (else
+"<project> pipeline <id>", at most 256 characters).
 
 The build's status is that of its `build_finished` event, else the record's; a `running` build
 whose driver (`host`, `pid`) is this host and no longer alive shows as `interrupted`, so
@@ -1282,6 +1289,20 @@ key appears. `cache` is `unknown` for actions still unkeyed, or for all without
 `{"build", "uuid", "status", "exit_code", "counts": {state: n}}`. Text mode prints
 `build <uuid> (id <n>)` first, then one line per event (non-TTY) or a live per-step table (TTY),
 then `build <uuid>: build <status> (<state>=<n>, …)`.
+
+**`ebs build --ci`** (P2-07; `ebs.ci`): implies `--cache write` (another `--cache` or
+`--no-cache` exits 2), `--rehash`, line output even on a TTY, and build kind `ci` for the
+executor (`SiteServices.open_executor(…, project=, build_kind=)`, the CI QOS of P1-03). With an
+HTTP `[metadata].url` it needs a bearer token (`$EBS_META_TOKEN` or `[metadata].token_file`;
+exit 2 otherwise). After the build it writes, into `$CI_PROJECT_DIR` (else the working
+directory): `ebs-junit.xml` (`ebs.ci.junit`: one testcase per action with a `test` param,
+`classname` = step, `name` = `test[seed]`, failure message = summary `signature` |
+`first_error` | exit code, `<system-out>` = last 16 KiB of the log (redacted before the cut), cached results carry
+property `ebs.cached=true`; infra failures are `<error>`, never-run actions `<skipped>`),
+`ebs-summary.md` (link from `[ci].build_url`, a template with `{build}`/`{uuid}`; per-step
+counts; up to 20 failed tests) and `ebs.env` (`EBS_BUILD_ID=<id>`, a GitLab dotenv report).
+The values of `EBS_META_TOKEN`, `CI_JOB_TOKEN`, `CI_REGISTRY_PASSWORD`, `CI_DEPLOY_PASSWORD`,
+`CI_JOB_JWT`, `CI_JOB_JWT_V2` are replaced by `[MASKED]` in those files.
 
 **`ebs status --json`**: `{"v": 1, "uuid", "build", "status", "flow", "created_at", "steps":
 [{"step", "actions", "states": {state: n}}], "totals": {state: n}, "retries": [{"action_id",
@@ -1411,10 +1432,15 @@ before anything is hashed (exit 2); `ebs gc` collects only `[gc].domain` and `[g
 
 **`ebs release create NAME VERSION --build B --output SEL… [--notes] [--allow-failed REASON]
 [--json]`**, `release show|yank|export NAME VERSION [--domain D]` (`yank --reason R`, `export
---to D2`), `release list [NAME]`; **`ebs channel set NAME CHANNEL VERSION [--gate-build ID]`**,
+--to D2`), `release list [NAME]`; **`ebs channel set NAME CHANNEL VERSION [--gate-build ID] [--if-passing]`**,
 `channel show|history NAME CHANNEL` (P2-02; `ebs.release`). `--domain` defaults to the domain of
 the latest build recorded here; B is a recorded build's UUID prefix or id, or any store build id.
-A broken rule (selector, version, failed action, gate, membership) exits 2.
+A broken rule (selector, version, failed action, gate, membership) exits 2. `--if-passing` (P2-07
+R4, a CI gate job): the gate build (`--gate-build`, else `$EBS_BUILD_ID`; neither exits 2) must
+be in the release's domain and have `passed` (checked by the CLI), else exit 2 without moving; it
+is checked against the channel's gate policy, and without one is recorded as the move's gate
+(`{flow: <its project>, build}`) on a direct database. Through the HTTP service only `gate_build`
+is sent; the stored gate is whatever the service's own policy decides.
 
 **`ebs gc [--dry-run] [--domain D] [--json]`** (P1-09; `ebs.gc`): collects one domain (default
 `[gc].domain`) as the GC service account; needs `[metadata].url` = a `postgresql` URL (direct

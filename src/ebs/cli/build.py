@@ -4,6 +4,10 @@ The driver emits every event to the MetadataStore; a thin proxy (`_Tap`) also ha
 the view, so the build UUID (in `build_started`) is printed before anything runs. Views: a live
 per-step table on a terminal, one line per event otherwise, JSON lines with `--json`.
 `.ebs/builds/<uuid>/build.json` is written at the start and rewritten at the end (§ 14).
+
+`--ci` (P2-07, `ebs.ci.gitlab`): cache write, `--rehash`, line output, the CI QOS, the GitLab
+job's metadata stored with the build, and at the end `ebs-junit.xml`, `ebs-summary.md` and
+`ebs.env` in `$CI_PROJECT_DIR`, with CI secrets masked.
 """
 
 from __future__ import annotations
@@ -21,14 +25,29 @@ import typer
 from rich.live import Live
 from rich.table import Table
 
+from ebs.cas.api import CAS
+from ebs.ci.gitlab import (
+    JUNIT_FILE,
+    CiJob,
+    CiSummary,
+    Redactor,
+    build_link,
+    ci_defaults,
+    output_dir,
+    require_token,
+    write_summary,
+)
+from ebs.ci.junit import LOG_READ_BYTES, collect_cases, to_xml
 from ebs.cli._context import SiteServices
 from ebs.cli._output import Output, UsageError, handle_errors, make_output
 from ebs.cli._records import BuildRecord, action_states, build_dir
 from ebs.cli.plan import FLOW_OPTION, STEPS_ARGUMENT, make_plan
-from ebs.core.errors import ConfigError, ExitCode
+from ebs.core.digest import Digest
+from ebs.core.errors import CasError, ConfigError, ExitCode
 from ebs.driver.build import BuildOutcome, run_build
 from ebs.driver.retry import ReasonRetry, RetrySettings
 from ebs.driver.scheduler import DriverConfig
+from ebs.exec.slurm.accounts import BuildKind
 from ebs.gc.access import put_registered
 from ebs.meta.api import BuildStatus, CacheMode, Event, MetadataStore
 from ebs.plan.planfile import encode, plan_digest
@@ -106,6 +125,7 @@ class _View:
             created_at=event.ts,
             host=socket.gethostname(),
             pid=os.getpid(),
+            ci=cast("dict[str, str] | None", event.data.get("ci")),
         )
         self.record.write(build_dir(self.services.cwd, self.record.uuid))
         if not self.out.json:
@@ -163,6 +183,59 @@ CACHE_OPTION = typer.Option(
 EXECUTOR_OPTION = typer.Option(ExecutorChoice.local, "--executor", help="Where actions run.")
 
 
+def _log_tail(cas: CAS, digest: Digest) -> bytes | None:
+    try:
+        with cas.open(digest) as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - LOG_READ_BYTES))
+            return f.read()
+    except (CasError, OSError):
+        return None
+
+
+def _ci_reports(
+    services: SiteServices,
+    out: Output,
+    outcome: BuildOutcome,
+    store: MetadataStore,
+    cas: CAS,
+    redact: Redactor,
+) -> None:
+    """`ebs-junit.xml`, `ebs-summary.md` and `ebs.env` for the GitLab job (P2-07 R2, R3)."""
+    plan = outcome.plan
+    cases = collect_cases(
+        plan.actions,
+        outcome.states,
+        lambda action_id: store.get_result(outcome.build, action_id),
+        lambda digest: _log_tail(cas, digest),
+        redact=redact,
+    )
+    directory = output_dir(services.environ, services.cwd)
+    directory.mkdir(parents=True, exist_ok=True)
+    junit = directory / JUNIT_FILE
+    tmp = junit.with_name(f".{junit.name}.tmp")
+    tmp.write_bytes(to_xml(cases, suite=plan.project))
+    os.replace(tmp, junit)
+    counts: dict[str, Counter[str]] = {}
+    for action in plan.actions:
+        counts.setdefault(action.step, Counter())[outcome.states[action.action_id]] += 1
+    files = write_summary(
+        directory,
+        CiSummary(
+            build=outcome.build,
+            uuid=str(outcome.uuid),
+            project=plan.project,
+            status=outcome.status,
+            counts=counts,
+            link=build_link(services.config().get("ci", {}), outcome.build, str(outcome.uuid)),
+            failures=[c for c in cases if c.state in ("failed", "error")],
+        ),
+        redact=redact,
+    )
+    if not out.json:
+        out.line(f"ci: wrote {junit}, {files.summary}, {files.dotenv}")
+
+
 def _cache_mode(cache: CacheChoice | None, no_cache: bool) -> CacheMode:
     if no_cache and cache not in (None, CacheChoice.off):
         raise UsageError(f"--no-cache conflicts with --cache {cache.value}")
@@ -184,12 +257,28 @@ def build_command(
     ),
     executor: ExecutorChoice = EXECUTOR_OPTION,
     rehash: bool = typer.Option(False, "--rehash", help="Hash every source file."),
+    ci: bool = typer.Option(
+        False,
+        "--ci",
+        help="CI build: --cache write, --rehash, CI QOS; writes ebs-junit.xml, ebs-summary.md "
+        "and ebs.env into $CI_PROJECT_DIR.",
+    ),
     json_mode: bool = JSON_LINES_OPTION,
 ) -> None:
     """Run the flow: cached actions are reused, the rest run on the executor."""
     services: SiteServices = ctx.obj
-    mode = _cache_mode(cache, no_cache)
-    out = make_output(services.environ, json_mode=json_mode, tty=services.is_tty())
+    tty = services.is_tty()
+    build_kind: BuildKind = "dev"
+    job = CiJob()
+    if ci:
+        defaults = ci_defaults(None if cache is None else cache.value, no_cache=no_cache)
+        mode, rehash, build_kind = defaults.cache_mode, defaults.rehash, defaults.build_kind
+        tty = tty and defaults.interactive
+        require_token(services.config().get("metadata", {}), services.environ)
+        job = CiJob.from_environ(services.environ)
+    else:
+        mode = _cache_mode(cache, no_cache)
+    out = make_output(services.environ, json_mode=json_mode, tty=tty)
     store = services.store(required=True)
     if store is None:  # pragma: no cover - required=True raises instead
         raise ConfigError("no metadata store")
@@ -202,7 +291,11 @@ def build_command(
     try:
         with (
             services.open_executor(
-                executor.value, domain=planned.plan.domain, log_dir=log_dir
+                executor.value,
+                domain=planned.plan.domain,
+                log_dir=log_dir,
+                project=planned.plan.project,
+                build_kind=build_kind,
             ) as ex,
             view.running(),
         ):
@@ -217,6 +310,8 @@ def build_command(
                 config=DriverConfig(
                     cache_mode=mode, rerun_failed=rerun_failed, keep_going=keep_going
                 ),
+                ci_job=job.label,
+                ci=job.metadata() or None,
                 clock=services.clock,
                 retry=retry,
                 handle_sigint=True,
@@ -231,6 +326,10 @@ def build_command(
         outcome.plan,
         lambda data: put_registered(planned.cas, tapped, outcome.plan.domain, data),
     )
+    if ci:
+        _ci_reports(
+            services, out, outcome, tapped, planned.cas, Redactor.from_environ(services.environ)
+        )
     counts = Counter[str](outcome.states.values())
     if json_mode:
         out.emit(
