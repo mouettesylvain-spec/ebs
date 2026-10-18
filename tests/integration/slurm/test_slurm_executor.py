@@ -122,8 +122,10 @@ def test_cancel_all(tmp_path: Path, fake_slurm: FakeSlurm) -> None:
     assert sorted(runner.started()) == sorted(running)
 
 
-# Done-when: a 2,000-action fake regression completes through FakeSlurm in < 60 s.
+# Done-when: a 2,000-action fake regression completes through FakeSlurm in < 60 s. A wall-clock
+# budget: `perf`, so it runs alone (`make test-perf-integration`), not among other tests.
 @pytest.mark.slow
+@pytest.mark.perf
 def test_fake_regression_2000(tmp_path: Path, fake_slurm: FakeSlurm) -> None:
     fake_slurm.configure(cpus=64, poll_s=0.2)
     runner = FakeRunner(tmp_path / "runner")

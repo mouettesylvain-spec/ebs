@@ -104,9 +104,12 @@ jobs:
       - name: Slow unit tests
         run: uv run --extra dev pytest -m "unit and slow and not perf" -x -q
       - name: Integration tests
-        run: uv run --extra dev pytest -m integration -x -q --ignore=tests/e2e --junitxml=junit-integration.xml
+        run: uv run --extra dev pytest -m "integration and not perf" -x -q --ignore=tests/e2e --junitxml=junit-integration.xml
       - name: End-to-end tests
         run: uv run --extra dev pytest tests/e2e -x -q --junitxml=junit-e2e.xml
+      # Wall-clock budgets on Postgres and FakeSlurm, alone so no other test competes for the CPU.
+      - name: Integration timing budgets
+        run: uv run --extra dev pytest -m "integration and perf" -q --junitxml=junit-perf.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
