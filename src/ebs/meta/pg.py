@@ -31,6 +31,7 @@ from ebs.meta._common import (
     check_blobs,
     check_by,
     check_digest,
+    check_driver_owner,
     check_event_query,
     check_exportable,
     check_final_status,
@@ -67,6 +68,7 @@ from ebs.meta.api import (
     ChannelMove,
     ChannelView,
     DomainPolicy,
+    DriverLease,
     Event,
     ExportRecord,
     GateCheck,
@@ -99,6 +101,7 @@ from ebs.meta.models import (
     channel_history,
     channels,
     domains,
+    driver_leases,
     events,
     exports,
     gc_runs,
@@ -771,6 +774,58 @@ class PgMetadataStore:
                 sa.select(leases.c.domain).where(leases.c.id == lease)
             ).scalar_one()
             self._touch_rows(conn, domain, keys, now)
+
+    def claim_driver(self, build: BuildId, owner: str, ttl_s: int) -> DriverLease:
+        check_driver_owner(owner, "claim_driver")
+        check_lease_ttl(ttl_s)
+        now = self._clock.now()
+        d = driver_leases
+        with self._tx(f"claim_driver for build {build}") as conn:
+            found = conn.execute(  # a share lock: finish_build waits for this claim
+                sa.select(builds.c.status).where(builds.c.id == build).with_for_update(read=True)
+            ).first()
+            if found is None:
+                raise MetadataError(f"no build with id {build}")
+            if found.status != "running":
+                raise MetadataError(
+                    f"claim_driver: build {build} is finished ({found.status}); only running "
+                    "builds have a driver"
+                )
+            stmt = pg_insert(d).values(
+                build_id=build,
+                owner=owner,
+                expires_at=now + timedelta(seconds=ttl_s),
+                claimed_at=now,
+            )
+            # Concurrent claims serialize on the row; each re-checks the condition on the
+            # version the previous one wrote, so at most one owner wins an expired lease.
+            conn.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=[d.c.build_id],
+                    set_={
+                        "owner": stmt.excluded.owner,
+                        "expires_at": stmt.excluded.expires_at,
+                        "claimed_at": sa.case(
+                            (d.c.owner == stmt.excluded.owner, d.c.claimed_at),
+                            else_=stmt.excluded.claimed_at,
+                        ),
+                    },
+                    where=sa.or_(d.c.expires_at <= now, d.c.owner == stmt.excluded.owner),
+                )
+            )
+            row = conn.execute(
+                sa.select(d.c.owner, d.c.expires_at).where(d.c.build_id == build)
+            ).one()
+        return DriverLease(build=build, owner=row.owner, expires_at=row.expires_at)
+
+    def release_driver(self, build: BuildId, owner: str) -> None:
+        check_driver_owner(owner, "release_driver")
+        with self._tx(f"release_driver for build {build}") as conn:
+            conn.execute(
+                sa.delete(driver_leases).where(
+                    driver_leases.c.build_id == build, driver_leases.c.owner == owner
+                )
+            )
 
     def pin_build(self, build: BuildId, *, by: str, reason: str = "") -> None:
         by, reason = check_pin(by, reason)

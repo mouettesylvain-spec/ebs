@@ -8,15 +8,24 @@ per-step table on a terminal, one line per event otherwise, JSON lines with `--j
 `--ci` (P2-07, `ebs.ci.gitlab`): cache write, `--rehash`, line output, the CI QOS, the GitLab
 job's metadata stored with the build, and at the end `ebs-junit.xml`, `ebs-summary.md` and
 `ebs.env` in `$CI_PROJECT_DIR`, with CI secrets masked.
+
+P2-08: `--detach` starts the build, then submits `ebs build --resume-into <uuid>` as a 1-CPU
+SLURM job (`[driver]` partition, QOS and walltime) that drives it, and returns at once; the
+driver job's output goes to `.ebs/builds/<uuid>/driver.out`. `--resume <build>` drives a running
+build whose driver died (`ebs.driver.resume`). SIGTERM, which `scancel` sends to a driver job,
+cancels the build's jobs like Ctrl-C.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
+import re
 import socket
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final, cast
@@ -40,23 +49,37 @@ from ebs.ci.gitlab import (
 from ebs.ci.junit import LOG_READ_BYTES, collect_cases, to_xml
 from ebs.cli._context import SiteServices
 from ebs.cli._output import Output, UsageError, handle_errors, make_output
-from ebs.cli._records import BuildRecord, action_states, build_dir
-from ebs.cli.plan import FLOW_OPTION, STEPS_ARGUMENT, make_plan
+from ebs.cli._records import BuildRecord, action_states, build_dir, find_build
+from ebs.cli.plan import FLOW_OPTION, STEPS_ARGUMENT, PlanResult, make_plan
 from ebs.core.digest import Digest
-from ebs.core.errors import CasError, ConfigError, ExitCode
-from ebs.driver.build import BuildOutcome, run_build
+from ebs.core.errors import (
+    CasError,
+    ConfigError,
+    DriverBusyError,
+    EbsError,
+    ExitCode,
+    MetadataError,
+)
+from ebs.driver.build import BuildOutcome, run_build, start_build
+from ebs.driver.resume import resume_build
 from ebs.driver.retry import ReasonRetry, RetrySettings
 from ebs.driver.scheduler import DriverConfig
-from ebs.exec.slurm.accounts import BuildKind
+from ebs.exec.slurm.accounts import BuildKind, JobPolicy
+from ebs.exec.slurm.cli import SbatchOptions, write_env_file
+from ebs.exec.slurm.jobscript import render_jobscript
+from ebs.flow.model import parse_duration
 from ebs.gc.access import put_registered
-from ebs.meta.api import BuildStatus, CacheMode, Event, MetadataStore
+from ebs.meta.api import BuildStatus, CacheMode, Event, MetadataStore, ReleaseImport
 from ebs.plan.planfile import encode, plan_digest
 from ebs.plan.types import Plan
 from ebs.release.lock import import_rows
 
-__all__ = ["build_command"]
+__all__ = ["DriverJobSettings", "build_command"]
 
 _STATUS_STYLE: Final = {"passed": "green", "failed": "red", "infra_failed": "red"}
+_DRIVER_KEYS: Final = frozenset({"partition", "qos", "time"})
+DEFAULT_DRIVER_TIME_S: Final = 3 * 86_400
+_ENV_NAME: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class _Tap:
@@ -90,13 +113,26 @@ def _summary(counts: Mapping[str, int]) -> str:
 
 
 class _View:
-    """Shows the events of one build in the output's mode."""
+    """Shows the events of one build in the output's mode.
 
-    def __init__(self, out: Output, plan: Plan, services: SiteServices, flow: Path) -> None:
+    `driver_here`: this process drives the build, so the record names its host and pid (which
+    `ebs status` uses to notice a dead driver); a detaching process does not.
+    """
+
+    def __init__(
+        self,
+        out: Output,
+        plan: Plan | None,
+        services: SiteServices,
+        flow: Path,
+        *,
+        driver_here: bool = True,
+    ) -> None:
         self.out = out
         self.plan = plan
         self.services = services
         self.flow = flow
+        self.driver_here = driver_here
         self.record: BuildRecord | None = None
         self.events: list[Event] = []
         self.live: Live | None = None
@@ -113,6 +149,7 @@ class _View:
             self.out.line(_event_line(event))
 
     def _started(self, event: Event) -> None:
+        assert self.plan is not None  # a resumed build starts no new record
         self.record = BuildRecord(
             uuid=event.data["uuid"],  # type: ignore[arg-type]
             build=event.build,
@@ -124,13 +161,21 @@ class _View:
             status="running",
             actions={a.action_id: a.step for a in self.plan.actions},
             created_at=event.ts,
-            host=socket.gethostname(),
-            pid=os.getpid(),
+            host=socket.gethostname() if self.driver_here else "",
+            pid=os.getpid() if self.driver_here else 0,
             ci=cast("dict[str, str] | None", event.data.get("ci")),
         )
         self.record.write(build_dir(self.services.cwd, self.record.uuid))
         if not self.out.json:
             self.out.line(f"build {self.record.uuid} (id {self.record.build})")
+
+    def resumed(self, record: BuildRecord) -> None:
+        """Follow a recorded build that this process now drives."""
+        self.record = record.model_copy(update={"host": socket.gethostname(), "pid": os.getpid()})
+        self.record.write(build_dir(self.services.cwd, record.uuid))
+        self.events = record.events(self.services.cwd)
+        if not self.out.json:
+            self.out.line(f"build {record.uuid} (id {record.build}): resuming")
 
     def table(self) -> Table:
         assert self.record is not None
@@ -165,6 +210,41 @@ class _View:
         self.record.write(build_dir(self.services.cwd, self.record.uuid))
 
 
+@dataclass(frozen=True)
+class DriverJobSettings:
+    """The `[driver]` section: the SLURM job of a detached driver (P2-08 R1)."""
+
+    partition: str | None = None  # None: [slurm].default_partition
+    qos: str | None = None  # None: the QOS of the build's kind ([slurm.qos])
+    time_s: int = DEFAULT_DRIVER_TIME_S  # walltime: the longest build it may drive
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Mapping[str, object]]) -> DriverJobSettings:
+        section = config.get("driver", {})
+        unknown = sorted(set(section) - _DRIVER_KEYS)
+        if unknown:
+            raise ConfigError(
+                f"unknown key(s) in [driver]: {', '.join(unknown)}; "
+                f"expected {', '.join(sorted(_DRIVER_KEYS))}"
+            )
+        names: dict[str, str | None] = {}
+        for key in ("partition", "qos"):
+            value = section.get(key, "")
+            if not isinstance(value, str):
+                raise ConfigError(f"[driver].{key} must be a string, got {value!r}")
+            names[key] = value or None
+        time = section.get("time")
+        time_s = DEFAULT_DRIVER_TIME_S
+        if time is not None:
+            try:
+                time_s = parse_duration(time) if isinstance(time, str) else -1
+            except ValueError as exc:
+                raise ConfigError(f"[driver].time: {exc}") from None
+            if time_s < 0:
+                raise ConfigError(f"[driver].time must be a duration such as 72h, got {time!r}")
+        return cls(partition=names["partition"], qos=names["qos"], time_s=time_s)
+
+
 class CacheChoice(StrEnum):  # an Enum: Typer turns a bad value into a usage error (exit 2)
     off = "off"
     read = "read"
@@ -173,6 +253,7 @@ class CacheChoice(StrEnum):  # an Enum: Typer turns a bad value into a usage err
 
 class ExecutorChoice(StrEnum):
     local = "local"
+    slurm = "slurm"
 
 
 JSON_LINES_OPTION = typer.Option(
@@ -265,9 +346,28 @@ def build_command(
         "and ebs.env into $CI_PROJECT_DIR.",
     ),
     json_mode: bool = JSON_LINES_OPTION,
+    detach: bool = typer.Option(
+        False,
+        "--detach",
+        help="Hand the driver to a SLURM job and return: the build survives logout.",
+    ),
+    resume: str | None = typer.Option(
+        None,
+        "--resume",
+        metavar="BUILD",
+        help="Drive a running build whose driver died (UUID, prefix or id).",
+    ),
+    resume_into: str | None = typer.Option(
+        None, "--resume-into", hidden=True, help="Drive a detached build (the driver job)."
+    ),
 ) -> None:
     """Run the flow: cached actions are reused, the rest run on the executor."""
     services: SiteServices = ctx.obj
+    if ci and (detach or resume is not None or resume_into is not None):
+        raise UsageError(
+            "--ci runs the whole build in the CI job and writes its reports there; it does not "
+            "combine with --detach or --resume"
+        )
     tty = services.is_tty()
     build_kind: BuildKind = "dev"
     job = CiJob()
@@ -284,41 +384,88 @@ def build_command(
     if store is None:  # pragma: no cover - required=True raises instead
         raise ConfigError("no metadata store")
     retry = ReasonRetry(RetrySettings.from_config(services.config()))  # bad [retry]: fail early
-    planned = make_plan(services, out, flow_file, targets=steps or (), rehash=rehash)
-    imports = import_rows(store, planned.flow, planned.lock) if planned.lock is not None else []
+    config = DriverConfig(cache_mode=mode, rerun_failed=rerun_failed, keep_going=keep_going)
+    target = resume if resume is not None else resume_into
+    if target is not None:
+        if resume is not None and resume_into is not None:
+            raise UsageError("give --resume or --resume-into, not both")
+        if detach:
+            raise UsageError(
+                "--detach starts a new build; to drive a running one in a job, run "
+                "`ebs build --resume BUILD` in an sbatch script"
+            )
+        if steps or cache is not None or no_cache or rehash:
+            raise UsageError(
+                "--resume continues a build with its own plan and cache mode: it takes no "
+                "steps, --cache, --no-cache or --rehash"
+            )
+        outcome = _resume(services, out, store, target, executor, config, retry)
+    else:
+        if detach and executor is not ExecutorChoice.slurm:
+            raise UsageError(
+                "--detach runs the driver in a 1-CPU SLURM job, where local actions would "
+                "crowd it: add `--executor slurm`"
+            )
+        planned = make_plan(services, out, flow_file, targets=steps or (), rehash=rehash)
+        imports = import_rows(store, planned.flow, planned.lock) if planned.lock is not None else []
+        if detach:
+            _detach(services, out, store, planned, executor, config, imports)
+            return
+        outcome = _run(
+            services, out, store, planned, executor, config, retry,
+            build_kind=build_kind, job=job, imports=imports, ci=ci,
+        )  # fmt: skip
+    _report(out, outcome, json_mode)
+
+
+def _run(
+    services: SiteServices,
+    out: Output,
+    store: MetadataStore,
+    planned: PlanResult,
+    executor: ExecutorChoice,
+    config: DriverConfig,
+    retry: ReasonRetry,
+    *,
+    build_kind: BuildKind,
+    job: CiJob,
+    imports: Sequence[ReleaseImport],
+    ci: bool,
+) -> BuildOutcome:
     view = _View(out, planned.plan, services, planned.path)
     tapped = cast(MetadataStore, _Tap(store, view.on_event))
     log_dir = services.cwd / ".ebs" / "logs"
-    outcome: BuildOutcome | None = None
+    plan = planned.plan
     try:
         with (
             services.open_executor(
                 executor.value,
-                domain=planned.plan.domain,
+                domain=plan.domain,
                 log_dir=log_dir,
-                project=planned.plan.project,
+                project=plan.project,
                 build_kind=build_kind,
             ) as ex,
             view.running(),
         ):
             outcome = run_build(
-                planned.plan,
+                plan,
                 refiner=planned.planner,
                 cas=planned.cas,
                 store=tapped,
                 executor=ex,
                 workdir=services.cwd,
                 user=services.user(),
-                config=DriverConfig(
-                    cache_mode=mode, rerun_failed=rerun_failed, keep_going=keep_going
-                ),
+                config=config,
                 ci_job=job.label,
                 ci=job.metadata() or None,
                 clock=services.clock,
                 retry=retry,
                 handle_sigint=True,
+                handle_sigterm=True,
                 release_imports=imports,
             )
+    except DriverBusyError:
+        raise  # another driver took the build over: the record is its to finish
     except BaseException as exc:
         view.finish(
             "cancelled" if isinstance(exc, KeyboardInterrupt) else "infra_failed", None, None
@@ -333,6 +480,152 @@ def build_command(
         _ci_reports(
             services, out, outcome, tapped, planned.cas, Redactor.from_environ(services.environ)
         )
+    return outcome
+
+
+def _resume(
+    services: SiteServices,
+    out: Output,
+    store: MetadataStore,
+    target: str,
+    executor: ExecutorChoice,
+    config: DriverConfig,
+    retry: ReasonRetry,
+) -> BuildOutcome:
+    record = find_build(services.cwd, target)
+    view = _View(out, None, services, Path(record.flow))
+    tapped = cast(MetadataStore, _Tap(store, view.on_event))
+    cas = services.cas(record.domain)
+    log_dir = services.cwd / ".ebs" / "logs"
+    with services.open_executor(
+        executor.value, domain=record.domain, log_dir=log_dir, project=record.project
+    ) as ex:
+        view.resumed(record)
+        try:
+            with view.running():
+                outcome = resume_build(
+                    record.build,
+                    cas=cas,
+                    store=tapped,
+                    executor=ex,
+                    workdir=services.cwd,
+                    config=config,
+                    clock=services.clock,
+                    retry=retry,
+                    handle_sigint=True,
+                    handle_sigterm=True,
+                )
+        except DriverBusyError:
+            raise  # another driver has the build, or it is over: its record stays as it is
+        except BaseException as exc:
+            view.finish(
+                "cancelled" if isinstance(exc, KeyboardInterrupt) else "infra_failed", None, None
+            )
+            raise
+    view.finish(
+        outcome.status,
+        outcome.plan,
+        lambda data: put_registered(cas, tapped, outcome.plan.domain, data),
+    )
+    return outcome
+
+
+def _detach(
+    services: SiteServices,
+    out: Output,
+    store: MetadataStore,
+    planned: PlanResult,
+    executor: ExecutorChoice,
+    config: DriverConfig,
+    imports: Sequence[ReleaseImport],
+) -> None:
+    """Start the build here, drive it in a SLURM job (R1)."""
+    driver = DriverJobSettings.from_config(services.config())  # bad [driver]: fail before
+    slurm = services.slurm_settings()  # anything is recorded
+    plan = planned.plan
+    policy = JobPolicy.resolve(
+        account_map=slurm.account_map,
+        qos=slurm.qos,
+        os_constraint=None,
+        project=plan.project,
+        build_kind="dev",
+    )
+    view = _View(out, plan, services, planned.path, driver_here=False)
+    tapped = cast(MetadataStore, _Tap(store, view.on_event))
+    started = start_build(
+        plan,
+        cas=planned.cas,
+        store=tapped,
+        workdir=services.cwd,
+        user=services.user(),
+        cache_mode=config.cache_mode,
+        clock=services.clock,
+        release_imports=imports,
+    )
+    argv = [
+        *services.ebs_argv(),
+        "build",
+        "--resume-into",
+        str(started.uuid),
+        "--executor",
+        executor.value,
+    ]
+    if config.keep_going:
+        argv.append("--keep-going")
+    if config.rerun_failed:
+        argv.append("--rerun-failed")
+    directory = build_dir(services.cwd, started.uuid)
+    try:
+        script = directory / "driver.sh"
+        script.write_text(render_jobscript(argv), encoding="utf-8")
+        script.chmod(0o750)
+        env_file = directory / "driver.env"  # mode 0600: the user's environment
+        write_env_file(
+            env_file,
+            {
+                k: v
+                for k, v in services.environ.items()
+                if _ENV_NAME.match(k) and not k.startswith("SLURM_")
+            },
+        )
+        opts = SbatchOptions(
+            job_name=f"ebs:{started.uuid.hex[:8]}:driver",
+            partition=driver.partition or slurm.default_partition,
+            account=policy.account,
+            qos=driver.qos or policy.qos,
+            cpus_per_task=1,
+            time_limit_s=driver.time_s,
+            output=directory / "driver.out",
+            workdir=services.cwd,
+            export_file=env_file,
+            comment=str(started.uuid),
+        )
+        job = services.slurm_cli().submit(script, opts)
+    except (EbsError, OSError, ValueError) as exc:
+        # If even that fails, the build stays `running` without a driver: `--resume` takes it.
+        with contextlib.suppress(MetadataError):
+            store.finish_build(started.build, "infra_failed")
+        view.finish("infra_failed", None, None)
+        if isinstance(exc, EbsError):
+            raise
+        raise ConfigError(f"cannot submit the driver job of build {started.uuid}: {exc}") from exc
+    if out.json:
+        out.emit(
+            {
+                "build": int(started.build),
+                "uuid": str(started.uuid),
+                "status": "running",
+                "driver_job": str(job),
+            }
+        )
+    else:
+        out.line(
+            f"driver job {job} submitted: follow the build with `ebs status {started.uuid}`, "
+            f"cancel it with `scancel {job}`"
+        )
+
+
+def _report(out: Output, outcome: BuildOutcome, json_mode: bool) -> None:
     counts = Counter[str](outcome.states.values())
     if json_mode:
         out.emit(

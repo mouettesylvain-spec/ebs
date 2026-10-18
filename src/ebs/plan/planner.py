@@ -78,7 +78,7 @@ from ebs.sources.globs import match_paths
 from ebs.sources.snapshot import SnapshotResult
 from ebs.toolchain.model import Toolchain, ToolchainResolver
 
-__all__ = ["SYSTEM_PATHS", "Planner", "Snapshotter"]
+__all__ = ["SYSTEM_PATHS", "Planner", "Snapshotter", "refine_plan"]
 
 SYSTEM_PATHS: tuple[str, ...] = (
     "/usr",
@@ -188,38 +188,43 @@ class Planner:
         return _Run(self, flow, base, lock).plan(info or FlowInfo(), targets)
 
     def refine(self, plan: Plan, produced: Mapping[tuple[str, str], Digest]) -> Plan:
-        """Fill in input ids and keys that `produced` ((action_id, output) -> id) makes known.
+        """`refine_plan` (needs nothing of the planner: a resumed driver refines without one)."""
+        return refine_plan(plan, produced)
 
-        Idempotent; producers are refined before their consumers, so one call propagates
-        through chains of nondeterministic outputs.
-        """
-        index = {a.action_id: a for a in plan.actions}
-        for action_id, output in produced:
-            if action_id not in index:
-                hint = _suggest(action_id, list(index))
-                raise PlanError(f"refine: no action {action_id!r} in this plan{hint}")
-            if output not in {o.name for o in index[action_id].outputs}:
-                raise PlanError(f"refine: action {action_id!r} has no output {output!r}")
-        updated: dict[str, ActionSpec] = {}
-        actions = []
-        for spec in plan.actions:
-            inputs = []
-            for ref in spec.inputs:
-                source = ref.source
-                if isinstance(source, ActionOutputInput):
-                    producer = updated.get(source.action_id, index[source.action_id])
-                    out = producer.output(source.output)
-                    if out.deterministic:  # content digest: the latest produced one wins
-                        new_id = produced.get((source.action_id, source.output), ref.id)
-                    else:  # never from `produced`: only the producer's key (I14)
-                        new_id = _output_id(producer, out)
-                    if new_id != ref.id:
-                        ref = dataclasses.replace(ref, id=new_id)
-                inputs.append(ref)
-            refined = with_key(dataclasses.replace(spec, inputs=tuple(inputs)))
-            updated[spec.action_id] = refined
-            actions.append(refined)
-        return dataclasses.replace(plan, actions=tuple(actions))
+
+def refine_plan(plan: Plan, produced: Mapping[tuple[str, str], Digest]) -> Plan:
+    """Fill in input ids and keys that `produced` ((action_id, output) -> id) makes known.
+
+    Idempotent; producers are refined before their consumers, so one call propagates
+    through chains of nondeterministic outputs.
+    """
+    index = {a.action_id: a for a in plan.actions}
+    for action_id, output in produced:
+        if action_id not in index:
+            hint = _suggest(action_id, list(index))
+            raise PlanError(f"refine: no action {action_id!r} in this plan{hint}")
+        if output not in {o.name for o in index[action_id].outputs}:
+            raise PlanError(f"refine: action {action_id!r} has no output {output!r}")
+    updated: dict[str, ActionSpec] = {}
+    actions = []
+    for spec in plan.actions:
+        inputs = []
+        for ref in spec.inputs:
+            source = ref.source
+            if isinstance(source, ActionOutputInput):
+                producer = updated.get(source.action_id, index[source.action_id])
+                out = producer.output(source.output)
+                if out.deterministic:  # content digest: the latest produced one wins
+                    new_id = produced.get((source.action_id, source.output), ref.id)
+                else:  # never from `produced`: only the producer's key (I14)
+                    new_id = _output_id(producer, out)
+                if new_id != ref.id:
+                    ref = dataclasses.replace(ref, id=new_id)
+            inputs.append(ref)
+        refined = with_key(dataclasses.replace(spec, inputs=tuple(inputs)))
+        updated[spec.action_id] = refined
+        actions.append(refined)
+    return dataclasses.replace(plan, actions=tuple(actions))
 
 
 def _output_id(producer: ActionSpec, out: OutputSpec) -> Digest | None:

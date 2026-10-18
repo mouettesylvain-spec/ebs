@@ -49,6 +49,7 @@ REVIEWED: Final[dict[str, str]] = {
     "events.type": ENUM, "events.action_id": NAME, "events.data": META,
     "leases.domain": NAME, "lease_objects.digest": DIGEST,
     "pins.domain": NAME, "pins.pinned_by": NAME, "pins.reason": TEXT,
+    "driver_leases.owner": NAME,  # host:pid:token (P2-08)
     "releases.domain": NAME, "releases.name": NAME, "releases.version": NAME,
     "releases.outputs": META, "releases.notes": TEXT, "releases.allow_failed": TEXT,
     "releases.attestation": META, "releases.signature": META, "releases.created_by": NAME,

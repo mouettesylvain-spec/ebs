@@ -195,6 +195,16 @@ OPS: list[tuple[str, Op, frozenset[str]]] = [
         lambda c, m, w: c.renew_lease(m.running, m.lease, 600),
         frozenset({A}),
     ),
+    (  # P2-08: the driver lease, like the GC lease, needs write access to the build's domain
+        "POST /builds/{build}/driver",
+        lambda c, m, w: c.claim_driver(m.running, f"{w.name}:1:tok", 120),
+        frozenset({A}),
+    ),
+    (
+        "POST /builds/{build}/driver/release",
+        lambda c, m, w: c.release_driver(m.running, f"{w.name}:1:tok"),
+        frozenset({A}),
+    ),
     ("PUT /builds/{build}/pin", lambda c, m, w: c.pin_build(m.finished, by=w.user), frozenset({A})),
     ("DELETE /builds/{build}/pin", lambda c, m, w: c.unpin_build(m.finished), frozenset({A})),
     (

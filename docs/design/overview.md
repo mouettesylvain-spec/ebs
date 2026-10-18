@@ -177,6 +177,11 @@ release = ""
 
 [ci]                           # P2-07: `ebs build --ci`
 # build_url = "https://ebs.example/builds/{uuid}"   # link in ebs-summary.md ({build}, {uuid})
+
+[driver]                       # P2-08: the SLURM job of `ebs build --detach` (1 CPU)
+partition = ""                 # empty: [slurm].default_partition
+qos = ""                       # empty: the build kind's QOS ([slurm.qos])
+time = "72h"                   # walltime: the longest build a detached driver may drive
 ```
 
 ## Glossary

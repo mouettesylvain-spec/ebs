@@ -92,7 +92,9 @@ class TestServices(SiteServices):
         build_kind: BuildKind = "dev",
     ) -> Iterator[Executor]:
         self.executor_args.append({"project": project, "build_kind": build_kind})
-        executor = ScriptedExecutor(self.memory_store, self.cas(domain), on_poll=self.on_poll)
+        executor = ScriptedExecutor(
+            self.memory_store, self.cas(domain), on_poll=self.on_poll, record_jobs=True
+        )
         for action_id, outcomes in self.scripts.items():
             executor.script(action_id, *outcomes)
         self.executors.append(executor)

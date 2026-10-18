@@ -21,6 +21,7 @@ from ebs.meta._common import (
     check_blobs,
     check_by,
     check_digest,
+    check_driver_owner,
     check_event_query,
     check_exportable,
     check_final_status,
@@ -58,6 +59,7 @@ from ebs.meta.api import (
     ChannelMove,
     ChannelView,
     DomainPolicy,
+    DriverLease,
     Event,
     ExportRecord,
     GateCheck,
@@ -138,6 +140,7 @@ class InMemoryMetadataStore:
         self._leases: dict[int, _Lease] = {}
         self._next_lease = 1
         self._pins: dict[int, tuple[str, str, datetime]] = {}  # build -> by, reason, at
+        self._drivers: dict[int, DriverLease] = {}  # P2-08: build -> its driver lease
         self._tombstones: dict[tuple[str, str], Tombstone] = {}
         self._policies: dict[str, DomainPolicy] = {}
         self.gc_runs: list[GcRun] = []
@@ -419,6 +422,32 @@ class InMemoryMetadataStore:
             found.expires_at = now + timedelta(seconds=ttl_s)
             found.digests |= keys
             self._touch_rows(found.domain, keys)
+
+    def claim_driver(self, build: BuildId, owner: str, ttl_s: int) -> DriverLease:
+        check_driver_owner(owner, "claim_driver")
+        check_lease_ttl(ttl_s)
+        with self._lock:
+            b = self._build(build)
+            if b.view.status != "running":
+                raise MetadataError(
+                    f"claim_driver: build {build} is finished ({b.view.status}); only running "
+                    "builds have a driver"
+                )
+            now = self._clock.now()
+            held = self._drivers.get(build)
+            if held is None or held.expires_at <= now or held.owner == owner:
+                held = DriverLease(
+                    build=build, owner=owner, expires_at=now + timedelta(seconds=ttl_s)
+                )
+                self._drivers[build] = held
+            return held
+
+    def release_driver(self, build: BuildId, owner: str) -> None:
+        check_driver_owner(owner, "release_driver")
+        with self._lock:
+            held = self._drivers.get(build)
+            if held is not None and held.owner == owner:
+                del self._drivers[build]
 
     def pin_build(self, build: BuildId, *, by: str, reason: str = "") -> None:
         by, reason = check_pin(by, reason)

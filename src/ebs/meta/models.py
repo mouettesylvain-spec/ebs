@@ -37,6 +37,7 @@ __all__ = [
     "channel_history",
     "channels",
     "domains",
+    "driver_leases",
     "event_id_seq",
     "events",
     "exports",
@@ -432,4 +433,19 @@ release_imports = sa.Table(  # which release each import alias of a build used (
     sa.Column("release_id", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=False),
     sa.Index(None, "release_id"),
     sa.CheckConstraint(f"alias ~ '{IMPORT_ALIAS_PATTERN}'", name="alias_valid"),
+)
+
+
+# --- Phase 2: detached and resumed drivers (P2-08, revision 0011) ---------------------------------
+
+driver_leases = sa.Table(  # one live driver per build; renewed by the driver's heartbeat
+    "driver_leases",
+    metadata,
+    sa.Column(
+        "build_id", sa.BigInteger, sa.ForeignKey("builds.id", ondelete="CASCADE"), primary_key=True
+    ),
+    sa.Column("owner", sa.Text, nullable=False),
+    sa.Column("expires_at", _TS, nullable=False),
+    sa.Column("claimed_at", _TS, nullable=False),
+    sa.CheckConstraint("length(owner) BETWEEN 1 AND 256", name="owner_length"),
 )
