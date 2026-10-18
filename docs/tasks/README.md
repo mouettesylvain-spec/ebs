@@ -58,8 +58,8 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P2-03 | Imports and `flow.lock` | P2-02 | 2 | done |
 | P2-04 | Provenance queries (`why`, `used-by`, `tests`) | P2-02 | 2 | done |
 | P2-07 | GitLab CI integration (`--ci`, JUnit) | P2-02 | 2 | done |
-| P2-08 | `--detach` driver job | P1-02 | 2 | review |
-| P2-06 | Web dashboard v1 | P2-05, P2-04 | 3 | review |
+| P2-08 | `--detach` driver job | P1-02 | 2 | done |
+| P2-06 | Web dashboard v1 | P2-05, P2-04 | 3 | done |
 | P2-09 | Phase 2 acceptance | all P2 | 4 | todo |
 
 ## Phase 3 — Hermeticity and scale (exit: sandbox default for Questa; quarterly revalidation report)

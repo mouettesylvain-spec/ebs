@@ -1,6 +1,6 @@
 # P2-06 — Web dashboard v1
 
-Status: review · Phase: 2 · Depends on: P2-05, P2-04 · Size: L
+Status: done · Phase: 2 · Depends on: P2-05, P2-04 · Size: L
 
 ## Goal
 A read-mostly web UI for builds, regressions, logs, cache savings, license waits, releases and provenance.

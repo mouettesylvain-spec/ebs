@@ -29,11 +29,15 @@ Versioning works like software packages, in three layers:
 
 ## Teams work asynchronously
 
-A downstream team (verification, DfT, backend) follows a channel, and its flows will pin the
-exact release they used in a `flow.lock` committed to git (task P2-03). Each team then upgrades
-on its own schedule, and every build records exactly which upstream versions it consumed. That
-is the basis for provenance queries such as "which tests ran on the RTL behind this netlist"
-(task P2-04).
+A downstream team (verification, DfT, backend) imports a release by channel in its flow
+(`imports:`), and `ebs lock update` pins the exact release in a `flow.lock` committed to git.
+Builds only ever use the pinned release: moving `stable` changes nothing downstream until the
+consuming team updates its lock, so each team upgrades on its own schedule. `ebs lock check`
+(exit 1) tells CI that an update is waiting.
+
+Every build records which releases it imported and every action records which inputs made
+which outputs. That is what [provenance queries](/ebs/guides/provenance/) walk: `ebs why`,
+`ebs used-by` and `ebs tests` ("which tests ran on the RTL behind this netlist").
 
 ## Across domains
 

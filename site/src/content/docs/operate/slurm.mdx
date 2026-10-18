@@ -9,10 +9,8 @@ import RepoDoc from '../../../components/RepoDoc.astro';
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Status">
-The SLURM executor is implemented and tested against a fake SLURM, but `ebs build` does not
-expose it yet: wiring it into the CLI and the acceptance run on a real partition are task P1-12.
-The node-side pieces below are complete and can be installed now. See
-[Dispatch on SLURM](/ebs/concepts/dispatch/).
+`ebs build --executor slurm` (and `--detach`) is available and tested against a fake SLURM. The
+acceptance run on a real partition is task P1-12. See [Dispatch on SLURM](/ebs/concepts/dispatch/).
 </Aside>
 
 ## Grid requirements
@@ -26,6 +24,16 @@ The node-side pieces below are complete and can be installed now. See
 - **Node features** for the OS image, used as `--constraint` through `[slurm].os_constraint`.
 - **Limits**: tell EBS your `MaxArraySize` and submission limits (`[slurm].max_array_size`,
   `max_pending_jobs`, `max_submits_per_min`).
+
+- **Detached drivers**: `ebs build --detach` runs the driver as a 1-CPU job. Give it a partition
+  and QOS that allow long, idle jobs:
+
+  ```toml
+  [driver]
+  partition = "service"   # default: the cluster default
+  qos = "driver"
+  time = "72h"            # the longest build a detached driver may drive
+  ```
 
 ## Node setup
 

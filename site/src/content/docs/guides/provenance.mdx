@@ -1,0 +1,50 @@
+---
+title: Provenance
+description: Trace any artifact back to its sources, list who consumed a release, and which tests ran on it.
+sidebar:
+  order: 5
+---
+
+Every action records edges `input id → action → output id`, and every build records the
+releases it imported. Three commands walk that graph, in both directions. They work on cache
+hits too: a reused result is recorded for the build that reused it.
+
+| Question | Command |
+| --- | --- |
+| Where did this come from? | `ebs why <target>` |
+| Who used this release? | `ebs used-by <name> <version>` |
+| Which tests ran on it? | `ebs tests <name> <version>` |
+
+## `ebs why`: back to the sources
+
+```sh
+ebs why rtl-team/cpu@2026.10.1:elab.model     # a released output
+ebs why sha256:5be27dfd…                      # any digest
+ebs why 'sim[seed=7,test=smoke]' --build 42   # an action of a build
+```
+
+It prints a tree from the target back to the actions that made it (rule, status, build,
+project), their params and toolchains, the releases each input came from, and the source files
+at the leaves with the flow's git commit. `--depth N` stops early, `--dot` prints a Graphviz
+graph, `--json` a document for your own tools. The [release tutorial](/ebs/tutorials/releases/)
+shows real output.
+
+## `ebs used-by`: everything downstream
+
+`ebs used-by rtl-team/cpu 2026.10.1` lists every build that consumed outputs of the release,
+directly or through other releases, and every release built from them, across domains when
+the release was exported (`ebs release export`). Its own build and the release itself are
+never listed.
+
+## `ebs tests`: the simulations behind a release
+
+`ebs tests rtl-team/cpu 2026.10.1` lists every simulation action (any `*.sim` rule) whose
+inputs derive from the release: test, seed, verdict, toolchain, build and date. This answers
+"which tests ran on the RTL behind this netlist". `--latest` keeps the newest run per
+(test, seed), and `--junit FILE` writes the list as a JUnit report.
+
+## Confidentiality
+
+Walks stay inside the domains you belong to. A link into a domain you cannot read (for
+example an export to a partner domain) is reported as hidden, never followed, so a query cannot
+reveal what another NDA scope built.

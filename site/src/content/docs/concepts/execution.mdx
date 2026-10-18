@@ -49,9 +49,9 @@ until a consumer needs them.
 
 Ready actions (inputs available, cache missed) go to the **executor**. The driver keeps the
 graph itself and never chains scheduler dependencies, so a cache hit costs nothing on the grid
-and no job waits for one that will never run. Today `ebs build` uses the local executor; the
-SLURM executor, with job arrays and license-aware submission, is described in
-[Dispatch on SLURM](/ebs/concepts/dispatch/).
+and no job waits for one that will never run. `ebs build` runs actions locally by default;
+`--executor slurm` submits them to the grid as jobs and job arrays with license-aware
+submission ([Dispatch on SLURM](/ebs/concepts/dispatch/)).
 
 ## 6. Run, hash, store
 

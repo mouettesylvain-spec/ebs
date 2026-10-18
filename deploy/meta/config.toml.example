@@ -23,6 +23,8 @@ domains = ["cpu-nda"]
 # token_domains = { "ci-cpu" = ["cpu-nda"] }
 group_ttl_s = 60      # NSS group lookups are cached this long
 log_level = "INFO"    # JSON log lines on stderr, each with the request's X-Request-ID
+# P2-06: serve the dashboard's static build (`cd web && npm ci && npm run build`) at /ui/.
+# dashboard_dir = "/opt/ebs/web/dist"
 
 # P2-05: request limits, per principal and per worker process.
 [meta_service.limits]

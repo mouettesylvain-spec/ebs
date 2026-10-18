@@ -8,13 +8,12 @@ sidebar:
 import DispatchScene from '../../../scenes/dispatch/DispatchScene.astro';
 import { Aside } from '@astrojs/starlight/components';
 
+`ebs build --executor slurm` runs a build on the grid, and `--detach` hands the driver itself
+to a small SLURM job so a long regression survives logout ([Long builds](#long-builds-detach-and-resume)).
+
 <Aside type="caution" title="Status">
-The SLURM executor (`ebs.exec.slurm`, tasks P1-01 to P1-05) is implemented and tested against a
-fake SLURM, together with the grid runner, retries and the scratch-cleanup epilog. The `ebs
-build` command does not expose it yet: today `--executor` accepts only `local`. Wiring it into
-the CLI and the full-regression acceptance on a real partition are task P1-12 on the
-[Roadmap](/ebs/reference/roadmap/). This page describes how dispatch works so sites can prepare
-their grid.
+The SLURM executor is tested against a fake SLURM in CI. The full-regression acceptance run on
+a real partition is still to do (task P1-12 on the [Roadmap](/ebs/reference/roadmap/)).
 </Aside>
 
 <DispatchScene />
@@ -78,3 +77,19 @@ Infrastructure failures are retried with exponential backoff (`[retry]`): after 
 `oom_mem_factor` more memory, after a license failure with a longer wait, after a node failure
 on another node. A node that fails twice in a build is excluded for the rest of that build.
 Test failures are never retried.
+
+## Long builds: detach and resume
+
+```sh
+ebs build --executor slurm --detach        # prints the build UUID and the driver's job id
+ebs status <uuid>                          # follow it from any login node
+ebs build --resume <uuid>                  # take over a build whose driver died
+```
+
+`--detach` submits a 1-CPU driver job (`[driver]` partition, QOS and walltime, 72 h by default)
+that drives the build exactly as `ebs build` would have. Only one driver at a time can drive a
+build: it holds a lease it renews every few minutes, so a second driver refuses until the lease
+expires. `--resume` reloads the plan from the CAS, re-attaches to the SLURM jobs already
+recorded and continues without resubmitting anything that is running or finished. Cancelling
+the driver job (`scancel`) cancels the build's jobs.
+

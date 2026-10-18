@@ -27,8 +27,9 @@ code or embedded from real files, and tutorials are executed in CI.
   `.gitignore`
 
 ## Out of scope
-- Documenting features whose task is not done (imports/`flow.lock`, provenance queries, CI
-  JUnit, dashboard, sandbox, S3). The generated roadmap lists them.
+- Documenting features whose task is not done (sandbox, S3, phase 3). The generated roadmap
+  lists them. (P2-02…P2-08 are documented since 2026-10-18: imports and `flow.lock`, provenance,
+  `--ci`/JUnit, `--detach`/`--resume`, the dashboard.)
 - Versioned docs (one "latest" tracking `main` until 1.0).
 
 ## Requirements
