@@ -13,7 +13,10 @@ every destructive step re-checks its condition in the database at the moment it 
 
 One run per domain at a time: a run that changes anything takes the domain's GC lock
 (`GcStore.gc_lock`, a row with an expiry, since PgBouncer's transaction pooling rules out
-session advisory locks) and renews it between phases; a second run fails with GcBusyError.
+session advisory locks) and renews it after the snapshot and at least every
+`GC_LOCK_RENEW_S` while it deletes; a second run fails with GcBusyError, and so does a run that
+finds its lock taken over (it stops; what it already did is safe, every step re-checks). The
+expiry uses the GC hosts' clocks: keep them in sync (NTP); the 6 h lock dwarfs any skew.
 A dry run takes no lock.
 
 A put of bytes that already exist keeps the stored object, which GC may claim between the put
@@ -48,6 +51,8 @@ _log = get_logger(__name__)
 
 GC_LOCK_TTL_S: Final = 6 * 3600
 """How long a GC run holds its domain's lock without renewing it (a crashed run frees it then)."""
+GC_LOCK_RENEW_S: Final = 300.0
+"""A run renews its lock at least this often while it applies its plan."""
 
 
 class GcCas(Protocol):
@@ -114,12 +119,19 @@ class _Lock:
     def __init__(self, store: GcStore, domain: str, clock: Clock) -> None:
         self._store, self._domain, self._clock = store, domain, clock
         self._owner = f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
+        self._taken = clock.monotonic()
+
+    def renew_due(self) -> None:
+        """Renew if GC_LOCK_RENEW_S passed since the last take; GcBusyError if it was lost."""
+        if self._clock.monotonic() - self._taken >= GC_LOCK_RENEW_S:
+            self.take()
 
     def take(self) -> None:
         """Take or renew the lock; GcBusyError while another run holds it."""
         held = self._store.gc_lock(
             self._domain, self._owner, now=self._clock.now(), ttl_s=GC_LOCK_TTL_S
         )
+        self._taken = self._clock.monotonic()
         if held.owner != self._owner:
             raise GcBusyError(
                 f"another ebs gc run ({held.owner}) is collecting domain {self._domain!r} "
@@ -153,7 +165,7 @@ def _collect(
     else:
         assert lock is not None
         lock.take()  # renewed after the snapshot, which can take long on a big CAS
-        rows_deleted, tombstoned, deleted = _apply(store, cas, snap, plan, config)
+        rows_deleted, tombstoned, deleted = _apply(store, cas, snap, plan, config, lock)
     report = GcReport(
         domain=domain,
         dry_run=dry_run,
@@ -210,9 +222,10 @@ def _collect(
 
 
 def _apply(
-    store: GcStore, cas: GcCas, snap: Snapshot, plan: SweepPlan, config: GcConfig
+    store: GcStore, cas: GcCas, snap: Snapshot, plan: SweepPlan, config: GcConfig, lock: _Lock
 ) -> tuple[int, tuple[Digest, ...], tuple[Digest, ...]]:
-    """Carry out `plan` in I15 order; returns (rows deleted, tombstoned, bytes deleted)."""
+    """Carry out `plan` in I15 order; returns (rows deleted, tombstoned, bytes deleted).
+    GcBusyError, mid-way, if another run took the lock over."""
     domain, now, graph = snap.domain, snap.now, snap.graph
     expired = store.gc_expire_leases(domain, now)
     if expired:
@@ -247,6 +260,8 @@ def _apply(
     if held:
         _log.info("gc.rows_kept_by_concurrent_use", domain=domain, objects=len(held))
 
+    lock.renew_due()
+
     # 2. Tombstones: the bytes wait for the grace period.
     tombstoned = tuple(d for d in plan.tombstone if d not in held)
     store.gc_tombstone(domain, tombstoned, now=now, delete_after=now + config.grace)
@@ -258,6 +273,7 @@ def _apply(
     for d in plan.due:
         if d in skipped:
             continue
+        lock.renew_due()
         if not store.gc_claim(domain, d, now):
             skipped |= graph.closure([d])  # a tree still in use keeps its children
             continue

@@ -512,8 +512,10 @@ re-validated on write (values must also pass `canonical_json`).
   domain's lock when free, expired or `owner`'s, and returns it as it stands: another owner means
   another run holds it) and `gc_unlock(domain, owner)` (**CONTRACT CHANGE**, revision 0013: one
   run per domain; a row with an expiry, as PgBouncer's transaction pooling rules out session
-  advisory locks; `collect` takes it for `GC_LOCK_TTL_S = 6 h`, renews it after the snapshot and
-  raises `GcBusyError` when busy; a dry run takes none),
+  advisory locks; `collect` takes it for `GC_LOCK_TTL_S = 6 h`, renews it after the snapshot and at
+  least every `GC_LOCK_RENEW_S = 300 s` while it deletes, and raises `GcBusyError` when busy
+  or when its lock was taken over (it stops there; expiry uses the GC hosts' clocks, keep them
+  in NTP sync); a dry run takes none),
   `gc_delete_cache_entries(domain, keys, *, unused_before) -> deleted keys` (re-checks
   `last_access <= unused_before`), `gc_tombstone(domain, digests, *, now, delete_after)`
   (existing tombstones kept), `gc_drop_tombstones`, `gc_claim(domain, digest, now) -> bool`
