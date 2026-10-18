@@ -210,7 +210,19 @@ def _valid_row(conn: sa.Connection, table: str) -> dict[str, object]:
             "logical_path": "x",
             "object_id": GOOD,
         },
-        "events": {"build_id": build_id, "ts": now, "type": "running", "data": "{}"},
+        # 0008 (P2-05): stored_at is the partition key; the row needs its month's partition.
+        "events": {
+            "build_id": build_id,
+            "ts": now,
+            "type": "running",
+            "data": "{}",
+            "stored_at": conn.execute(
+                sa.text(
+                    f"SELECT CAST(:t AS timestamptz) FROM {SCHEMA}.ensure_events_partition(:t)"
+                ),
+                {"t": now},
+            ).scalar_one(),
+        },
     }
     return rows[table]
 

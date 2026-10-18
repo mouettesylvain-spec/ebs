@@ -54,7 +54,7 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | --- | --- | --- | --- | --- |
 | P2-01 | Domains and authorization | P1-06 | 1 | review |
 | P2-02 | Releases and channels | P1-09 | 1 | review |
-| P2-05 | Metadata service hardening (OIDC, SSE, pagination) | P1-06 | 1 | todo |
+| P2-05 | Metadata service hardening (OIDC, SSE, pagination) | P1-06 | 1 | review |
 | P2-03 | Imports and `flow.lock` | P2-02 | 2 | todo |
 | P2-04 | Provenance queries (`why`, `used-by`, `tests`) | P2-02 | 2 | todo |
 | P2-07 | GitLab CI integration (`--ci`, JUnit) | P2-02 | 2 | todo |
