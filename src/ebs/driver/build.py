@@ -1,11 +1,11 @@
 """One build from plan to final status: the build record, events and the scheduler (P0-15 R10).
 
 `run_build` stores the plan in the CAS, creates the build record (git info of the flow repo,
-user, CI job, cache mode) with the releases it imports (`release_imports`, P2-03), adds the
-actions, runs the `Scheduler` and finishes the build with its status and per-state counts.
-With `handle_sigint`, Ctrl-C cancels submitted work and records the build as `cancelled` (R8).
-The usage of the actions that ran and passed is appended to `.ebs/usage.jsonl` for `ebs plan`'s
-tuning hints (P1-05 R4).
+user, CI job and its metadata, cache mode) with the releases it imports (`release_imports`,
+P2-03), adds the actions, runs the `Scheduler` and finishes the build with its status and
+per-state counts. With `handle_sigint`, Ctrl-C cancels submitted work and records the build as
+`cancelled` (R8). The usage of the actions that ran and passed is appended to `.ebs/usage.jsonl`
+for `ebs plan`'s tuning hints (P1-05 R4).
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from __future__ import annotations
 import signal
 import threading
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -88,6 +88,7 @@ def run_build(
     user: str,
     config: DriverConfig | None = None,
     ci_job: str | None = None,
+    ci: Mapping[str, str] | None = None,
     clock: Clock | None = None,
     retry: RetryPolicy | None = None,
     handle_sigint: bool = False,
@@ -121,7 +122,10 @@ def run_build(
     lease.start([plan_digest, *(r.id for a in plan.actions for r in a.inputs if r.id is not None)])
     path = events_path(workdir, uuid)
     events = EventLog(store, build, path, clock)
-    events.emit("build_started", uuid=str(uuid), user=user, cache_mode=config.cache_mode)
+    started: dict[str, object] = {"uuid": str(uuid), "user": user, "cache_mode": config.cache_mode}
+    if ci:  # P2-07 R1: the CI job's project, pipeline, job URL and commit
+        started["ci"] = dict(sorted(ci.items()))
+    events.emit("build_started", None, **started)
     events.emit("plan_ready", plan=str(plan_digest), actions=len(plan.actions))
     scheduler = Scheduler(
         plan,

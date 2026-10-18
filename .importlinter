@@ -2,7 +2,7 @@
 # tests/unit/test_layering.py. Lower layers never import higher ones.
 #
 #   L0 core · L1 config, flow, cas, toolchain.fingerprint · L2 sources, plan, rules, meta (store)
-#   L3 exec, runner, sandbox, gc, release, toolchain (registry) · L4 driver, meta.service · L5 cli
+#   L3 exec, runner, sandbox, gc, release, ci, toolchain (registry) · L4 driver, meta.service · L5 cli
 #
 # Within L2, plan sits above sources and rules: the planner drives both, and neither may import
 # plan (P0-08). Siblings separated by ':' may import each other.
@@ -21,7 +21,7 @@ type = layers
 layers =
     ebs.cli
     ebs.driver
-    ebs.exec : ebs.runner : ebs.sandbox : ebs.gc : ebs.release
+    ebs.exec : ebs.runner : ebs.sandbox : ebs.gc : ebs.release : ebs.ci
     ebs.plan
     ebs.sources : ebs.rules
     ebs.config : ebs.domains : ebs.flow : ebs.cas
@@ -83,6 +83,7 @@ source_modules =
     ebs.sandbox
     ebs.gc
     ebs.release
+    ebs.ci
 forbidden_modules =
     ebs.meta.service
 
