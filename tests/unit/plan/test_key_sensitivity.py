@@ -62,6 +62,19 @@ def _input_id(spec: ActionSpec, data: st.DataObject) -> ActionSpec:
     return _replace(spec, inputs=(dataclasses.replace(first, id=new), *spec.inputs[1:]))
 
 
+def _input_executable(spec: ActionSpec, data: st.DataObject) -> ActionSpec:
+    if not spec.inputs:
+        spec = _new_input(spec, data)
+    first = spec.inputs[0]
+    flipped = dataclasses.replace(first, executable=not first.executable)
+    return _replace(spec, inputs=(flipped, *spec.inputs[1:]))
+
+
+def _input_writable(spec: ActionSpec, data: st.DataObject) -> ActionSpec:
+    inputs = tuple(dataclasses.replace(i, writable=not i.writable) for i in spec.inputs)
+    return _replace(spec, inputs=inputs)
+
+
 def _input_path(spec: ActionSpec, data: st.DataObject) -> ActionSpec:
     if not spec.inputs:
         return _new_input(spec, data)
@@ -152,6 +165,7 @@ INCLUDED: dict[str, Mutation] = {
     "inputs.id": _input_id,
     "inputs.path": _input_path,
     "inputs.added": _new_input,
+    "inputs.executable": _input_executable,  # key schema 2
     "outputs.path": lambda s, d: _output(s, d, "path"),
     "outputs.type": lambda s, d: _output(s, d, "type"),
     "outputs.name": lambda s, d: _output(s, d, "name"),
@@ -190,6 +204,7 @@ EXCLUDED: dict[str, Mutation] = {
         s, resources=resources(None, None, None, retry_on_timeout=d.draw(st.booleans()))
     ),
     "debug": lambda s, d: _replace(s, debug=DebugSpec(("*.log",), 1 << 20, True)),
+    "inputs.writable": _input_writable,  # P1-04: how an input is staged, not its content
     "domain": lambda s, d: _replace(s, domain="other-nda"),
     "runtime_env": lambda s, d: _replace(s, runtime_env={"MAKEFLAGS": "-j8"}),
     "toolchain.name_module": lambda s, d: _replace(

@@ -94,6 +94,13 @@ def samples() -> dict[str, ActionSpec]:
                     hash_bytes(b"mk"),
                 ),
                 InputRef("rtl/alu.sv", "file", SourceInput("rtl", "rtl/**"), hash_bytes(b"alu")),
+                InputRef(  # key schema 2: the executable bit
+                    "flows/lint/run.sh",
+                    "file",
+                    SourceInput("ebs.workdir", "flows/lint/**"),
+                    hash_bytes(b"run"),
+                    executable=True,
+                ),
             ),
             outputs=(OutputSpec("reports", "reports/lint", "dir"),),
             runtime_env={"MAKEFLAGS": "-j$EBS_CPUS"},
