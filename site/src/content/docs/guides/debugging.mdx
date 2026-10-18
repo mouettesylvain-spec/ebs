@@ -44,8 +44,12 @@ default to the latest build in the current directory (`--build` picks another).
    ```sh
    ebs reproduce 'sim[seed=7,test=random]' --run            # rerun and compare the outputs
    ebs reproduce 'sim[seed=7,test=random]' --interactive    # a bash in the sandbox, with its env
-   ebs reproduce 'sim[seed=7,test=random]' --salloc --interactive   # same, on a compute node
+   ebs reproduce 'sim[seed=7,test=random]' --salloc --interactive --time 4h   # on a compute node
    ```
+
+   `--run` exits 1 when an output differs from the recorded one, so a CI job can check that an
+   action reproduces. `--salloc` asks for the action's own resources; `--time` gives a GUI
+   session more than the action's time limit.
 
    In an interactive sandbox you can open the tool's GUI on the failing test, add prints, or
    run the command by hand. Nothing you do there changes the build or the cache.
