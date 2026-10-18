@@ -979,7 +979,10 @@ states.job_status(info: SlurmJobInfo, *, infra_reason: InfraReason | None = None
   (`SUBMIT_TAG`), a token unique to the submission, and after each transient sbatch failure
   runs `squeue --json --states=all --me --name=<job name>`: a job carrying the token means the
   controller accepted an earlier attempt whose reply was lost, so its id is returned instead
-  of submitting again (an array returns its array job id). Without a comment, plain retries.
+  of submitting again (an array returns its array job id). The lookup can miss a request still
+  being registered, so after a retried submission `submit` looks once more and `scancel`s every
+  job with the token but the one it returns. Best effort: a failing lookup or cancel is logged.
+  Without a comment, plain retries.
 - argv is always a list; options are single `--name=value` elements; `--export=NONE` always
   (the job's environment is the env file only); `--no-requeue` unless `requeue=True` (the driver
   retries, a SLURM requeue would run the action twice).

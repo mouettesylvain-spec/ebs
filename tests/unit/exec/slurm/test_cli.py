@@ -583,7 +583,7 @@ def test_submit_finds_job_of_lost_reply() -> None:
     runner = FakeRunner(sbatch=[err(TIMEOUT)], squeue=squeue)
     job = make_cli(runner).submit(SCRIPT, SbatchOptions(job_name="j", comment=UUID))
     assert job == JobId("41")
-    assert runner.commands() == ["sbatch", "squeue"]
+    assert runner.commands() == ["sbatch", "squeue", "squeue"]  # found; then no extra job
     assert re.fullmatch(rf"{UUID} ebs-submit=[0-9a-f]{{16}}", _comment(runner.calls[0]))
 
 
@@ -605,11 +605,35 @@ def test_submit_finds_array_of_lost_reply() -> None:
 
 # Nothing was accepted: sbatch is retried with the same tagged comment.
 def test_submit_retries_when_nothing_was_accepted() -> None:
-    runner = FakeRunner(sbatch=[err(TIMEOUT), ok("42\n")], squeue=[ok(_doc())])
+    runner = FakeRunner(sbatch=[err(TIMEOUT), ok("42\n")], squeue=[ok(_doc()), ok(_doc())])
     assert make_cli(runner).submit(SCRIPT, SbatchOptions(job_name="j", comment=UUID)) == "42"
-    assert runner.commands() == ["sbatch", "squeue", "sbatch"]
+    assert runner.commands() == ["sbatch", "squeue", "sbatch", "squeue"]
     first, second = (c for c in runner.calls if c[0] == "sbatch")
     assert _comment(first) == _comment(second)
+
+
+# Review: the lookup missed the first attempt (still being registered), the retry submitted
+# again and then the first attempt landed: the extra job, with our token, is cancelled.
+def test_late_first_attempt_is_cancelled() -> None:
+    def squeue(argv: list[str]) -> CommandResult:
+        if runner.commands().count("squeue") == 1:
+            return ok(_doc())  # the lookup after the timeout: nothing yet
+        tagged = _comment(runner.calls[0])
+        return ok(_doc(_squeue_job(41, comment=tagged), _squeue_job(42, comment=tagged)))
+
+    runner = FakeRunner(sbatch=[err(TIMEOUT), ok("42\n")], squeue=squeue, scancel=[ok()])
+    assert make_cli(runner).submit(SCRIPT, SbatchOptions(job_name="j", comment=UUID)) == "42"
+    assert runner.commands() == ["sbatch", "squeue", "sbatch", "squeue", "scancel"]
+    assert runner.calls[-1][1:] == ["41"]
+
+
+# Review: a lookup that fails is no reason to give up the submission (best effort).
+def test_failed_lookup_does_not_abort_the_submission() -> None:
+    runner = FakeRunner(
+        sbatch=[err(TIMEOUT), ok("43\n")],
+        squeue=[err("squeue: error: Invalid user"), err("squeue: error: Invalid user")],
+    )
+    assert make_cli(runner).submit(SCRIPT, SbatchOptions(job_name="j", comment=UUID)) == "43"
 
 
 # Without a comment there is nothing to find a job by: plain retries, no squeue call.

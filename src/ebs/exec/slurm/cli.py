@@ -9,7 +9,10 @@ non-zero exit raises `ExecutorError` at once, quoting SLURM's message.
 Retrying `sbatch` after a socket timeout could submit a job twice if the controller accepted the
 first request before the reply was lost. `submit` therefore tags a job that has a comment (the
 build UUID) with a token, `<comment> ebs-submit=<token>`, and after each transient failure looks
-for a job carrying it (`squeue --me --name=<job name>`) before trying again.
+for a job carrying it (`squeue --me --name=<job name>`) before trying again. That lookup can
+miss a request the controller is still registering, so after a retried submission it looks
+once more and cancels any job with the token other than the one returned. Best effort: a
+failing lookup or cancel is logged, never fatal.
 """
 
 from __future__ import annotations
@@ -21,7 +24,6 @@ import secrets
 import subprocess
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import Annotated, Final, Protocol, TypeVar
 
@@ -441,10 +443,19 @@ class SlurmCli:
         """Submit `script` with `sbatch --parsable`; returns the (array) job id. A job with a
         comment is submitted once even when a transient failure hid an accepted request."""
         recover: Callable[[], CommandResult | None] | None = None
+        failed: list[None] = []  # one entry per transient sbatch failure
         if opts.comment is not None:
             tagged = f"{opts.comment} {SUBMIT_TAG}{secrets.token_hex(8)}"
             opts = opts.model_copy(update={"comment": tagged})
-            recover = partial(self._submitted, opts)
+
+            def recover() -> CommandResult | None:
+                failed.append(None)
+                found = self._tagged(opts)
+                if not found:
+                    return None
+                log.warning("sbatch reply lost; the job was submitted", job_id=found[0])
+                return CommandResult(0, f"{found[0]}\n", "")
+
         result = self._run(sbatch_argv(script, opts, command=self._cmd("sbatch")), recover=recover)
         first = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
         job = first.split(";", 1)[0].strip()
@@ -454,22 +465,31 @@ class SlurmCli:
                 "is the SLURM client wrapped by a site script?"
             )
         log.info("submitted", job_id=job, job_name=opts.job_name)
+        if failed:
+            # An attempt the lookup missed (the controller was still registering it) may land
+            # after the retry: keep the job we return, cancel any other with our token.
+            extra = [j for j in self._tagged(opts) if j != job]
+            if extra:
+                log.warning("sbatch submitted twice; cancelling the extra jobs", jobs=extra)
+                try:
+                    self.cancel([JobId(j) for j in extra])
+                except ExecutorError as exc:
+                    log.warning("cancelling the extra jobs failed", jobs=extra, error=str(exc))
         return JobId(job)
 
-    def _submitted(self, opts: SbatchOptions) -> CommandResult | None:
-        """The job an earlier attempt of this submission created, as sbatch would print it."""
+    def _tagged(self, opts: SbatchOptions) -> list[str]:
+        """Ids of the (array) jobs carrying this submission's tagged comment, oldest first;
+        best effort: a lookup that fails finds nothing."""
         argv = [
             self._cmd("squeue"), "--json", "--states=all", "--me", f"--name={opts.job_name}"
         ]  # fmt: skip
-        jobs = self._parse(self._run(argv).stdout, SqueueResponse, "squeue").jobs
-        for job in jobs:
-            if job.comment == opts.comment:
-                found = job.array_job_id.value or job.job_id
-                log.warning(
-                    "sbatch reply lost; the job was submitted", job_id=found, job_name=opts.job_name
-                )
-                return CommandResult(0, f"{found}\n", "")
-        return None
+        try:
+            jobs = self._parse(self._run(argv).stdout, SqueueResponse, "squeue").jobs
+        except ExecutorError as exc:
+            log.warning("cannot look for an earlier attempt of sbatch", error=str(exc))
+            return []
+        found = {str(j.array_job_id.value or j.job_id) for j in jobs if j.comment == opts.comment}
+        return sorted(found, key=int)
 
     # squeue / sacct ----------------------------------------------------------------------
 
