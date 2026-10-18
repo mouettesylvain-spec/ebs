@@ -295,7 +295,7 @@ def downstream(
 
 
 def used_by(store: ReleaseBackend, release: ReleaseView, *, depth: int = DEFAULT_DEPTH) -> UsedBy:
-    """Builds and releases downstream of `release` (not its own build), transitively."""
+    """Builds and releases downstream of `release` (not its own build, not itself), transitively."""
     lineage = downstream(store, release, depth=depth)
     builds: dict[tuple[str, int], UsedBuild] = {}
     releases: dict[tuple[str, int], UsedRelease] = {}
@@ -310,6 +310,8 @@ def used_by(store: ReleaseBackend, release: ReleaseView, *, depth: int = DEFAULT
             ))  # fmt: skip
         made = {e.object_id for e in graph.edges if e.direction == "out"}
         for r in graph.releases:
+            if (graph.domain, r.release) == (release.domain, release.id):
+                continue  # its own outputs derive from each other inside its build
             if (graph.domain, r.release) in copies:
                 via: Literal["outputs", "export"] = "export"
             elif r.object_id in made:
