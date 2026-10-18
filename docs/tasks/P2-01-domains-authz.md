@@ -54,5 +54,7 @@ users only see domains whose Unix group they belong to, through every interface.
   (often 2755), so a second member cannot add shards: create them 2770 explicitly. The
   fail-closed middleware stops a response, not the writes of a route that forgot `check()`.
   `ResultManifest.summary.first_error` (a log line) is the one place log text reaches the
-  database; decide whether NDA sites must redact it. Release reads by name (`list_releases`,
+  database; decide whether NDA sites must redact it. **Decided (human, 2026-10-18): keep it as
+  is.** The metadata database is inside the NDA trust boundary (restricted access, encrypted
+  backups), so the line stays available for failure clustering, `ebs debug` and JUnit. Release reads by name (`list_releases`,
   channels) use the domain in the request; `ebs fetch`/`logs` rely on file permissions only.

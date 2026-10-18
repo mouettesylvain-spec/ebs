@@ -73,4 +73,5 @@ code or embedded from real files, and tutorials are executed in CI.
   `astro`, `@astrojs/starlight` (docs framework, search, sidebar),
   `animejs` (scene animations), `starlight-links-validator` (R9), `@astrojs/check` and
   `typescript` (R9). No Python dependency is added.
-- The repository admin must set Settings → Pages → Source to "GitHub Actions" once.
+- The repository admin must set Settings → Pages → Source to "GitHub Actions" once. **Done
+  (2026-10-18).**
