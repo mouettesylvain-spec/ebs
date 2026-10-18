@@ -440,6 +440,15 @@ release_imports = sa.Table(  # which release each import alias of a build used (
 
 # --- Phase 2: detached and resumed drivers (P2-08, revision 0011) ---------------------------------
 
+gc_locks = sa.Table(  # one GC run per domain (0013); renewed between the run's phases
+    "gc_locks",
+    metadata,
+    sa.Column("domain", sa.Text, primary_key=True),
+    sa.Column("owner", sa.Text, nullable=False),
+    sa.Column("expires_at", _TS, nullable=False),
+    sa.CheckConstraint("length(owner) BETWEEN 1 AND 256", name="owner_length"),
+)
+
 driver_leases = sa.Table(  # one live driver per build; renewed by the driver's heartbeat
     "driver_leases",
     metadata,

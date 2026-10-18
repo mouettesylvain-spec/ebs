@@ -60,6 +60,19 @@ def test_gc_domain_and_config(tmp_path: Path) -> None:
     assert "grace_hours" in wrong.output
 
 
+# One GC run per domain: a second `ebs gc` exits 2 naming the run that holds the lock.
+def test_gc_busy(tmp_path: Path) -> None:
+    write_site(tmp_path, config_extra=GC_DOMAINS)
+    site = Site(tmp_path, TestServices(tmp_path))
+    store = site.services.memory_store
+    store.gc_lock("test", "gc-host:42:abcd", now=site.services.clock.now(), ttl_s=600)
+    busy = site.invoke(["gc", "--domain", "test"])
+    assert busy.exit_code == ExitCode.USAGE
+    assert "gc-host:42:abcd" in busy.output
+    assert store.gc_runs == []
+    assert site.invoke(["gc", "--domain", "test", "--dry-run"]).exit_code == ExitCode.OK
+
+
 # R7: GC needs direct database access as the service account, never the HTTP service.
 def test_gc_needs_postgres(tmp_path: Path) -> None:
     write_site(

@@ -11,6 +11,11 @@ every destructive step re-checks its condition in the database at the moment it 
   put registers (touches) its objects, so a build that starts using an object during the sweep
   keeps it.
 
+One run per domain at a time: a run that changes anything takes the domain's GC lock
+(`GcStore.gc_lock`, a row with an expiry, since PgBouncer's transaction pooling rules out
+session advisory locks) and renews it between phases; a second run fails with GcBusyError.
+A dry run takes no lock.
+
 A put of bytes that already exist keeps the stored object, which GC may claim between the put
 and its registration. Writers therefore check the CAS again after registering (after which no
 claim can succeed): the driver stores a vanished plan again (`ebs.gc.access.put_registered`),
@@ -19,13 +24,17 @@ the runner fails the attempt as an infrastructure error and the retry stores its
 
 from __future__ import annotations
 
+import os
+import secrets
+import socket
 from collections.abc import Iterator
 from datetime import UTC, timedelta
-from typing import Protocol
+from typing import Final, Protocol
 
 from ebs.cas.api import ObjectKind
 from ebs.core.clock import Clock
 from ebs.core.digest import Digest
+from ebs.core.errors import GcBusyError
 from ebs.core.log import get_logger
 from ebs.core.tree import TreeManifest
 from ebs.gc.report import GcReport, QuotaReport, reclaimable
@@ -33,9 +42,12 @@ from ebs.gc.roots import TreeGraph, read_graph
 from ebs.gc.sweep import GcConfig, Snapshot, SweepPlan, entry_refs, plan_sweep
 from ebs.meta.api import TOUCH_INTERVAL_S, BlobRef, GcRun, GcStore
 
-__all__ = ["GcCas", "collect", "take_snapshot"]
+__all__ = ["GC_LOCK_TTL_S", "GcCas", "collect", "take_snapshot"]
 
 _log = get_logger(__name__)
+
+GC_LOCK_TTL_S: Final = 6 * 3600
+"""How long a GC run holds its domain's lock without renewing it (a crashed run frees it then)."""
 
 
 class GcCas(Protocol):
@@ -86,8 +98,50 @@ def collect(
     config: GcConfig | None = None,
     dry_run: bool = False,
 ) -> GcReport:
-    """Run GC once over `cas.domain`; with `dry_run`, report without changing anything."""
-    config = config or GcConfig()
+    """Run GC once over `cas.domain`; with `dry_run`, report without changing anything.
+    GcBusyError if another run holds the domain's GC lock."""
+    if dry_run:
+        return _collect(store, cas, clock=clock, config=config or GcConfig(), dry_run=True)
+    lock = _Lock(store, cas.domain, clock)
+    lock.take()
+    try:
+        return _collect(store, cas, clock=clock, config=config or GcConfig(), lock=lock)
+    finally:
+        lock.release()
+
+
+class _Lock:
+    def __init__(self, store: GcStore, domain: str, clock: Clock) -> None:
+        self._store, self._domain, self._clock = store, domain, clock
+        self._owner = f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
+
+    def take(self) -> None:
+        """Take or renew the lock; GcBusyError while another run holds it."""
+        held = self._store.gc_lock(
+            self._domain, self._owner, now=self._clock.now(), ttl_s=GC_LOCK_TTL_S
+        )
+        if held.owner != self._owner:
+            raise GcBusyError(
+                f"another ebs gc run ({held.owner}) is collecting domain {self._domain!r} "
+                f"until {held.expires_at.isoformat()} at the latest; wait for it to finish"
+            )
+
+    def release(self) -> None:
+        try:
+            self._store.gc_unlock(self._domain, self._owner)
+        except Exception as exc:  # the lock expires on its own
+            _log.warning("gc.unlock_failed", domain=self._domain, error=str(exc))
+
+
+def _collect(
+    store: GcStore,
+    cas: GcCas,
+    *,
+    clock: Clock,
+    config: GcConfig,
+    dry_run: bool = False,
+    lock: _Lock | None = None,
+) -> GcReport:
     snap = take_snapshot(store, cas, clock)
     plan = plan_sweep(snap, config)
     domain, now = snap.domain, snap.now
@@ -97,6 +151,8 @@ def collect(
         tombstoned = plan.tombstone
         deleted = plan.due
     else:
+        assert lock is not None
+        lock.take()  # renewed after the snapshot, which can take long on a big CAS
         rows_deleted, tombstoned, deleted = _apply(store, cas, snap, plan, config)
     report = GcReport(
         domain=domain,

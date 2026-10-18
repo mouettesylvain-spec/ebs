@@ -102,6 +102,7 @@ __all__ = [
     "GcAttribution",
     "GcBlob",
     "GcCacheEntry",
+    "GcLock",
     "GcRoots",
     "GcRun",
     "GcStore",
@@ -884,9 +885,18 @@ class GcCacheEntry:
 class GcRoots:
     """Digests GC must never delete (with everything below them, I15)."""
 
-    pinned: frozenset[Digest]  # plan, outputs and logs of pinned builds
+    pinned: frozenset[Digest]  # plan, final plan, outputs and logs of pinned builds
     leased: frozenset[Digest]  # objects of live leases
     released: frozenset[Digest]  # content digests of release outputs, yanked ones too (P2-02)
+
+
+@dataclass(frozen=True, slots=True)
+class GcLock:
+    """Who runs GC on a domain, until when (one run per domain at a time)."""
+
+    domain: str
+    owner: str  # host:pid:token
+    expires_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -969,6 +979,16 @@ class GcStore(Protocol):
         ...
 
     def gc_record_run(self, run: GcRun) -> None: ...
+
+    def gc_lock(self, domain: str, owner: str, *, now: datetime, ttl_s: int) -> GcLock:
+        """Take the domain's GC lock until `now + ttl_s` if it is free, expired or already
+        `owner`'s (a renewal); returns the lock as it now stands, so another owner means
+        another GC run holds it. `1 <= ttl_s <= MAX_LEASE_TTL_S`."""
+        ...
+
+    def gc_unlock(self, domain: str, owner: str) -> None:
+        """Drop the domain's GC lock if `owner` holds it, else do nothing."""
+        ...
 
 
 # --- releases and channels (P2-02) ---------------------------------------------------------------

@@ -500,6 +500,12 @@ re-validated on write (values must also pass `canonical_json`).
   outputs and logs of pinned builds; leased: live leases; released: release outputs, P2-02), `gc_tombstones`,
   `gc_attribution` (`GcAttribution{digest, build, project, step}` for every output and log of a
   recorded result), `register_blobs`, `gc_expire_leases(domain, now) -> int`,
+  `gc_lock(domain, owner, *, now, ttl_s) -> GcLock{domain, owner, expires_at}` (takes the
+  domain's lock when free, expired or `owner`'s, and returns it as it stands: another owner means
+  another run holds it) and `gc_unlock(domain, owner)` (**CONTRACT CHANGE**, revision 0013: one
+  run per domain; a row with an expiry, as PgBouncer's transaction pooling rules out session
+  advisory locks; `collect` takes it for `GC_LOCK_TTL_S = 6 h`, renews it after the snapshot and
+  raises `GcBusyError` when busy; a dry run takes none),
   `gc_delete_cache_entries(domain, keys, *, unused_before) -> deleted keys` (re-checks
   `last_access <= unused_before`), `gc_tombstone(domain, digests, *, now, delete_after)`
   (existing tombstones kept), `gc_drop_tombstones`, `gc_claim(domain, digest, now) -> bool`
@@ -1261,7 +1267,7 @@ cancels submitted work, keeps results of jobs that already finished, marks the r
 `TreeError`, `PlanError`, `CasError`, `MetadataError`, `ExecutorError`, `RuleError`, `SandboxError`,
 `SourceError` (→ `SourceEscapeError`), `ToolchainError`, `ReleaseError` (P2-02: a broken release,
 channel or export rule; exit 2), `DriverBusyError` (P2-08: the build has another live driver, or
-is finished; exit 2).
+is finished; exit 2), `GcBusyError` (another `ebs gc` run holds the domain's GC lock; exit 2).
 CLI exit codes: `0` ok, `1` build finished with failed actions, `2` usage/flow error,
 `3` infrastructure error (retries exhausted), `4` internal bug (with "please report" hint),
 `130` cancelled by the user (Ctrl-C; 128 + SIGINT, P0-15).

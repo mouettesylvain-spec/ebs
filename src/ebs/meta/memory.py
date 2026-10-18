@@ -75,6 +75,7 @@ from ebs.meta.api import (
     GcAttribution,
     GcBlob,
     GcCacheEntry,
+    GcLock,
     GcRoots,
     GcRun,
     LeaseId,
@@ -151,6 +152,7 @@ class InMemoryMetadataStore:
         self._next_lease = 1
         self._pins: dict[int, tuple[str, str, datetime]] = {}  # build -> by, reason, at
         self._drivers: dict[int, DriverLease] = {}  # P2-08: build -> its driver lease
+        self._gc_locks: dict[str, GcLock] = {}  # domain -> the GC run holding it
         self._tombstones: dict[tuple[str, str], Tombstone] = {}
         self._policies: dict[str, DomainPolicy] = {}
         self.gc_runs: list[GcRun] = []
@@ -924,6 +926,24 @@ class InMemoryMetadataStore:
         with self._lock:
             self._domains.add(checked.domain)
             self.gc_runs.append(checked)
+
+    def gc_lock(self, domain: str, owner: str, *, now: datetime, ttl_s: int) -> GcLock:
+        check_domain(domain)
+        check_driver_owner(owner, "gc_lock")
+        check_lease_ttl(ttl_s)
+        with self._lock:
+            held = self._gc_locks.get(domain)
+            if held is None or held.expires_at <= now or held.owner == owner:
+                held = GcLock(domain, owner, now + timedelta(seconds=ttl_s))
+                self._gc_locks[domain] = held
+            return held
+
+    def gc_unlock(self, domain: str, owner: str) -> None:
+        check_domain(domain)
+        with self._lock:
+            held = self._gc_locks.get(domain)
+            if held is not None and held.owner == owner:
+                del self._gc_locks[domain]
 
     # --- events ---------------------------------------------------------------------------------
 

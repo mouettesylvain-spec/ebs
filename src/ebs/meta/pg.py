@@ -82,6 +82,7 @@ from ebs.meta.api import (
     GcAttribution,
     GcBlob,
     GcCacheEntry,
+    GcLock,
     GcRoots,
     GcRun,
     LeaseId,
@@ -112,6 +113,7 @@ from ebs.meta.models import (
     driver_leases,
     events,
     exports,
+    gc_locks,
     gc_runs,
     lease_objects,
     leases,
@@ -1605,6 +1607,35 @@ class PgMetadataStore:
             conn.execute(sa.delete(t).where(t.c.domain == domain, t.c.digest == key))
             conn.execute(sa.delete(b).where(b.c.domain == domain, b.c.digest == key))
         return True
+
+    def gc_lock(self, domain: str, owner: str, *, now: datetime, ttl_s: int) -> GcLock:
+        check_domain(domain)
+        check_driver_owner(owner, "gc_lock")
+        check_lease_ttl(ttl_s)
+        g = gc_locks
+        stmt = pg_insert(g).values(
+            domain=domain, owner=owner, expires_at=now + timedelta(seconds=ttl_s)
+        )
+        with self._tx(f"gc_lock {domain}") as conn:
+            # Concurrent runs serialize on the row; at most one takes a free or expired lock.
+            conn.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=[g.c.domain],
+                    set_={"owner": stmt.excluded.owner, "expires_at": stmt.excluded.expires_at},
+                    where=sa.or_(g.c.expires_at <= now, g.c.owner == stmt.excluded.owner),
+                )
+            )
+            row = conn.execute(
+                sa.select(g.c.owner, g.c.expires_at).where(g.c.domain == domain)
+            ).one()
+        return GcLock(domain, str(row.owner), row.expires_at)
+
+    def gc_unlock(self, domain: str, owner: str) -> None:
+        check_domain(domain)
+        with self._tx(f"gc_unlock {domain}") as conn:
+            conn.execute(
+                sa.delete(gc_locks).where(gc_locks.c.domain == domain, gc_locks.c.owner == owner)
+            )
 
     def gc_record_run(self, run: GcRun) -> None:
         checked = check_run(run)
