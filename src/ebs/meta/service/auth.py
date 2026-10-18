@@ -74,13 +74,14 @@ class NotFoundError(MetadataError):
 
 @dataclass(frozen=True)
 class Principal:
-    """Who is calling: a Unix user proven by MUNGE, or the holder of a bearer token.
+    """Who is calling: a Unix user proven by MUNGE, the holder of a bearer token, or a
+    dashboard user logged in through OIDC (`session`, P2-05), named by their Unix user name.
 
     `authorized` records the operations authorized during the request (`ServiceDeps.check`); the
     service refuses to send a success that none was (fail closed, P2-01 R1)."""
 
     name: str
-    via: Literal["munge", "token"]
+    via: Literal["munge", "token", "session"]
     token_kind: TokenKind | None = None
     team: str | None = None
     authorized: list[str] = field(default_factory=list, compare=False, repr=False, hash=False)

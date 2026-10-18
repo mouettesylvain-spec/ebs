@@ -1,0 +1,12 @@
+# Runs ebs-meta-prune.service daily (P2-05 R6).
+
+[Unit]
+Description=Daily EBS event retention
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

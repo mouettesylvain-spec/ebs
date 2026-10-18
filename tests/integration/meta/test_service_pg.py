@@ -65,7 +65,7 @@ def test_api_tokens_checks(engine: sa.Engine, column: str, value: str) -> None:
 # R6
 def test_readiness(pg_server: URL, pg_url: URL, engine: sa.Engine) -> None:
     assert PgReadiness(engine).check() is None
-    assert "0008_release_imports" in migration_heads()
+    assert "0009_release_imports" in migration_heads()
     with fresh_database(pg_server) as empty:
         fresh = sa.create_engine(empty, poolclass=sa.pool.NullPool)
         try:

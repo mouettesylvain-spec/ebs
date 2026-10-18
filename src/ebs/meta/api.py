@@ -40,6 +40,7 @@ __all__ = [
     "CHANNEL_PATTERN",
     "DIGEST_SQL_PATTERN",
     "DOMAIN_PATTERN",
+    "EVENT_PAGE_MAX",
     "EVENT_TYPE_PATTERN",
     "FINAL_BUILD_STATUSES",
     "IMPORT_ALIAS_PATTERN",
@@ -79,6 +80,7 @@ __all__ = [
     "DomainPolicy",
     "ErrorBody",
     "Event",
+    "EventReader",
     "EventType",
     "ExportList",
     "ExportRecord",
@@ -115,6 +117,7 @@ __all__ = [
     "ResultManifest",
     "RunnerInfo",
     "StateChange",
+    "StoredEvent",
     "Tombstone",
     "ToolchainCreate",
     "ToolchainList",
@@ -677,6 +680,7 @@ class ActionList(BaseModel):
     model_config = _WIRE
 
     actions: list[ActionRow]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 class CacheHits(BaseModel):
@@ -750,6 +754,7 @@ class ToolchainList(BaseModel):
     model_config = _WIRE
 
     toolchains: list[ToolchainRecord]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 # --- garbage collection (P1-09) ------------------------------------------------------------------
@@ -1115,12 +1120,14 @@ class ReleaseImportList(BaseModel):
     model_config = _WIRE
 
     imports: list[ReleaseImport]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 class ReleaseList(BaseModel):
     model_config = _WIRE
 
     releases: list[ReleaseView]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 class ChannelList(BaseModel):
@@ -1135,6 +1142,7 @@ class ChannelHistory(BaseModel):
     model_config = _WIRE
 
     moves: list[ChannelMove]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 class BuildList(BaseModel):
@@ -1147,3 +1155,45 @@ class ExportList(BaseModel):
     model_config = _WIRE
 
     exports: list[ExportRecord]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
+
+
+# --- event stream (P2-05) ------------------------------------------------------------------------
+
+EVENT_PAGE_MAX: Final = 1000
+"""The most events one `events_after` call returns."""
+
+
+class StoredEvent(BaseModel):
+    """An event with its id in the `events` table. Ids grow in commit order within a domain
+    (the stores serialize the inserts of a domain), so `events_after(id)` resumes a stream
+    without gaps: the SSE `id:` field (`Last-Event-ID`)."""
+
+    model_config = _FROZEN
+
+    id: StrictInt
+    event: Event
+
+
+class EventReader(Protocol):
+    """What the service's event stream reads (P2-05 R2, R6). Only the PostgreSQL and in-memory
+    stores implement it: the stream is served by the metadata service, never read over HTTP as
+    a store."""
+
+    def events_after(
+        self,
+        after: int,
+        *,
+        build: BuildId | None = None,
+        domain: str | None = None,
+        limit: int = EVENT_PAGE_MAX,
+    ) -> list[StoredEvent]:
+        """The events with an id above `after` of `build`, or of every build of `domain`
+        (exactly one of the two), oldest first, at most `limit` (1..EVENT_PAGE_MAX)."""
+        ...
+
+    def prune_events(self, before: datetime, *, dry_run: bool = False) -> list[str]:
+        """Drop every month of events stored (by the store's clock, not the events' `ts`) that
+        ends at or before `before` (UTC months, the partitions of the `events` table); return
+        them as `YYYY-MM`, oldest first."""
+        ...

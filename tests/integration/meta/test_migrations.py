@@ -31,7 +31,7 @@ P1_TABLES = {"toolchain_manifests"}  # P1-07
 GC_TABLES = {"leases", "lease_objects", "pins", "gc_runs", "tombstones"}  # P1-09 (revision 0006)
 P1_TABLES |= GC_TABLES
 RELEASE_TABLES = {"releases", "channels", "channel_history", "exports"}  # P2-02 (revision 0007)
-IMPORT_TABLES = {"release_imports"}  # P2-03 (revision 0008)
+IMPORT_TABLES = {"release_imports"}  # P2-03 (revision 0009)
 P2_TABLES = RELEASE_TABLES | IMPORT_TABLES
 GOOD = "sha256:" + "a" * 64
 
@@ -212,7 +212,19 @@ def _valid_row(conn: sa.Connection, table: str) -> dict[str, object]:
             "logical_path": "x",
             "object_id": GOOD,
         },
-        "events": {"build_id": build_id, "ts": now, "type": "running", "data": "{}"},
+        # 0008 (P2-05): stored_at is the partition key; the row needs its month's partition.
+        "events": {
+            "build_id": build_id,
+            "ts": now,
+            "type": "running",
+            "data": "{}",
+            "stored_at": conn.execute(
+                sa.text(
+                    f"SELECT CAST(:t AS timestamptz) FROM {SCHEMA}.ensure_events_partition(:t)"
+                ),
+                {"t": now},
+            ).scalar_one(),
+        },
     }
     return rows[table]
 
@@ -374,13 +386,13 @@ def test_release_revision_round_trip(empty_db: URL) -> None:
     assert _tables(empty_db) >= RELEASE_TABLES
 
 
-# P2-03: revision 0008 upgrades from 0007 and downgrades back to it (its triggers go with the
+# P2-03: revision 0009 upgrades from 0008 and downgrades back to it (its triggers go with the
 # table), so a re-upgrade works; the rows are append-only.
 def test_release_imports_revision_round_trip(empty_db: URL) -> None:
     url = url_string(empty_db)
-    migrations.upgrade(url, "0007_releases")
+    migrations.upgrade(url, "0008_events_partitioned")
     assert not IMPORT_TABLES & _tables(empty_db)
-    migrations.upgrade(url, "0008_release_imports")
+    migrations.upgrade(url, "0009_release_imports")
     assert _tables(empty_db) >= IMPORT_TABLES
     engine = sa.create_engine(empty_db, poolclass=sa.pool.NullPool)
     try:
@@ -388,8 +400,8 @@ def test_release_imports_revision_round_trip(empty_db: URL) -> None:
             conn.execute(sa.text("TRUNCATE ebs.release_imports"))
     finally:
         engine.dispose()
-    migrations.downgrade(url, "0007_releases")
+    migrations.downgrade(url, "0008_events_partitioned")
     assert not IMPORT_TABLES & _tables(empty_db)
     assert _tables(empty_db) >= RELEASE_TABLES
-    migrations.upgrade(url, "0008_release_imports")
+    migrations.upgrade(url, "0009_release_imports")
     assert _tables(empty_db) >= IMPORT_TABLES

@@ -55,9 +55,12 @@ toolchains(id text PK, name text, module text, version text, fingerprint text,
 toolchain_manifests(toolchain_id text PK FK toolchains ON DELETE CASCADE,
                     entries bytea)                             -- P1-07: zlib fingerprint lines
 
-events(id bigserial PK, build_id FK, ts, type text check ~ '^[a-z][a-z0-9_]*$',
-       action_id text null, data jsonb object)
-       index (build_id, id)                                -- dashboard / status stream; partition by month in P2
+events(id bigint default nextval('event_id_seq'), build_id FK, ts, type text
+       check ~ '^[a-z][a-z0-9_]*$', action_id text null, data jsonb object,
+       stored_at)                                           -- stored_at: store clock (0008)
+       PK (id, stored_at), index (build_id, id)             -- dashboard / status stream
+       PARTITION BY RANGE (stored_at): events_yYYYYmMM per UTC month -- P2-05, migration 0008;
+       ensure_events_partition(ts) creates one, retention drops whole partitions
 ```
 
 ## Phase 1
@@ -103,7 +106,7 @@ exports(id bigserial PK, release_id FK, exported_release_id FK releases, to_doma
         exported_at, exported_by) index (release_id)        -- audited cross-domain copy, append-only
 release_imports(build_id FK builds, alias text check ~ IMPORT_ALIAS_PATTERN,
                 release_id FK releases, PRIMARY KEY(build_id, alias))
-                index (release_id)   -- 0008, P2-03: used-by queries; append-only (trigger)
+                index (release_id)   -- 0009, P2-03: used-by queries; append-only (trigger)
 ```
 
 ## Phase 3

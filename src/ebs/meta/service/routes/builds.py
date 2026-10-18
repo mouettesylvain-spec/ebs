@@ -32,6 +32,7 @@ from ebs.meta.api import (
 from ebs.meta.service.auth import BuildOwner, NotFoundError, Operation, Principal
 from ebs.meta.service.authz import DomainDenied
 from ebs.meta.service.deps import ServiceDeps, body, current_principal, get_deps, json_body
+from ebs.meta.service.pagination import Cursor, Limit, paginate
 from ebs.meta.service.routes import no_content, ok
 
 # Authenticate before any body is read or validated (401, never 422, without credentials).
@@ -86,9 +87,19 @@ def record_release_imports(
 
 
 @router.get("/{build}/release-imports", response_model=ReleaseImportList)
-def list_release_imports(build: int, deps: Deps, caller: Caller) -> Response:
+def list_release_imports(
+    build: int, deps: Deps, caller: Caller, limit: Limit = None, cursor: Cursor = None
+) -> Response:
     _read(deps, caller, build)
-    return ok(ReleaseImportList(imports=deps.store.list_release_imports(BuildId(build))))
+    page, after = paginate(
+        deps.store.list_release_imports(BuildId(build)),
+        lambda r: (r.alias,),
+        cursor=cursor,
+        limit=limit,
+        max_page_size=deps.limits.max_page_size,
+        query={"list": "release_imports", "build": build},
+    )
+    return ok(ReleaseImportList(imports=page, next=after))
 
 
 @router.get("/{build}", response_model=BuildView)
@@ -111,10 +122,23 @@ def add_actions(
 
 @router.get("/{build}/actions", response_model=ActionList)
 def list_actions(
-    build: int, deps: Deps, caller: Caller, state: ActionState | None = None
+    build: int,
+    deps: Deps,
+    caller: Caller,
+    state: ActionState | None = None,
+    limit: Limit = None,
+    cursor: Cursor = None,
 ) -> Response:
     _read(deps, caller, build)
-    return ok(ActionList(actions=deps.store.list_actions(BuildId(build), state=state)))
+    page, after = paginate(
+        deps.store.list_actions(BuildId(build), state=state),
+        lambda a: (a.action_id,),
+        cursor=cursor,
+        limit=limit,
+        max_page_size=deps.limits.max_page_size,
+        query={"list": "actions", "build": build, "state": state},
+    )
+    return ok(ActionList(actions=page, next=after))
 
 
 @router.post(
@@ -176,6 +200,7 @@ def finish_build(
 ) -> Response:
     _write(deps, caller, build)
     deps.store.finish_build(BuildId(build), finish.status)  # type: ignore[arg-type]
+    deps.notify(build, deps.owner(build).domain)  # its streams end (P2-05 R2)
     return no_content()
 
 
@@ -192,6 +217,7 @@ def emit(
         )
     _write(deps, caller, build)
     deps.store.emit(event)
+    deps.notify(build, deps.owner(build).domain)  # wake its streams (P2-05 R2)
     return no_content()
 
 

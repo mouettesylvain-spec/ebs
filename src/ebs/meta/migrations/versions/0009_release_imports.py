@@ -1,7 +1,7 @@
 """Release imports of builds: which release each import alias of a build used (P2-03).
 
-Revision ID: 0008_release_imports
-Revises: 0007_releases
+Revision ID: 0009_release_imports
+Revises: 0008_events_partitioned
 Create Date: 2026-10-17
 
 Rows are what `ebs used-by` follows from a release to the builds that consumed it; they are
@@ -15,8 +15,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0008_release_imports"
-down_revision: str | None = "0007_releases"
+revision = "0009_release_imports"
+down_revision: str | None = "0008_events_partitioned"
 branch_labels: str | None = None
 depends_on: str | None = None
 

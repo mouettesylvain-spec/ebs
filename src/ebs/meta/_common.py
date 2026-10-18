@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -14,6 +14,7 @@ from ebs.core.digest import Digest
 from ebs.core.errors import CanonError, DigestError, MetadataError
 from ebs.meta.api import (
     CHANNEL_PATTERN,
+    EVENT_PAGE_MAX,
     FINAL_BUILD_STATUSES,
     MAX_LEASE_TTL_S,
     TOUCH_INTERVAL_S,
@@ -369,3 +370,31 @@ def check_release_imports(
         if row.alias not in recorded:
             new[row.alias] = row
     return list(new.values())
+
+
+def check_event_query(build: object, domain: object, limit: object) -> None:
+    """The arguments of `EventReader.events_after`: exactly one of build and domain."""
+    if (build is None) == (domain is None):
+        raise MetadataError("events_after: give exactly one of build and domain")
+    if domain is not None:
+        check_domain(domain)
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= EVENT_PAGE_MAX:
+        raise MetadataError(f"events_after: limit must be 1..{EVENT_PAGE_MAX}, not {limit!r}")
+
+
+def month_start(ts: datetime) -> datetime:
+    """The first instant of the UTC month of `ts` (the partition of an event, P2-05 R6)."""
+    utc = ts.astimezone(UTC)
+    return utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def next_month(start: datetime) -> datetime:
+    return (
+        start.replace(year=start.year + 1, month=1)
+        if start.month == 12
+        else start.replace(month=start.month + 1)
+    )
+
+
+def month_name(start: datetime) -> str:
+    return f"{start.year:04}-{start.month:02}"
