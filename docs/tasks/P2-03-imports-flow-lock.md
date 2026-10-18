@@ -1,6 +1,6 @@
 # P2-03 — Imports and `flow.lock`
 
-Status: review · Phase: 2 · Depends on: P2-02 · Size: M
+Status: done · Phase: 2 · Depends on: P2-02 · Size: M
 
 ## Goal
 Flows consume other teams' releases by channel or version; the exact releases are pinned in a reviewed

@@ -16,9 +16,12 @@ from ebs.core.clock import Clock, SystemClock
 from ebs.core.digest import Digest
 from ebs.core.errors import MetadataError
 from ebs.meta._common import (
+    aggregate_stats,
     attribution_digests,
+    build_matches,
     cache_refs,
     check_blobs,
+    check_build_filter,
     check_by,
     check_digest,
     check_driver_owner,
@@ -32,6 +35,7 @@ from ebs.meta._common import (
     check_result,
     check_run,
     check_set_channel,
+    check_stats_window,
     check_toolchain,
     check_walk,
     edge_models,
@@ -41,6 +45,7 @@ from ebs.meta._common import (
     next_month,
     provenance_graph,
     release_matches,
+    result_summary,
     revalidate,
     stored_result,
     touch_cutoff,
@@ -53,12 +58,14 @@ from ebs.meta.api import (
     ActionState,
     BlobRef,
     BuildCreate,
+    BuildFilter,
     BuildId,
     BuildStatus,
     BuildView,
     ChannelMove,
     ChannelView,
     DomainPolicy,
+    DomainStats,
     DriverLease,
     Event,
     ExportRecord,
@@ -77,6 +84,7 @@ from ebs.meta.api import (
     ReleaseImport,
     ReleaseView,
     ResultManifest,
+    ResultSummary,
     StoredEvent,
     Tombstone,
     ToolchainCreate,
@@ -341,6 +349,52 @@ class InMemoryMetadataStore:
             return sorted(
                 (r for r in rows if state is None or r.state == state), key=lambda r: r.action_id
             )
+
+    # --- dashboard reads (P2-06) ----------------------------------------------------------------
+
+    def list_builds(self, domain: str, flt: BuildFilter) -> list[BuildView]:
+        checked = check_build_filter(domain, flt)
+        with self._lock:
+            ids = [
+                i
+                for i, b in self._builds.items()
+                if b.view.domain == domain and build_matches(b.view, checked)
+            ]
+        return [self.get_build(BuildId(i)) for i in sorted(ids, reverse=True)]
+
+    def result_summaries(self, build: BuildId, *, step: str | None = None) -> list[ResultSummary]:
+        with self._lock:
+            b = self._build(build)
+            found = [
+                result_summary(a, b.results[a])
+                for a, row in b.actions.items()
+                if a in b.results and (step is None or row.step == step)
+            ]
+        return sorted(found, key=lambda r: r.action_id)
+
+    def domain_stats(self, domain: str, *, since: datetime, until: datetime) -> DomainStats:
+        check_stats_window(domain, since, until)
+        with self._lock:
+            chosen = {
+                i: b
+                for i, b in self._builds.items()
+                if b.view.domain == domain and since <= b.view.created_at < until
+            }
+            rows = [
+                (row.step, row.state, b.results.get(a))
+                for b in chosen.values()
+                for a, row in b.actions.items()
+            ]
+            evs = [e.event for e in self._events if e.event.build in chosen]
+        return aggregate_stats(
+            domain,
+            since=since,
+            until=until,
+            now=self._clock.now(),
+            builds=len(chosen),
+            actions=rows,
+            events=evs,
+        )
 
     # --- access tracking -------------------------------------------------------------------------
 

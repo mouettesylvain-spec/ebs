@@ -39,7 +39,13 @@ def _whoami(svc: Service, headers: dict[str, str]) -> tuple[int, dict[str, objec
 def test_munge_ok(svc: Service) -> None:
     status, body = _whoami(svc, FakeMunge(uid=1001).headers("GET", "/whoami"))
     assert status == 200
-    assert body == {"name": "bob", "via": "munge", "token_kind": None, "team": None}
+    assert body == {
+        "name": "bob",
+        "via": "munge",
+        "token_kind": None,
+        "team": None,
+        "domains": None,
+    }
 
 
 # R3
@@ -63,7 +69,13 @@ def test_bearer(svc: Service) -> None:
     token = svc.tokens.add("ci-cpu", kind="ci", team="rv32x-cpu")
     status, body = _whoami(svc, {"Authorization": f"Bearer {token}"})
     assert status == 200
-    assert body == {"name": "ci-cpu", "via": "token", "token_kind": "ci", "team": "rv32x-cpu"}
+    assert body == {
+        "name": "ci-cpu",
+        "via": "token",
+        "token_kind": "ci",
+        "team": "rv32x-cpu",
+        "domains": None,
+    }
     # Only the hash is stored, never the token itself.
     assert token not in repr(svc.tokens._by_hash)
     assert hash_token(token) in svc.tokens._by_hash

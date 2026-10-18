@@ -26,9 +26,11 @@ from ebs.core.digest import Digest
 from ebs.core.errors import ConfigError, MetadataError
 from ebs.core.log import get_logger
 from ebs.meta._common import (
+    aggregate_stats,
     attribution_digests,
     cache_refs,
     check_blobs,
+    check_build_filter,
     check_by,
     check_digest,
     check_driver_owner,
@@ -42,6 +44,7 @@ from ebs.meta._common import (
     check_result,
     check_run,
     check_set_channel,
+    check_stats_window,
     check_toolchain,
     check_walk,
     edge_models,
@@ -51,6 +54,7 @@ from ebs.meta._common import (
     next_month,
     provenance_graph,
     release_matches,
+    result_summary,
     revalidate,
     stored_result,
     touch_cutoff,
@@ -62,12 +66,14 @@ from ebs.meta.api import (
     ActionState,
     BlobRef,
     BuildCreate,
+    BuildFilter,
     BuildId,
     BuildStatus,
     BuildView,
     ChannelMove,
     ChannelView,
     DomainPolicy,
+    DomainStats,
     DriverLease,
     Event,
     ExportRecord,
@@ -86,6 +92,7 @@ from ebs.meta.api import (
     ReleaseImport,
     ReleaseView,
     ResultManifest,
+    ResultSummary,
     StoredEvent,
     Tombstone,
     ToolchainCreate,
@@ -615,6 +622,115 @@ class PgMetadataStore:
             self._build_status(conn, build)
             found = conn.execute(stmt).mappings().all()
         return [ActionRow.model_validate(dict(r)) for r in found]
+
+    # --- dashboard reads (P2-06) ----------------------------------------------------------------
+
+    def list_builds(self, domain: str, flt: BuildFilter) -> list[BuildView]:
+        checked = check_build_filter(domain, flt)
+        stmt = sa.select(builds).where(builds.c.domain == domain)
+        for column, value in (
+            (builds.c.user_name, checked.user),
+            (builds.c.status, checked.status),
+            (builds.c.project, checked.project),
+        ):
+            if value is not None:
+                stmt = stmt.where(column == value)
+        if checked.since is not None:
+            stmt = stmt.where(builds.c.created_at >= checked.since)
+        if checked.until is not None:
+            stmt = stmt.where(builds.c.created_at < checked.until)
+        with self._tx(f"list_builds {domain}") as conn:
+            found = conn.execute(stmt.order_by(builds.c.id.desc())).mappings().all()
+            counts: dict[int, dict[str, int]] = {}
+            if found:
+                for build_id, state, n in conn.execute(
+                    sa.select(actions.c.build_id, actions.c.state, sa.func.count())
+                    .where(actions.c.build_id.in_([int(r["id"]) for r in found]))
+                    .group_by(actions.c.build_id, actions.c.state)
+                ).all():
+                    counts.setdefault(int(build_id), {})[str(state)] = int(n)
+        return [
+            BuildView.model_validate({**r, "action_counts": counts.get(int(r["id"]), {})})
+            for r in found
+        ]
+
+    def result_summaries(self, build: BuildId, *, step: str | None = None) -> list[ResultSummary]:
+        r = actions.c.result
+        stmt = (
+            sa.select(
+                actions.c.action_id,
+                r["status"].astext,
+                r["exit_code"],
+                r["log"],
+                r["summary"],
+            )
+            .where(actions.c.build_id == build, r.is_not(None))
+            .order_by(actions.c.action_id.collate("C"))
+        )
+        if step is not None:
+            stmt = stmt.where(actions.c.step == step)
+        with self._tx(f"result_summaries {build}") as conn:
+            self._build_status(conn, build)
+            rows = conn.execute(stmt).all()
+        return [
+            result_summary(
+                str(a), {"status": st, "exit_code": code, "log": log, "summary": summary}
+            )
+            for a, st, code, log, summary in rows
+        ]
+
+    def domain_stats(self, domain: str, *, since: datetime, until: datetime) -> DomainStats:
+        check_stats_window(domain, since, until)
+        window = sa.and_(
+            builds.c.domain == domain, builds.c.created_at >= since, builds.c.created_at < until
+        )
+        chosen = sa.select(builds.c.id).where(window)
+        ev, pend = events, events.alias("pend")
+        waited = sa.exists().where(
+            pend.c.build_id == ev.c.build_id,
+            pend.c.action_id == ev.c.action_id,
+            pend.c.type == "pending",
+        )
+        with self._tx(f"domain_stats {domain}") as conn:
+            n_builds = int(
+                conn.execute(
+                    sa.select(sa.func.count()).select_from(builds).where(window)
+                ).scalar_one()
+            )
+            rows = conn.execute(
+                sa.select(actions.c.step, actions.c.state, actions.c.result["resources"]).where(
+                    actions.c.build_id.in_(chosen)
+                )
+            ).all()
+            found = conn.execute(
+                sa.select(ev.c.build_id, ev.c.ts, ev.c.type, ev.c.action_id, ev.c.data).where(
+                    ev.c.build_id.in_(chosen), ev.c.action_id.is_not(None), waited
+                )
+            ).all()
+            now = self._clock.now()
+        return aggregate_stats(
+            domain,
+            since=since,
+            until=until,
+            now=now,
+            builds=n_builds,
+            actions=[
+                (str(step), str(state), None if usage is None else {"resources": usage})
+                for step, state, usage in rows
+            ],
+            events=[
+                Event.model_validate(
+                    {
+                        "ts": r.ts,
+                        "build": int(r.build_id),
+                        "type": r.type,
+                        "action_id": r.action_id,
+                        "data": r.data,
+                    }
+                )
+                for r in found
+            ],
+        )
 
     def resolve_output(self, domain: str, object_id: Digest) -> Digest | None:
         check_domain(domain)

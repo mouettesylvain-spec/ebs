@@ -156,7 +156,13 @@ def test_login_round_trip(tmp_path: Path) -> None:
     assert len(form["code_verifier"]) >= 43
     me = site.whoami()
     assert me.status_code == 200, me.text
-    assert me.json() == {"name": "alice", "via": "session", "token_kind": None, "team": None}
+    assert me.json() == {
+        "name": "alice",
+        "via": "session",
+        "token_kind": None,
+        "team": None,
+        "domains": None,
+    }
     assert site.svc.client.cookies.get("ebs_csrf")
 
 

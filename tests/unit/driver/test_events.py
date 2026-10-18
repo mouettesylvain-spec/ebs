@@ -97,6 +97,39 @@ def test_file_written_before_store(tmp_path: Path, env: Env) -> None:
     assert [(e.type, e.action_id) for e in read_events(path)] == [("cache_hit", "a")]
 
 
+# R4 (P2-06): a pending event names the action's license features, so the dashboard splits
+# license waits by feature.
+def test_pending_event_names_license_features(env: Env) -> None:
+    executor = env.executor()
+    executor.script("a", "pass", pending_polls=1)
+    executor.script("b", "pass", pending_polls=1)
+    plan = env.plan({"a": Node(licenses={"simfeat": 1, "addon": 2}), "b": Node()})
+    outcome = env.run(plan, executor)
+
+    events = read_events(outcome.events_path)
+    pending = {e.action_id: e.data for e in events if e.type == "pending"}
+    assert pending["a"] == {"reason": "licenses", "licenses": ["addon", "simfeat"]}
+    assert pending["b"] == {"reason": "licenses"}  # no licenses: no field
+
+
+# R1 (P2-06): plan_ready carries the step graph, from which the dashboard draws the build's DAG.
+def test_plan_ready_has_the_step_graph(env: Env) -> None:
+    nodes = {
+        "compile[a]": Node(),
+        "compile[b]": Node(deps=(("compile[a]", "out"),)),  # within a step: no step edge
+        "elab": Node(deps=(("compile[a]", "out"), ("compile[b]", "out"))),
+        "sim[1]": Node(deps=(("elab", "out"),)),
+        "lint": Node(),
+        "report": Node(deps=(("sim[1]", "out"), ("lint", "out"))),  # two upstream steps
+    }
+    outcome = env.run(env.plan(nodes), env.executor())
+    ready = next(e for e in read_events(outcome.events_path) if e.type == "plan_ready")
+    assert ready.data["actions"] == 6
+    assert ready.data["steps"] == {
+        "compile": [], "elab": ["compile"], "lint": [], "report": ["lint", "sim"], "sim": ["elab"],
+    }  # fmt: skip
+
+
 def _build_create() -> BuildCreate:
     return BuildCreate.model_validate_json(
         json.dumps(

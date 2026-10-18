@@ -3,7 +3,8 @@
 `create_app(deps)` builds the app; `app_from_config()` is the uvicorn factory for deployments
 (`uvicorn --factory ebs.meta.service.app:app_from_config`). Routes live under `API_PREFIX`, with
 the OpenAPI document at `/api/v1/openapi.json`; `/healthz` and `/readyz` are probes (R6),
-`/metrics` the Prometheus metrics and `/auth/*` the dashboard login (P2-05).
+`/metrics` the Prometheus metrics and `/auth/*` the dashboard login (P2-05). With
+`[meta_service].dashboard_dir` the built dashboard (`web/dist`, P2-06) is served at `/ui/`.
 
 Error mapping (every body is `ErrorBody`): AuthenticationError 401, PermissionDeniedError 403,
 NotFoundError 404, a body over the limit 413, invalid request 422, a rate limit 429 with
@@ -22,7 +23,8 @@ from typing import Annotated, Any
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -60,13 +62,24 @@ from ebs.meta.service.limits import (
     RateLimitedError,
     retry_after,
 )
+from ebs.meta.service.logs import LogSource
 from ebs.meta.service.metrics import Metrics, ObservabilityMiddleware, PoolStats
 from ebs.meta.service.oidc import OidcConfig, OidcLogin
 from ebs.meta.service.readiness import PgReadiness
 from ebs.meta.service.routes import auth as auth_routes
-from ebs.meta.service.routes import builds, cache, events, probes, provenance, releases, toolchains
+from ebs.meta.service.routes import (
+    builds,
+    cache,
+    dashboard,
+    events,
+    probes,
+    provenance,
+    releases,
+    toolchains,
+)
 from ebs.meta.service.tokens import PgTokenStore
 from ebs.release.channels import GatePolicy
+from ebs.runner.config import RunnerSettings
 
 __all__ = ["ServiceConfig", "ServiceDeps", "app_from_config", "create_app"]
 
@@ -155,8 +168,14 @@ def _openapi(app: FastAPI) -> dict[str, Any]:
     return schema
 
 
-def create_app(deps: ServiceDeps, *, listener: PgEventListener | None = None) -> FastAPI:
-    """The app; `listener` (PostgreSQL NOTIFY wake-ups) runs while the app is served."""
+def create_app(
+    deps: ServiceDeps,
+    *,
+    listener: PgEventListener | None = None,
+    dashboard_dir: Path | None = None,
+) -> FastAPI:
+    """The app; `listener` (PostgreSQL NOTIFY wake-ups) runs while the app is served, and
+    `dashboard_dir` (the dashboard's static build) is served at `/ui/`."""
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -182,7 +201,7 @@ def create_app(deps: ServiceDeps, *, listener: PgEventListener | None = None) ->
     if deps.oidc is not None:
         app.include_router(auth_routes.router)
     routers = (probes.api, cache.router, builds.router, events.router, toolchains.router)
-    for router in (*routers, releases.router, provenance.router):
+    for router in (*routers, releases.router, provenance.router, dashboard.router):
         app.include_router(router, prefix=API_PREFIX, responses=_ERRORS)
 
     @app.get("/metrics", include_in_schema=False)
@@ -191,6 +210,13 @@ def create_app(deps: ServiceDeps, *, listener: PgEventListener | None = None) ->
         return Response(
             deps.metrics.render(), media_type="text/plain; version=0.0.4; charset=utf-8"
         )
+
+    if dashboard_dir is not None:
+        app.mount("/ui", StaticFiles(directory=dashboard_dir, html=True), name="dashboard")
+
+        @app.get("/", include_in_schema=False)
+        def home() -> Response:
+            return RedirectResponse("/ui/", status_code=307)
 
     app.add_exception_handler(AuthenticationError, _auth_failed)
     app.add_exception_handler(PermissionDeniedError, _forbidden)
@@ -230,6 +256,7 @@ class ServiceConfig(BaseModel):
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     events: EventStreamConfig = Field(default_factory=EventStreamConfig)
     oidc: OidcConfig | None = None
+    dashboard_dir: StrictStr | None = None  # P2-06: the built dashboard, served at /ui/
     log_level: StrictStr = "INFO"  # JSON lines on stderr, with request ids (R5)
 
     @classmethod
@@ -280,8 +307,28 @@ def app_from_config(environ: Mapping[str, str] | None = None) -> FastAPI:
         limits=service.limits,
         metrics=Metrics(pool=lambda: _pool_stats(store)),
         oidc=oidc,
+        logs=_log_source(config, env),
     )
-    return create_app(deps, listener=PgEventListener(store.engine.url, deps.wakeup))
+    dashboard = None if service.dashboard_dir is None else Path(service.dashboard_dir)
+    if dashboard is not None and not (dashboard / "index.html").is_file():
+        raise ConfigError(
+            f"[meta_service].dashboard_dir {dashboard} has no index.html: build the dashboard "
+            "(cd web && npm ci && npm run build) and point it at web/dist"
+        )
+    return create_app(
+        deps, listener=PgEventListener(store.engine.url, deps.wakeup), dashboard_dir=dashboard
+    )
+
+
+def _log_source(
+    config: Mapping[str, Mapping[str, object]], env: Mapping[str, str]
+) -> LogSource | None:
+    """Logs from the CAS and debug roots of `[cas]`, `[debug]` and `[[domains]]`; None without
+    `[cas].root` (the dashboard then shows no logs)."""
+    if "root" not in config.get("cas", {}):
+        return None
+    settings = RunnerSettings.from_config(config, env)
+    return LogSource(settings.cas_root_for, settings.debug_root_for)
 
 
 def _pool_stats(store: PgMetadataStore) -> PoolStats:

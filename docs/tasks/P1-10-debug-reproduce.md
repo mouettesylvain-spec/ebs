@@ -1,6 +1,6 @@
 # P1-10 — `ebs debug` and `ebs reproduce`
 
-Status: review · Phase: 1 · Depends on: P1-04, P0-16 · Size: M
+Status: done · Phase: 1 · Depends on: P1-04, P0-16 · Size: M
 
 ## Goal
 Any failing action can be inspected and re-run bit-for-bit from a login node, including interactively

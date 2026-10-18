@@ -489,10 +489,16 @@ class Scheduler:
 
     def _apply(self, handle: JobHandle, status: JobStatus) -> None:
         action_id = self._inflight[handle]
-        key = self._plan.action(action_id).key
+        spec = self._plan.action(action_id)
+        key = spec.key
         if status.state == "pending":
             self._set_state(action_id, "pending", key=key, pending_reason=status.pending_reason)
-            self._events.emit("pending", action_id, reason=status.pending_reason or "other")
+            # P2-06: the license features let the dashboard split license waits by feature.
+            features = sorted(spec.licenses)
+            extra: dict[str, object] = {"licenses": features} if features else {}
+            self._events.emit(
+                "pending", action_id, reason=status.pending_reason or "other", **extra
+            )
         elif status.state == "running":
             self._ensure_running(action_id, key)
             self._events.emit("running", action_id, job_id=handle.job_id)

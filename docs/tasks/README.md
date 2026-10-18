@@ -45,21 +45,21 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P1-03 | Licenses, accounts/QOS, constraints | P1-02 | 3 | done |
 | P1-05 | Infra failure classification and retries | P1-02, P0-15 | 3 | done |
 | P1-09 | GC v1 (access tracking, pins, leases, sweep) | P0-09, P0-10, P0-15 | 3 | done |
-| P1-10 | `ebs debug` and `ebs reproduce` | P1-04, P0-16 | 4 | review |
+| P1-10 | `ebs debug` and `ebs reproduce` | P1-04, P0-16 | 4 | done |
 | P1-12 | Phase 1 acceptance on the grid | all P1 | 5 | todo |
 
 ## Phase 2 — Teams (exit: RTL release consumed by verification via flow.lock; `ebs tests <release>` correct)
 
 | ID | Task | Depends on | Wave | Status |
 | --- | --- | --- | --- | --- |
-| P2-01 | Domains and authorization | P1-06 | 1 | review |
-| P2-02 | Releases and channels | P1-09 | 1 | review |
-| P2-05 | Metadata service hardening (OIDC, SSE, pagination) | P1-06 | 1 | review |
-| P2-03 | Imports and `flow.lock` | P2-02 | 2 | review |
-| P2-04 | Provenance queries (`why`, `used-by`, `tests`) | P2-02 | 2 | review |
-| P2-07 | GitLab CI integration (`--ci`, JUnit) | P2-02 | 2 | review |
+| P2-01 | Domains and authorization | P1-06 | 1 | done |
+| P2-02 | Releases and channels | P1-09 | 1 | done |
+| P2-05 | Metadata service hardening (OIDC, SSE, pagination) | P1-06 | 1 | done |
+| P2-03 | Imports and `flow.lock` | P2-02 | 2 | done |
+| P2-04 | Provenance queries (`why`, `used-by`, `tests`) | P2-02 | 2 | done |
+| P2-07 | GitLab CI integration (`--ci`, JUnit) | P2-02 | 2 | done |
 | P2-08 | `--detach` driver job | P1-02 | 2 | review |
-| P2-06 | Web dashboard v1 | P2-05, P2-04 | 3 | todo |
+| P2-06 | Web dashboard v1 | P2-05, P2-04 | 3 | review |
 | P2-09 | Phase 2 acceptance | all P2 | 4 | todo |
 
 ## Phase 3 — Hermeticity and scale (exit: sandbox default for Questa; quarterly revalidation report)

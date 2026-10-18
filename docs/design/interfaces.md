@@ -755,6 +755,44 @@ The client raises `MetadataError` with the detail.
   `python -m ebs.meta.service events prune [--dry-run]` uses `[meta_service.events].
   retention_days = 180` and creates next month's partition (daily timer in `deploy/meta`).
 
+### 6.3 Dashboard reads (P2-06)
+
+The web dashboard (`web/`, conventions in `web/README.md`) is a client of these routes only;
+each is authorized like the other reads (a non-member gets 403 for a domain route and 404 for a
+build id, I20; `tests/helpers/authz_matrix.py` covers them).
+
+- **New store protocol `DashboardReader`** (PostgreSQL and memory stores, part of
+  `ServiceBackend`; not over HTTP):
+  `list_builds(domain, BuildFilter(user?, status?, project?, since?, until?)) -> list[BuildView]`
+  (newest first, `since <= created_at < until`);
+  `result_summaries(build, *, step=None) -> list[ResultSummary(action_id, status, exit_code, log,
+  summary)]` (by action id; the recorded results without inputs and outputs);
+  `domain_stats(domain, *, since, until) -> DomainStats(domain, since, until, builds,
+  steps: [StepStats(step, cached, ran, cached_cpu_s, cached_wall_s, ran_cpu_s)],
+  waits: [PendingWait(reason, feature, waits, wait_s)])` over the builds created in the window
+  (at most `STATS_WINDOW_MAX_DAYS = 366`). `ran` counts done and failed actions; `cached_cpu_s`
+  sums the CPU time the cached results recorded (what the cache saved). A wait runs from a
+  `pending` event to the action's next event of another type or reason, else to `until` or the
+  store's clock; a `licenses` wait counts once per feature its event names (`""` if none),
+  other reasons have `feature = None`. The aggregation is `ebs.meta._common.aggregate_stats`.
+- **Routes:** `GET /domains/{d}/builds?user&status&project&since&until` (paged, newest first,
+  `BuildViewList`); `GET /domains/{d}/stats?since&until` (default: the 30 days before `until`,
+  default now; dates need a time zone, else 422); `GET /builds/{b}/results?step` (paged,
+  `ResultSummaryList`); `GET /builds/{b}/actions/{a}/log?offset=0&limit≤LOG_CHUNK_MAX (4 MiB)`
+  answers the bytes of the action's log from `offset` as `text/plain`, with `X-Ebs-Log-Source:
+  cas|live`, `X-Ebs-Log-Size` (the whole log now) and `X-Ebs-Log-Complete`. The source is the CAS
+  blob of the recorded result's `log`, else the runner's live log
+  `<debug root>/<domain>/<build>/<action>/live.log` (D2); 404 while there is neither, or when the
+  service has no `[cas].root` (`ServiceDeps.logs = LogSource(cas_root_for, debug_root_for)`, from
+  `[cas]`, `[debug]` and `[[domains]]` of the service's ebs.toml).
+- **`Whoami`** gains `domains: list[str] | None` (**CONTRACT CHANGE**, additive): the served
+  domains the caller is a member of; None when the service does not scope by domain.
+- **Static dashboard:** `[meta_service].dashboard_dir` (a built `web/dist`) is served at `/ui/`
+  and `/` redirects there (`create_app(..., dashboard_dir=)`); ConfigError without `index.html`.
+- **Driver events** (§ 10, additive): `plan_ready` gains `steps: {step: [upstream steps]}` (the
+  step graph, `ebs.driver.build.step_graph`) and `pending` gains `licenses: [feature]` (sorted,
+  omitted when the action requests none).
+
 ## 7. Rules — `ebs.rules.api`
 
 ```python
@@ -1109,11 +1147,11 @@ The `Event` model is defined in `ebs.meta.api` (§ 6) and re-exported here.
 attempt, § 9). Emitted to MetadataStore and to a local JSONL file
 (`<workdir>/.ebs/builds/<uuid>/events.jsonl`, written before the store so an outage leaves a
 trace) used by `ebs status` / `ebs logs` when offline; `read_events(path)` parses it. Data (no
-floats): `submitted {job_id, attempt, batch_size}`, `pending {reason}`, `running {job_id}`,
+floats): `submitted {job_id, attempt, batch_size}`, `running {job_id}`,
 `cache_hit {key, status}`, `infra_failed {reason, attempt, exit_code?, detail?, node?,
 excluded_node?}`, `retrying {attempt, delay_ms}`, `finished {state ∈
 done|failed|infra_failed|skipped|cancelled, exit_code?, attempts?, reasons?, reason?, hint?}`,
-`build_finished {status, counts}`, `build_started {uuid, user, cache_mode, ci?}` (`ci`: the
+`build_finished {status, counts}`, `plan_ready {plan, actions, steps}` (P2-06: `steps` maps each step to the steps it consumes), `pending {reason, licenses?}` (P2-06: the action's license features), `build_started {uuid, user, cache_mode, ci?}` (`ci`: the
 `run_build(ci=…)` metadata, P2-07 R1), `build_resumed {attached, rerun, finished}` (P2-08: a new
 driver took over the build: jobs re-attached, actions run again, actions already final). P1-05
 R2: `attempt` numbers the submissions of an action

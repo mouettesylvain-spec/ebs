@@ -1,6 +1,6 @@
 # P2-07 — GitLab CI integration
 
-Status: review · Phase: 2 · Depends on: P2-02 · Size: M
+Status: done · Phase: 2 · Depends on: P2-02 · Size: M
 
 ## Goal
 CI pipelines run `ebs build --ci --cache=write`, show test results in merge requests and can gate channel

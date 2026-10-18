@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -39,6 +40,7 @@ from ebs.meta.service.auth import Policy
 from ebs.meta.service.authz import DomainPolicy
 from ebs.meta.service.deps import ServiceBackend
 from ebs.meta.service.events_stream import EventStreamConfig
+from ebs.meta.service.logs import LogSource
 from ebs.meta.service.tokens import InMemoryTokenStore
 from tests.helpers.meta_http import FakeMunge, Service, make_service
 from tests.helpers.release import Action, finish, out
@@ -46,6 +48,7 @@ from tests.helpers.release import Action, finish, out
 A, B = "dom-a", "dom-b"
 LIB = out(b"worklib")
 KEY = hash_bytes(b"cache key in A")
+LOG_ROOT = Path("/nonexistent/ebs-authz-matrix")  # the log route finds no file under it
 
 
 GROUPS: dict[str, set[str]] = {"alice": {"grp-a"}, "bob": {"grp-b"}, "carol": {"grp-a", "grp-b"}}
@@ -81,8 +84,9 @@ def _service(pg: ServiceBackend) -> tuple[Service, list[Who]]:
     )
     policy = DomainPolicy(Policy(), domains, [A, B], Groups(), {"ci-a": [A]})
     svc = make_service(
-        pg, tokens=tokens, authorize=policy, events=EventStreamConfig(max_stream_s=0.0)
-    )
+        pg, tokens=tokens, authorize=policy, events=EventStreamConfig(max_stream_s=0.0),
+        logs=LogSource(lambda _d: LOG_ROOT, lambda _d: LOG_ROOT),
+    )  # fmt: skip
     ci = BearerCredential(tokens.add("ci-a", kind="ci", team="demo"))
     who = [
         Who("alice", "alice", frozenset({A}), svc.store(FakeMunge(uid=1000))),
@@ -258,6 +262,27 @@ OPS: list[tuple[str, Op, frozenset[str]]] = [
         lambda c, m, w: c.provenance_downstream(A, ids=[LIB.id], keys=[], depth=1),
         frozenset({A}),
     ),
+    # P2-06: the dashboard's reads (raw calls: the store client has no such methods).
+    (
+        "GET /domains/{domain}/builds",
+        lambda c, m, w: _found(_get(c, f"/domains/{A}/builds")["builds"]),
+        frozenset({A}),
+    ),
+    (
+        "GET /domains/{domain}/stats",
+        lambda c, m, w: _get(c, f"/domains/{A}/stats"),
+        frozenset({A}),
+    ),
+    (
+        "GET /builds/{build}/results",
+        lambda c, m, w: _found(_get(c, f"/builds/{m.finished}/results")["results"]),
+        frozenset({A}),
+    ),
+    (
+        "GET /builds/{build}/actions/{action_id}/log",
+        lambda c, m, w: _no_log_yet(c, f"/builds/{m.finished}/actions/compile/log"),
+        frozenset({A}),
+    ),
     (
         "GET /releases/{release}/exports",
         lambda c, m, w: c.list_exports(m.release.id),
@@ -300,6 +325,22 @@ def _stream(c: HttpMetadataStore, path: str) -> str:
     text = c._call("GET", path, f"GET {path}", idempotent=True).text
     assert text.startswith("retry:"), text
     return text
+
+
+def _get(c: HttpMetadataStore, path: str) -> Any:
+    return c._call("GET", path, f"GET {path}", idempotent=True).json()
+
+
+def _no_log_yet(c: HttpMetadataStore, path: str) -> None:
+    """A member reaches the log reader, which finds no file (`LOG_ROOT` does not exist); a
+    non-member gets the 404 of a missing build instead (run_matrix checks the status)."""
+    try:
+        c._call("GET", path, f"GET {path}", idempotent=True)
+    except MetadataHttpError as exc:
+        if exc.status != 404 or "no log of action" not in str(exc):
+            raise
+        return
+    raise AssertionError(f"{path}: a log was served from a root that does not exist")
 
 
 def _found(value: list[Any]) -> list[Any]:

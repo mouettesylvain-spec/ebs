@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
 from fastapi.exceptions import RequestValidationError
 
 from ebs.core.errors import MetadataError
 from ebs.meta.api import (
+    LOG_CHUNK_MAX,
     ActionBatch,
     ActionList,
     ActionState,
@@ -30,11 +31,19 @@ from ebs.meta.api import (
     ReleaseImportBatch,
     ReleaseImportList,
     ResultManifest,
+    ResultSummaryList,
     StateChange,
 )
 from ebs.meta.service.auth import BuildOwner, NotFoundError, Operation, Principal
 from ebs.meta.service.authz import DomainDenied
-from ebs.meta.service.deps import ServiceDeps, body, current_principal, get_deps, json_body
+from ebs.meta.service.deps import (
+    ServiceDeps,
+    body,
+    current_principal,
+    get_deps,
+    is_outage,
+    json_body,
+)
 from ebs.meta.service.pagination import Cursor, Limit, paginate
 from ebs.meta.service.routes import no_content, ok
 
@@ -192,6 +201,85 @@ def record_result(
 def get_result(build: int, action_id: str, deps: Deps, caller: Caller) -> Response:
     _read(deps, caller, build)
     return ok(OptionalResult(result=deps.store.get_result(BuildId(build), action_id)))
+
+
+@router.get("/{build}/results", response_model=ResultSummaryList)
+def list_results(
+    build: int,
+    deps: Deps,
+    caller: Caller,
+    step: str | None = None,
+    limit: Limit = None,
+    cursor: Cursor = None,
+) -> Response:
+    """The recorded results of the build's actions, without inputs and outputs (P2-06 R2)."""
+    _read(deps, caller, build)
+    page, after = paginate(
+        deps.store.result_summaries(BuildId(build), step=step),
+        lambda r: (r.action_id,),
+        cursor=cursor,
+        limit=limit,
+        max_page_size=deps.limits.max_page_size,
+        query={"list": "results", "build": build, "step": step},
+    )
+    return ok(ResultSummaryList(results=page, next=after))
+
+
+_LOG_DOC: dict[int | str, dict[str, object]] = {
+    200: {
+        "content": {"text/plain": {}},
+        "description": "Log bytes from `offset`; `X-Ebs-Log-Source` (cas | live), "
+        "`X-Ebs-Log-Size` (the whole log now) and `X-Ebs-Log-Complete` (false: may still grow).",
+    }
+}
+
+
+@router.get("/{build}/actions/{action_id:path}/log", response_class=Response, responses=_LOG_DOC)
+def get_log(
+    build: int,
+    action_id: str,
+    deps: Deps,
+    caller: Caller,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=LOG_CHUNK_MAX)] = LOG_CHUNK_MAX,
+) -> Response:
+    """The action's stored log, else its live log (P2-06 R3); 404 while it has neither."""
+    _read(deps, caller, build)
+    if deps.logs is None:
+        raise NotFoundError(
+            "this metadata service serves no logs: set [cas].root (and [debug].root for live "
+            "logs) in its ebs.toml"
+        )
+    try:
+        result = deps.store.get_result(BuildId(build), action_id)
+    except MetadataError as exc:
+        if is_outage(exc):
+            raise
+        raise NotFoundError(f"build {build} has no action {action_id!r}") from None
+    chunk = deps.logs.read(
+        deps.owner(build).domain,
+        build,
+        action_id,
+        None if result is None else result.log,
+        offset=offset,
+        limit=limit,
+    )
+    if chunk is None:
+        raise NotFoundError(
+            f"no log of action {action_id!r} of build {build} yet (it has not started, or its "
+            "log was not kept)"
+        )
+    return Response(
+        content=chunk.data,
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "X-Ebs-Log-Source": chunk.source,
+            "X-Ebs-Log-Size": str(chunk.size),
+            "X-Ebs-Log-Complete": "true" if chunk.complete else "false",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.post("/{build}/finish", status_code=204, openapi_extra=json_body(BuildFinish))
