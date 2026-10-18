@@ -1,0 +1,9 @@
+used by rtl/cpu 1.0 (domain test)
+builds: 4
+  test   build 2  verif@def456  alice  2026-01-01
+  test   build 3  soc           alice  2026-01-01
+  test   build 4  soc           alice  2026-01-01
+  other  build 5  o             alice  2026-01-01
+releases: 2
+  test   verif/model 1.0  release 2  from its outputs
+  other  rtl/cpu 1.0      release 3  export

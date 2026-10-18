@@ -32,14 +32,19 @@ from ebs.meta._common import (
     check_run,
     check_set_channel,
     check_toolchain,
+    check_walk,
+    edge_models,
     edge_rows,
     month_name,
     month_start,
     next_month,
+    provenance_graph,
+    release_matches,
     revalidate,
     stored_result,
     touch_cutoff,
     transition,
+    walk_levels,
 )
 from ebs.meta.api import (
     EVENT_PAGE_MAX,
@@ -62,6 +67,8 @@ from ebs.meta.api import (
     GcRoots,
     GcRun,
     LeaseId,
+    ProvenanceAction,
+    ProvenanceGraph,
     RegisterOutcome,
     ReleaseCreate,
     ReleaseId,
@@ -578,6 +585,85 @@ class InMemoryMetadataStore:
                 and any(r.key is not None and str(r.key) in keys for r in b.actions.values())
             ]
         return sorted(found, reverse=True)
+
+    # --- provenance (ProvenanceStore, P2-04) -----------------------------------------------------
+
+    def provenance_upstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        return self._walk("upstream", domain, ids, keys, depth)
+
+    def provenance_downstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        return self._walk("downstream", domain, ids, keys, depth)
+
+    def _walk(
+        self, way: str, domain: str, ids: Iterable[Digest], keys: Iterable[Digest], depth: object
+    ) -> ProvenanceGraph:
+        domain, id_list, key_list, levels = check_walk(
+            domain, ids, keys, depth, f"provenance_{way}"
+        )
+        with self._lock:
+            edges = edge_models(
+                (
+                    (key, direction, path, oid, content)
+                    for (d, key, direction, path), (oid, content) in self._edges.items()
+                    if d == domain
+                ),
+                f"provenance_{way} {domain}",
+            )
+            # follow: the direction whose ids lead to the next level (the other one leads back).
+            follow = "in" if way == "upstream" else "out"
+            ahead: dict[str, set[str]] = {}  # key -> ids on its `follow` edges
+            behind: dict[str, set[str]] = {}  # id -> keys holding it on a `back` edge
+            by_content: dict[str, set[str]] = {}  # upstream only: content digest -> producers
+            for e in edges:
+                k, oid = str(e.action_key), str(e.object_id)
+                if e.direction == follow:
+                    ahead.setdefault(k, set()).add(oid)
+                    continue
+                behind.setdefault(oid, set()).add(k)
+                if e.content_digest is not None and way == "upstream":
+                    by_content.setdefault(str(e.content_digest), set()).add(k)
+
+            def step(level: set[str]) -> set[str]:
+                return {n for k in level for i in ahead.get(k, ()) for n in behind.get(i, ())}
+
+            first = set(key_list) | {
+                k for i in id_list for k in behind.get(i, set()) | by_content.get(i, set())
+            }
+            walked, truncated = walk_levels(first, step, levels)
+            kept = [e for e in edges if str(e.action_key) in walked]
+            objects = set(id_list) | {str(e.object_id) for e in kept}
+            rows = [
+                self._provenance_action(b, row)
+                for b in self._builds.values()
+                if b.view.domain == domain
+                for row in b.actions.values()
+                if row.key is not None and str(row.key) in walked
+            ]
+            found = [
+                match
+                for rid in sorted(self._releases)
+                if (rel := self._release(rid)) is not None and rel.domain == domain
+                for match in release_matches(rel, objects)
+            ]
+        return provenance_graph(domain, kept, rows, found, truncated)
+
+    @staticmethod
+    def _provenance_action(b: _Build, row: ActionRow) -> ProvenanceAction:
+        assert row.key is not None
+        result = b.results.get(row.action_id)
+        status = None if result is None else result.get("status")
+        return ProvenanceAction(
+            key=row.key, build=b.view.id, action_id=row.action_id, step=row.step, rule=row.rule,
+            params=row.params, toolchain=row.toolchain, state=row.state, cached=row.cached,
+            status=status, finished_at=row.finished_at,  # type: ignore[arg-type]
+            project=b.view.project, flow_repo=b.view.flow_repo, flow_commit=b.view.flow_commit,
+            flow_dirty=b.view.flow_dirty, user_name=b.view.user_name,
+            build_created_at=b.view.created_at,
+        )  # fmt: skip
 
     def record_export(self, release: ReleaseId, to_domain: str, *, by: str) -> ReleaseView:
         check_domain(to_domain)

@@ -143,8 +143,13 @@ actions = sa.Table(
     sa.Column("cached", sa.Boolean, nullable=False, server_default=sa.false()),
     sa.Column("result_key", sa.Text, nullable=True),
     sa.Column("result", JSONB, nullable=True),  # last recorded ResultManifest (0003, P0-15)
+    sa.Column("rule", sa.Text, nullable=True),  # rule kind, params, toolchain (0010, P2-04)
+    sa.Column("params", JSONB(none_as_null=True), nullable=True),  # None is SQL NULL
+    sa.Column("toolchain", sa.Text, nullable=True),
     _digest_check("key"),
     _digest_check("result_key"),
+    _digest_check("toolchain"),
+    sa.CheckConstraint("params IS NULL OR jsonb_typeof(params) = 'object'", name="params_object"),
     sa.CheckConstraint(
         "result IS NULL OR (jsonb_typeof(result) = 'object' AND result->'v' = '1'::jsonb)",
         name="result_manifest",

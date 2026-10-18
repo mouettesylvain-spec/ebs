@@ -405,3 +405,27 @@ def test_release_imports_revision_round_trip(empty_db: URL) -> None:
     assert _tables(empty_db) >= RELEASE_TABLES
     migrations.upgrade(url, "0009_release_imports")
     assert _tables(empty_db) >= IMPORT_TABLES
+
+
+# P2-04: revision 0010 adds the actions' rule, params and toolchain and drops them on the way
+# back to 0009.
+def test_action_provenance_revision_round_trip(empty_db: URL) -> None:
+    url = url_string(empty_db)
+    added = {"rule", "params", "toolchain"}
+    migrations.upgrade(url, "0009_release_imports")
+    assert not added & _columns(empty_db, "actions")
+    migrations.upgrade(url, "0010_action_provenance")
+    assert added <= _columns(empty_db, "actions")
+    migrations.downgrade(url, "0009_release_imports")
+    assert not added & _columns(empty_db, "actions")
+    migrations.upgrade(url, "0010_action_provenance")
+    assert added <= _columns(empty_db, "actions")
+
+
+def _columns(url: URL, table: str) -> set[str]:
+    engine = sa.create_engine(url, poolclass=sa.pool.NullPool)
+    try:
+        with engine.connect() as conn:
+            return {c["name"] for c in sa.inspect(conn).get_columns(table, schema=SCHEMA)}
+    finally:
+        engine.dispose()

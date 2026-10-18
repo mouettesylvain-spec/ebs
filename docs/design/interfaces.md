@@ -396,6 +396,10 @@ re-validated on write (values must also pass `canonical_json`).
 - `cache_put` is insert-if-absent and requires `result.action_key == key`. `cache_get` counts a
   hit on every call and rewrites `last_access` at most once per hour (`TOUCH_INTERVAL_S`); `touch`
   applies the same throttle to known `blobs` rows and ignores unknown digests.
+- `ActionRow.rule` (rule kind), `params` (`ParamJson` values: str, int, bool, list of str) and
+  `toolchain` (toolchain id) are what the plan says the action is (**CONTRACT CHANGE (P2-04)**:
+  new optional fields, None on rows written before; migration 0010). The driver sets them in
+  `add_actions` (`ebs.driver.build.action_row`); they never change afterwards.
 - Domains are registered implicitly by the first `create_build`/`cache_put` naming them
   (`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`, as the fs CAS); P2-01 adds the admin side.
 - `InfraReason = oom | timeout | node_fail | preempted | license | runner_crash |
@@ -498,6 +502,30 @@ re-validated on write (values must also pass `canonical_json`).
   exported, to_domain, exported_at, exported_by}` audit row, atomically), `list_exports(release)`
   (rows naming it as source or copy). Release outputs (content digests, also of yanked releases)
   are `GcRoots.released`.
+- `ProvenanceStore` (P2-04; PostgreSQL as one recursive CTE, in-memory, HTTP; part of
+  `MetadataBackend`). **CONTRACT CHANGE (P2-04):** new protocol and models. `provenance_upstream(
+  domain, *, ids, keys, depth)` / `provenance_downstream(...)` -> `ProvenanceGraph{domain, edges:
+  [ProvenanceEdge{action_key, direction, logical_path, object_id, content_digest}] (by key,
+  direction, path), actions: [ProvenanceAction{key, build, action_id, step, rule, params,
+  toolchain, state, cached, status (of the recorded result), finished_at, project, flow_repo,
+  flow_commit, flow_dirty, user_name, build_created_at}] (by build, action id; every row holding
+  a walked key, cache hits included), releases: [ProvenanceRelease{release, name, version, output,
+  object_id, exported_from, yanked}] (outputs whose id is in the graph), truncated}`. Walks stay
+  in one domain and count action levels, `1..PROVENANCE_DEPTH_MAX` (200): upstream level 1 is
+  `keys` plus the producers of `ids` (as passed-down id or content digest), level n+1 the
+  producers of level n's inputs; downstream level 1 is `keys` plus the consumers of `ids`, level
+  n+1 the consumers of level n's outputs. `truncated`: a level past `depth` has unwalked keys.
+- `ebs.release.provenance` (L3, P2-04): `why(store, domain, *, ids, keys, depth) -> Lineage{graphs,
+  links: [ExportLink{domain, release, source_domain, source, export}], hidden: [Hidden{domain |
+  None, release, reason}]}` (an id with no producer that is an output of an exported release
+  continues in the source domain, found only through the export's audit row, `list_exports`);
+  `downstream(store, release)` (the release's domain, then through the exports of it and of every
+  release found downstream); `used_by(store, release) -> UsedBy{builds, releases (via "outputs" |
+  "export"), hidden, truncated}` (not the release's own build); `sim_runs(store, release) ->
+  [TestRun{domain, build, action_id, step, rule, test, seed, status, state, cached, toolchain,
+  finished_at, project}]` (rules `*.sim`); `latest(runs)` (newest per (test, seed));
+  `sources(lineage)`, `lineage_doc`, `to_dot`, `junit_xml(runs, *, suite)`. Over HTTP each walk
+  is a domain-scoped route call, so what the caller cannot read is in `hidden`, never data (R4).
 - Release imports (P2-03, `MetadataStore`; **CONTRACT CHANGE:** new methods):
   `record_release_imports(build, [ReleaseImport{alias, release}])` (all or nothing; every
   release in the build's domain; the same row again is a no-op, another release for a recorded
@@ -594,6 +622,8 @@ in JSON mode (`model_validate_json`):
 | `GET /channels?domain=&name=&channel=` | `get_channel` | → `ChannelList` (0 or 1) |
 | `GET /channels/history?domain=&name=&channel=` | `channel_history` | → `ChannelHistory` (paged) |
 | `POST /domains/{d}/gate-builds` | `gate_builds` | `GateQuery{flow, ids}` → `BuildList` |
+| `POST /domains/{d}/provenance/upstream` | `provenance_upstream` (P2-04) | `ProvenanceQuery{ids, keys, depth}` → `ProvenanceGraph` (`read` of `d`) |
+| `POST /domains/{d}/provenance/downstream` | `provenance_downstream` (P2-04) | `ProvenanceQuery{ids, keys, depth}` → `ProvenanceGraph` (`read` of `d`) |
 | `GET /whoami` | — | → caller's principal |
 
 `/healthz` (process) and `/readyz` (database reachable, schema at the migrations' head, else 503)
@@ -1517,6 +1547,16 @@ before anything is hashed (exit 2); `ebs gc` collects only `[gc].domain` and `[g
 the latest build recorded here; B is a recorded build's UUID prefix or id, or any store build id.
 A broken rule (selector, version, failed action, gate, membership) exits 2.
 
+**`ebs why TARGET [--domain D] [--build B] [--depth N] [--json | --dot]`**, **`ebs used-by NAME
+VERSION`**, **`ebs tests NAME VERSION [--latest] [--junit FILE]`** (P2-04; `ebs.release.provenance`,
+all with `--domain D`, `--depth N`, `--json`). TARGET: a digest (object id, content digest or
+action key), `NAME@VERSION[:OUTPUT]`, or an action id of `--build` (default the latest build
+here). `why` prints the upstream tree (action, rule, result, build, project@commit, toolchain,
+params, inputs down to `(source)`), `--json` `lineage_doc` (v1: `truncated, graphs, links,
+hidden, sources, target, domain`), `--dot` a Graphviz digraph; `used-by` lists builds and
+releases; `tests` lists the runs (domain, build, test, seed, status, toolchain, finished, action),
+`--json` `{v: 1, release, tests}`; `--junit` writes one JUnit testsuite (failed result: failure,
+no result: skipped). An unknown release or action exits 2.
 **`ebs lock update [ALIAS…] [-f FLOW] [--json]`**, **`ebs lock check [-f FLOW] [--json]`**
 (P2-03; `ebs.release.lock`): `update` resolves the flow's imports with the metadata store,
 prints one line per changed alias (`rtl: rtl-team/cpu 1 → 2 (channel stable); changed

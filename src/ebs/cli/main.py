@@ -23,7 +23,10 @@ from ebs.cli import (
     rules,
     seeds,
     status,
+    tests_cmd,
     toolchain,
+    used_by,
+    why,
 )
 from ebs.cli import debug as debug_cli
 from ebs.cli._context import SiteServices
@@ -91,6 +94,9 @@ app.command("fetch")(outputs.fetch_command)
 app.command("gc")(gc.gc_command)
 app.command("pin")(gc.pin_command)
 app.command("unpin")(gc.unpin_command)
+app.command("why")(why.why_command)
+app.command("used-by")(used_by.used_by_command)
+app.command("tests")(tests_cmd.list_tests_command)
 app.add_typer(domain.app, name="domain")
 app.add_typer(release.app, name="release")
 app.add_typer(channel.app, name="channel")

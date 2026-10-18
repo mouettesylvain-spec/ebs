@@ -64,7 +64,7 @@ from ebs.meta.service.metrics import Metrics, ObservabilityMiddleware, PoolStats
 from ebs.meta.service.oidc import OidcConfig, OidcLogin
 from ebs.meta.service.readiness import PgReadiness
 from ebs.meta.service.routes import auth as auth_routes
-from ebs.meta.service.routes import builds, cache, events, probes, releases, toolchains
+from ebs.meta.service.routes import builds, cache, events, probes, provenance, releases, toolchains
 from ebs.meta.service.tokens import PgTokenStore
 from ebs.release.channels import GatePolicy
 
@@ -182,7 +182,7 @@ def create_app(deps: ServiceDeps, *, listener: PgEventListener | None = None) ->
     if deps.oidc is not None:
         app.include_router(auth_routes.router)
     routers = (probes.api, cache.router, builds.router, events.router, toolchains.router)
-    for router in (*routers, releases.router):
+    for router in (*routers, releases.router, provenance.router):
         app.include_router(router, prefix=API_PREFIX, responses=_ERRORS)
 
     @app.get("/metrics", include_in_schema=False)
