@@ -45,3 +45,4 @@ choice is committed and reviewable.
   column of an end-of-line comment on a row that grew, mixed per-row indentation). Comments,
   quotes, BOM, line ends and `---`/`...` markers are kept.
 - Follow-up: the CLI could print the new rows (or a diff) so users can review before committing.
+  **Done (2026-10-18):** the changed rows are printed (and in `--json` `rows`).

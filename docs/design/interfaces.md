@@ -1663,7 +1663,9 @@ passes the inner command's exit code on. **CONTRACT CHANGE (P1-10 follow-up).**
 **`ebs rules list --json`**: `{"v": 1, "rules": [{"kind", "version", "impl"}]}`, sorted by kind.
 
 **`ebs seeds gen TABLE --json`**: `{"v": 1, "table": "<TABLE as given>", "appended": n,
-"filled": n}`. Options `--per-test N`, `--replace`, `--column` (default `seed`),
+"filled": n, "rows": [{"change": "filled" | "appended", "row": {column: value}}]}` (`rows`: the
+changed rows as they read after the edit, filled ones in table order then appended ones; text
+mode prints them under the summary, one `<change> col=value …` line each, for review). Options `--per-test N`, `--replace`, `--column` (default `seed`),
 `--test-column` (default `test`), `--base-seed` (default 0); algorithm and formatting rules:
 `ebs.flow.seeds` docstring (task P1-11).
 
