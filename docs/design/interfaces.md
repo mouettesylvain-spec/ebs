@@ -364,6 +364,7 @@ and `cleanup_tmp(max_age=24h, *, dry_run=False) -> int` (GC, P1-09; `dry_run` on
 class MetadataStore(Protocol):
     # action cache
     def cache_get(self, domain: str, key: Digest) -> ResultManifest | None: ...     # also touches last_access
+    def cache_peek(self, domain: str, key: Digest) -> ResultManifest | None: ...    # no hit, no touch
     def cache_put(self, domain: str, key: Digest, result: ResultManifest) -> bool: ...  # False if already present
     def cache_replace_failed(self, domain: str, key: Digest, result: ResultManifest) -> bool: ...  # P0-15: --rerun-failed
     # builds
@@ -409,7 +410,10 @@ re-validated on write (values must also pass `canonical_json`).
   `cache_put` keeps the old failure.
 - `cache_put` is insert-if-absent and requires `result.action_key == key`. `cache_get` counts a
   hit on every call and rewrites `last_access` at most once per hour (`TOUCH_INTERVAL_S`); `touch`
-  applies the same throttle to known `blobs` rows and ignores unknown digests.
+  applies the same throttle to known `blobs` rows and ignores unknown digests. `cache_peek`
+  (**CONTRACT CHANGE**) answers like `cache_get` without counting a hit or touching: for
+  predictions (`ebs plan`), which use nothing, so they neither inflate the hit ratio nor keep
+  entries alive.
 - `ActionRow.rule` (rule kind), `params` (`ParamJson` values: str, int, bool, list of str) and
   `toolchain` (toolchain id) are what the plan says the action is (**CONTRACT CHANGE (P2-04)**:
   new optional fields, None on rows written before; migration 0010). The driver sets them in
@@ -616,7 +620,7 @@ in JSON mode (`model_validate_json`):
 
 | Method and path | Store call | Body → response |
 | --- | --- | --- |
-| `GET /domains/{d}/cache/{key}` | `cache_get` | → `OptionalResult` |
+| `GET /domains/{d}/cache/{key}` | `cache_get`; `?peek=true`: `cache_peek` (no hit metric) | → `OptionalResult` |
 | `PUT /domains/{d}/cache/{key}` | `cache_put` | `ResultManifest` → `Changed` |
 | `POST /domains/{d}/cache/{key}/replace-failed` | `cache_replace_failed` | `ResultManifest` → `Changed` |
 | `POST /domains/{d}/cache/lookup` | `cache_get` per key | `DigestBatch` → `CacheHits` (hits only) |
@@ -1510,8 +1514,8 @@ folded from events: `queued` (no event yet), `submitted`, `pending: <reason>`, `
 peak memory of their recent successful runs (`.ebs/usage.jsonl`, written by `run_build`; at
 least 5 samples). Text mode prints each as `hint: <message>`. Hints never change the plan.
 
-Prediction mirrors the driver: keyed actions are looked up with `cache_get` (which counts a hit
-and touches `last_access`); the output ids of passed hits refine the plan, repeated until no new
+Prediction mirrors the driver: keyed actions are looked up with `cache_peek` (no hit counted,
+no touch, no metric); the output ids of passed hits refine the plan, repeated until no new
 key appears. `cache` is `unknown` for actions still unkeyed, or for all without
 `[metadata].url`. `change` comes from `diff_plans(baseline final plan, predicted plan)`;
 `status` is null without a baseline.

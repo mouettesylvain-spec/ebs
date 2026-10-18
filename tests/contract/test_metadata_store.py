@@ -441,6 +441,22 @@ def test_cache_get_touch_throttled(h: Harness) -> None:
     assert h.inspect.cache_stats("test", key) == (3, t1)
 
 
+# `cache_peek` (`ebs plan`): the same answer as cache_get, scoped by domain, but no hit is
+# counted and last_access is not touched.
+def test_cache_peek_has_no_side_effects(h: Harness) -> None:
+    key = dg("k")
+    t0 = h.clock.now()
+    h.store.cache_put("test", key, make_result(key))
+    h.clock.advance(2 * 3600)
+    assert h.store.cache_peek("test", key) == make_result(key)
+    assert h.store.cache_peek("test", dg("absent")) is None
+    assert h.store.cache_peek("other", key) is None
+    assert h.inspect.cache_stats("test", key) == (0, t0)
+    h.inspect.set_raw_cache_result("test", key, {"v": 1, "action_key": "nope"})
+    with pytest.raises(MetadataError, match="action cache entry"):
+        h.store.cache_peek("test", key)
+
+
 # R3
 def test_cache_get_rejects_invalid_stored_result(h: Harness) -> None:
     key = dg("k")

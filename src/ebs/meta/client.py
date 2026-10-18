@@ -513,6 +513,12 @@ class HttpMetadataStore:
         r = self._call("GET", path, what, idempotent=True)
         return self._parse(r, OptionalResult, what).result
 
+    def cache_peek(self, domain: str, key: Digest) -> ResultManifest | None:
+        what = f"cache_peek {domain}/{key}"
+        path = self._cache_path(domain, key, "cache_peek")
+        r = self._call("GET", path, what, params={"peek": "true"}, idempotent=True)
+        return self._parse(r, OptionalResult, what).result
+
     def cache_get_many(self, domain: str, keys: Iterable[Digest]) -> dict[Digest, ResultManifest]:
         """`cache_get` for many keys in batches of `BATCH_MAX`; only hits are returned."""
         check_domain(domain)

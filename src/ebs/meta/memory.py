@@ -176,13 +176,15 @@ class InMemoryMetadataStore:
             if entry.last_access <= touch_cutoff(now):
                 entry.last_access = now
             payload = entry.result
-        try:
-            return ResultManifest.model_validate(payload)
-        except ValueError as exc:
-            raise MetadataError(
-                f"action cache entry {domain}/{key} holds an invalid result manifest; delete "
-                f"the entry so the action reruns: {exc}"
-            ) from None
+        return _cached_result(domain, key, payload)
+
+    def cache_peek(self, domain: str, key: Digest) -> ResultManifest | None:
+        check_domain(domain)
+        check_digest(key, "cache_peek key")
+        with self._lock:
+            entry = self._cache.get((domain, str(key)))
+            payload = None if entry is None else entry.result
+        return None if payload is None else _cached_result(domain, key, payload)
 
     def cache_put(self, domain: str, key: Digest, result: ResultManifest) -> bool:
         check_domain(domain)
@@ -1068,3 +1070,13 @@ class InMemoryMetadataStore:
                 row.last_used_at is None or row.last_used_at <= touch_cutoff(now)
             ):
                 self._toolchains[key] = row.model_copy(update={"last_used_at": now})
+
+
+def _cached_result(domain: str, key: Digest, payload: object) -> ResultManifest:
+    try:
+        return ResultManifest.model_validate(payload)
+    except ValueError as exc:
+        raise MetadataError(
+            f"action cache entry {domain}/{key} holds an invalid result manifest; delete "
+            f"the entry so the action reruns: {exc}"
+        ) from None

@@ -51,10 +51,18 @@ def _digest(value: str, what: str) -> Digest:
 
 
 @router.get("/cache/{key}", response_model=OptionalResult)
-def cache_get(domain: str, key: str, deps: Deps, caller: Caller) -> Response:
+def cache_get(domain: str, key: str, deps: Deps, caller: Caller, peek: bool = False) -> Response:
+    """`peek=true`: `cache_peek` (a prediction such as `ebs plan`): no hit is counted, in the
+    store or in the metrics."""
     digest = _digest(key, "cache_get key")
-    found = deps.store.cache_get(domain, digest) if _member(deps, caller, domain) else None
-    deps.metrics.count_cache(hits=int(found is not None), misses=int(found is None))
+    if not _member(deps, caller, domain):
+        found = None
+    elif peek:
+        return ok(OptionalResult(result=deps.store.cache_peek(domain, digest)))
+    else:
+        found = deps.store.cache_get(domain, digest)
+    if not peek:
+        deps.metrics.count_cache(hits=int(found is not None), misses=int(found is None))
     return ok(OptionalResult(result=found))
 
 

@@ -303,6 +303,7 @@ OPS: list[tuple[str, Op, frozenset[str]]] = [
 # Reads whose non-member answer must be the same as for a missing object.
 MISSES: list[tuple[str, Op]] = [
     ("GET /domains/{domain}/cache/{key}", lambda c, m, w: c.cache_get(A, KEY)),
+    ("GET /domains/{domain}/cache/{key}?peek=true", lambda c, m, w: c.cache_peek(A, KEY)),
     ("POST /domains/{domain}/cache/lookup", lambda c, m, w: c.cache_get_many(A, [KEY]) or None),
     ("GET /domains/{domain}/outputs/{object_id}", lambda c, m, w: c.resolve_output(A, LIB.id)),
     ("GET /releases/{release}", lambda c, m, w: c.get_release_by_id(m.release.id)),
@@ -374,7 +375,7 @@ def covers_every_route(store: ServiceBackend) -> None:
     svc, _ = _service(store)
     paths = svc.client.get(f"{API_PREFIX}/openapi.json").json()["paths"]
     routes = {f"{m.upper()} {p.removeprefix(API_PREFIX)}" for p, ops in paths.items() for m in ops}
-    covered = {r for r, _, _ in OPS} | {r for r, _ in MISSES} | DOMAIN_FREE
+    covered = {r for r, _, _ in OPS} | {r.split("?")[0] for r, _ in MISSES} | DOMAIN_FREE
     assert routes == covered
 
 

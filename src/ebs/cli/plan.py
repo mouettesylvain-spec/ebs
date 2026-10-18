@@ -149,7 +149,7 @@ def predict(plan: Plan, store: MetadataStore, planner: Planner) -> Prediction:
             if spec.key is None or spec.action_id in looked_up:
                 continue
             looked_up.add(spec.action_id)
-            result = store.cache_get(plan.domain, spec.key)
+            result = store.cache_peek(plan.domain, spec.key)  # a prediction uses nothing
             if result is None:
                 continue
             hits[spec.action_id] = result

@@ -342,6 +342,23 @@ class PgMetadataStore:
                 f"the entry so the action reruns: {exc}"
             ) from None
 
+    def cache_peek(self, domain: str, key: Digest) -> ResultManifest | None:
+        check_domain(domain)
+        check_digest(key, "cache_peek key")
+        t = action_cache
+        stmt = sa.select(t.c.result).where(t.c.domain == domain, t.c.key == str(key))
+        with self._tx(f"cache_peek {domain}/{key}") as conn:
+            payload: dict[str, object] | None = conn.execute(stmt).scalar_one_or_none()
+        if payload is None:
+            return None
+        try:
+            return ResultManifest.model_validate(payload)
+        except ValueError as exc:
+            raise MetadataError(
+                f"action cache entry {domain}/{key} holds an invalid result manifest; delete "
+                f"the entry so the action reruns: {exc}"
+            ) from None
+
     def cache_put(self, domain: str, key: Digest, result: ResultManifest) -> bool:
         check_domain(domain)
         check_digest(key, "cache_put key")

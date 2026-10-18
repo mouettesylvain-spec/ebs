@@ -6300,6 +6300,7 @@
     },
     "/api/v1/domains/{domain}/cache/{key}": {
       "get": {
+        "description": "`peek=true`: `cache_peek` (a prediction such as `ebs plan`): no hit is counted, in the\nstore or in the metrics.",
         "operationId": "cache_get_api_v1_domains__domain__cache__key__get",
         "parameters": [
           {
@@ -6318,6 +6319,16 @@
             "schema": {
               "title": "Key",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "peek",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Peek",
+              "type": "boolean"
             }
           }
         ],

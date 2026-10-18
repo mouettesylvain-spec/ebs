@@ -58,6 +58,17 @@ def test_summary_after_build_predicts_hits_through_refinement(site: Site) -> Non
     assert all(a["cached_status"] == "passed" for a in doc["actions"])
 
 
+# A prediction is no use of the cache: `ebs plan` counts no hits and touches nothing (the
+# hit ratio on the dashboard and in /metrics would otherwise count every plan).
+def test_plan_counts_no_hits(site: Site) -> None:
+    _build(site)
+    store = site.services.memory_store
+    before = {k: (e.hits, e.last_access) for k, e in store._cache.items()}
+    site.services.clock.sleep(2 * 3600)
+    assert _plan_json(site)["totals"]["hit"] == 3
+    assert {k: (e.hits, e.last_access) for k, e in store._cache.items()} == before
+
+
 # R1
 def test_without_store_cache_is_unknown(site: Site) -> None:
     site.services.with_store = False  # no [metadata] in the config

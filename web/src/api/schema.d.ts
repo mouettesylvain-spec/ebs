@@ -366,7 +366,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Cache Get */
+        /**
+         * Cache Get
+         * @description `peek=true`: `cache_peek` (a prediction such as `ebs plan`): no hit is counted, in the
+         *     store or in the metrics.
+         */
         get: operations["cache_get_api_v1_domains__domain__cache__key__get"];
         /** Cache Put */
         put: operations["cache_put_api_v1_domains__domain__cache__key__put"];
@@ -4289,7 +4293,9 @@ export interface operations {
     };
     cache_get_api_v1_domains__domain__cache__key__get: {
         parameters: {
-            query?: never;
+            query?: {
+                peek?: boolean;
+            };
             header?: never;
             path: {
                 domain: string;

@@ -527,6 +527,11 @@ class MetadataStore(Protocol):
         `last_access` at most once per hour."""
         ...
 
+    def cache_peek(self, domain: str, key: Digest) -> ResultManifest | None:
+        """`cache_get` without its side effects: no hit counted, no touch (`ebs plan`'s
+        prediction, which uses nothing)."""
+        ...
+
     def cache_put(self, domain: str, key: Digest, result: ResultManifest) -> bool:
         """Insert if absent; True if this call inserted, False if the key was already cached."""
         ...
