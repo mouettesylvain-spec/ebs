@@ -1587,7 +1587,8 @@ ebs fetch   ACTION[.OUTPUT]… [--build B] [-o|--output-dir DIR] [--flat] [--mod
 Both need `[metadata].url` and only read (no cache, store, build record or CAS writes); a
 successful `fetch` only `touch`es what it copied, so GC sees the use (P1-09 R1). `outputs` lists one row per output of every action of the build with a
 result (`get_result`: done, cached and test-failed actions), in plan order then by output name;
-ACTION arguments (`match_action`: id or unique prefix) and `--step` filter. The declared
+ACTION arguments (as in `fetch`: an exact id, else every action of a step of that name, else
+a unique prefix; step names since the P1-13 follow-up) and `--step` filter. The declared
 logical `path` comes from the build's `final_plan` (else `plan`) in the CAS, matched by output
 name; an output the plan does not declare has `path: null` (`-` in the table). `--json` (v1):
 

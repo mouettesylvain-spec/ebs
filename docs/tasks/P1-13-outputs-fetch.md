@@ -118,3 +118,4 @@ Typer context object, as `tests/unit/cli/test_logs.py` does.
   were just fetched, record that there.
 - Follow-up: `ebs outputs` does not accept step names as ACTION arguments (the spec says
   `match_action`; `--step` covers it). `fetch` does, and the two could be aligned later.
+  **Done (2026-10-18):** both resolve ACTION the same way.
