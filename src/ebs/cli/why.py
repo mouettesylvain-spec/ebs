@@ -174,8 +174,14 @@ class _Tree:
             else:
                 text += "  (source)"
         self.out.line(text)
+        made = sorted(made, key=lambda k: self.order(where, k))
         for i, key in enumerate(made):
             self.action(where, key, prefix + below, i == len(made) - 1)
+
+    def order(self, n: int, key: Digest) -> tuple[str, str]:
+        """Producers by action id, not key digest: stable when a key schema changes keys."""
+        rows = self.rows(n, key)
+        return (rows[0].action_id if rows else "", str(key))
 
     def action(self, n: int, key: Digest, prefix: str, last: bool) -> None:
         connector, below = ("└── ", "    ") if last else ("├── ", "│   ")

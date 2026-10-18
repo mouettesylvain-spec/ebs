@@ -15,9 +15,11 @@ from pathlib import Path
 import pytest
 
 from ebs.core.clock import FakeClock
+from ebs.core.digest import hash_bytes
 from ebs.core.errors import ExitCode
 from tests.helpers.cli import Site, TestServices, write_site
 from tests.helpers.provenance import LIB, RES, TC, S, World, world
+from tests.helpers.release import Action, finish, out
 
 GOLDEN = Path(__file__).parent / "golden" / "provenance"
 
@@ -134,3 +136,21 @@ def test_tests(site: Site, w: World, tmp_path: Path) -> None:
     cases = suite.findall("testcase")
     assert [c.get("name") for c in cases] == ["t1 seed=1", "t1 seed=2", "t9 seed=7"]
     assert [c.find("failure") is not None for c in cases] == [False, True, False]
+
+
+# Producers of one id are listed by action id, not by key digest, so the tree reads the same
+# after a key schema change.
+def test_why_lists_producers_by_action_id(site: Site) -> None:
+    store = site.services.memory_store
+    keys = sorted((hash_bytes(f"k{i}".encode()) for i in range(2)), key=str)
+    same = out(b"identical report")
+    build = finish(store, {
+        "lint[block=a]": Action({"report": same}, key=keys[1]),
+        "lint[block=b]": Action({"report": same}, key=keys[0]),
+    })  # fmt: skip
+    r = site.invoke(["why", str(same.id), "--domain", "test"])
+    assert r.exit_code == ExitCode.OK, r.output
+    lines = [line.strip("│├└─ ") for line in r.stdout.splitlines()]
+    a = lines.index(f"lint[block=a]  lint  passed  build {build} demo")
+    b = lines.index(f"lint[block=b]  lint  passed  build {build} demo")
+    assert a < b
