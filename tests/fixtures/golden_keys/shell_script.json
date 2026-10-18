@@ -1,6 +1,6 @@
 {
- "key": "sha256:77619c134de6831b079ebe8a4e2cf0541034f5c9389757684da0a99ab2eb4abb",
- "key_schema": 1,
+ "key": "sha256:63389aec0ac2f0839af87c18be846c0b460b2056336f242b559232416693eaf7",
+ "key_schema": 2,
  "name": "shell_script",
  "spec": {
   "action_id": "lint",

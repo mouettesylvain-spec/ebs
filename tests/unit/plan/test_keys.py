@@ -17,7 +17,7 @@ from ebs.plan.keys import (
     nondeterministic_output_id,
     with_key,
 )
-from ebs.plan.types import ActionOutputInput, InputRef, SourceInput
+from ebs.plan.types import ActionOutputInput, InputRef, Plan, SourceInput
 from tests.helpers.plan import sample_spec
 
 
@@ -34,6 +34,7 @@ def test_key_document_has_exactly_the_contract_fields() -> None:
         "toolchain": str(hash_bytes(b"questa")),
         "config_files": {".ebs/script.sh": str(hash_bytes(b"echo hi\n"))},
         "inputs": {"model/elab": str(hash_bytes(b"model")), "rtl/a.sv": str(hash_bytes(b"a"))},
+        "executable": {},
         "outputs": {
             "cov": {"path": "cov.ucdb", "type": "file"},
             "result": {"path": "result.json", "type": "file"},
@@ -102,3 +103,8 @@ def test_pending_message_lists_inputs_and_producers() -> None:
     message = str(exc.value)
     assert "inputs a, b, c have no id yet" in message
     assert "until their producers ran (comp, elab)" in message
+
+
+def test_plan_default_key_schema_is_current() -> None:
+    field = Plan.__dataclass_fields__["key_schema"]
+    assert field.default == KEY_SCHEMA_VERSION

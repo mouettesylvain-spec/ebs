@@ -152,6 +152,8 @@ class InputRef:
     `id` is None only for a deterministic output of an action that has not run yet (I14).
     `writable` (P1-04) stages private writable copies instead of read-only CAS links; it
     changes how the input is staged, never its content, so it is NOT in the key.
+    `executable` is a file's executable bit (source files and files of imported trees); it is
+    in the key, and the runner stages the file executable.
     """
 
     logical_path: str  # normalized, relative, POSIX; where the runner stages it
@@ -159,6 +161,7 @@ class InputRef:
     source: SourceInput | ActionOutputInput | ImportInput
     id: Digest | None
     writable: bool = False  # NOT in key
+    executable: bool = False  # in key
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,7 +274,7 @@ class Plan:
     actions: tuple[ActionSpec, ...]
     edges: tuple[tuple[str, str, str], ...]
     lock: Digest | None = None
-    key_schema: int = 1
+    key_schema: int = 2  # = ebs.plan.keys.KEY_SCHEMA_VERSION (which imports this module)
     v: int = PLAN_FORMAT_VERSION
 
     def __post_init__(self) -> None:

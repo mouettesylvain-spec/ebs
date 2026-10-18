@@ -175,7 +175,7 @@ def make_instance_id(name: str, row: Mapping[str, str], keys: Sequence[str]) -> 
 ## 4. Plan — `ebs.plan`
 
 ```python
-KEY_SCHEMA_VERSION: Final = 1
+KEY_SCHEMA_VERSION: Final = 2          # 2: the key document gained `executable`
 
 @dataclass(frozen=True, slots=True)
 class InputRef:
@@ -184,6 +184,7 @@ class InputRef:
     source: SourceInput | ActionOutputInput | ImportInput
     id: Digest | None                  # None only when produced by a not-yet-run deterministic output
     writable: bool = False             # P1-04; NOT in key: stage a writable copy, never a CAS link
+    executable: bool = False           # in key: the file's executable bit (sources, imported tree files)
 
 @dataclass(frozen=True, slots=True)
 class ActionSpec:
@@ -226,6 +227,11 @@ writable input (P1-04; read-only inputs encode as before, so existing plan diges
 The planner marks an input writable when it is staged through a flow input declared
 `writable: true` (source files and output references alike; a path staged by both a writable
 and a read-only declaration is writable). Rule-generated inputs are never writable.
+`"executable": true` likewise appears only on an executable file input. The planner takes it
+from the tree manifest of the source snapshot (the owner `x` bit, I5) or of an imported release's
+tree; whole outputs and output references never set it (a tree carries its own modes). It is in
+the key (**CONTRACT CHANGE**, key schema 2): a `chmod +x` reruns the action, and the runner
+stages the file as an executable copy (`CAS.materialize(executable=True)`).
 `PlanToolchain.env` (P0-13) is the toolchain's captured env, HOME-normalized (literal `$HOME`,
 § 13); the runner applies it with `$HOME` replaced by the action's scratch home. It is already
 hashed into the toolchain id, so it changes no action key; plan.json `toolchains` entries are
@@ -234,9 +240,10 @@ hashed into the toolchain id, so it changes no action key; plan.json `toolchains
 Key document (the only thing hashed):
 
 ```json
-{"schema": 1, "rule": {"kind": "...", "version": "..."}, "argv": [...], "params": {...},
+{"schema": 2, "rule": {"kind": "...", "version": "..."}, "argv": [...], "params": {...},
  "env": {...}, "toolchain": "sha256:…|null", "config_files": {"path": "sha256:…"},
- "inputs": {"<logical_path>": "sha256:…"}, "outputs": {"<name>": {"path": "...", "type": "..."}}}
+ "inputs": {"<logical_path>": "sha256:…"}, "executable": {"<logical_path>": true},
+ "outputs": {"<name>": {"path": "...", "type": "..."}}}
 ```
 
 - `nondeterministic_output_id(k, name) = digest_json({"nd": 1, "producer": str(k), "output": name})`.
@@ -260,7 +267,7 @@ Key document (the only thing hashed):
 Plan file (`plan.json`, canonical JSON, stored in CAS; its digest is the build's plan digest):
 
 ```json
-{"v": 1, "ebs_version": "…", "key_schema": 1, "flow": {"path": "...", "git": {"repo": "...", "commit": "...", "dirty": false}},
+{"v": 1, "ebs_version": "…", "key_schema": 2, "flow": {"path": "...", "git": {"repo": "...", "commit": "...", "dirty": false}},
  "lock": "sha256:…|null", "domain": "cpu-nda", "project": "rv32x-cpu",
  "toolchains": {"questa": {"module": "questa/2025.2", "id": "sha256:…", "env": {…}}},
  "actions": [ActionSpec…], "edges": [["from_action_id", "output", "to_action_id"]]}
@@ -329,7 +336,8 @@ class CAS(Protocol):
     def local_path(self, d: Digest) -> Path | None: ...    # fs backend only; for read-only bind/symlink
     def materialize(self, d: Digest, kind: Literal["file", "tree"], dest: Path,
                     mode: Literal["copy", "hardlink", "symlink", "auto"] = "auto",
-                    copy_threshold: int = 256 << 20, *, writable: bool = False) -> None: ...
+                    copy_threshold: int = 256 << 20, *, writable: bool = False,
+                    executable: bool = False) -> None: ...
     def verify(self, d: Digest) -> bool: ...
     def delete(self, d: Digest) -> None: ...               # GC only
     def iter_digests(self) -> Iterator[tuple[Digest, int]]: ...   # GC only
@@ -345,6 +353,7 @@ does not exist. `auto`: a file ≤ `copy_threshold` is copied, larger ones symli
 the CAS; tree files are hard links when on the same filesystem, else chosen by the same threshold.
 Files are read-only, directories writable; `writable=True` copies every file (0644/0755).
 Executable files are always copied (0555), because a link would share the blob's inode and mode.
+A tree records which files are executable; `executable=True` (file kind only) makes a blob one.
 Tree symlinks are created last and must resolve inside `dest`, else `CasError`. The fs backend
 also has `blob_path`, `tree_path`, `iter_objects() -> Iterator[(Digest, size, "file" | "tree")]`
 and `cleanup_tmp(max_age=24h, *, dry_run=False) -> int` (GC, P1-09; `dry_run` only counts).
@@ -1077,8 +1086,9 @@ Lifecycle and guarantees: architecture.md "Runner lifecycle on a node". P0-13 de
   is replaced. Under SLURM the dir first gets `.ebs-job` holding `$SLURM_JOB_ID` (P1-04), the
   key of the node epilog `deploy/slurm/epilog.d/ebs-scratch-cleanup.sh`. Inputs are
   materialized at `work/<logical path>` with `CAS.materialize(mode="auto",
-  copy_threshold=[cas].copy_threshold (256 MiB), writable=ref.writable)`: larger files are
-  symlinked read-only from the CAS, writable inputs always copied (P1-04 R1); config files are
+  copy_threshold=[cas].copy_threshold (256 MiB), writable=ref.writable,
+  executable=ref.executable)`: larger files are symlinked read-only from the CAS, writable and
+  executable inputs always copied (P1-04 R1); config files are
   written read-only; each input is re-hashed
   (file: blob digest, tree: manifest digest) against its content digest: the input id, or
   `resolve_output(id)` for a nondeterministic producer output (I10).

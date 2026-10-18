@@ -22,14 +22,16 @@ key = SHA256(canon(rule kind + version, expanded command, params, declared env,
 | Every param (lib, top, test, seed, plusargs, options) | User, timestamps, absolute paths (actions see logical paths) |
 | Declared env vars | License server (`LM_LICENSE_FILE` and friends) |
 | Toolchain id: module, version, install fingerprint, captured env | Undeclared files: they are not staged, so the tool cannot see them |
-| The id of every input, by logical path | |
+| The id of every input, by logical path, and which input files are executable | |
 
 Because resources are out of the key, giving a step more memory never invalidates the cache.
 Because user and paths are out, your result is a valid hit for a colleague and for CI.
 
 ## Input ids
 
-- A **file** is identified by the digest of its content.
+- A **file** is identified by the digest of its content. Its executable bit is part of the key
+  too: `chmod +x tools/run.sh` reruns the actions that stage it, and the runner stages it
+  executable, so a Makefile can call `./tools/run.sh` from its sources.
 - A **directory** is identified by the digest of its Merkle manifest (sorted name, mode and
   digest of every entry).
 - An **output of another action** is identified by its content digest, unless it is marked

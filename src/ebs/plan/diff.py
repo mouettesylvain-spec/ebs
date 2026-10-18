@@ -5,7 +5,8 @@ Actions are matched by `action_id`. A matched action is `unchanged` when its key
 new key cannot be computed yet; `pending` then names the producers it waits for.
 
 Field names: `schema`, `rule`, `argv`, `toolchain`, `params.<name>`, `env.<name>`,
-`outputs.<name>`, `config_files["<path>"]`, `inputs["<logical path>"]`.
+`outputs.<name>`, `config_files["<path>"]`, `inputs["<logical path>"]`,
+`executable["<logical path>"]`.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from ebs.plan.types import ActionDiff, ActionOutputInput, ActionSpec, Plan
 __all__ = ["diff_plans"]
 
 _DOTTED = ("params", "env", "outputs")
-_QUOTED = ("config_files", "inputs")
+_QUOTED = ("config_files", "inputs", "executable")
 
 
 def _as_dict(value: JsonValue) -> dict[str, JsonValue]:

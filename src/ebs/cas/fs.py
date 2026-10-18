@@ -279,8 +279,11 @@ class FsCAS:
         copy_threshold: int = DEFAULT_COPY_THRESHOLD,
         *,
         writable: bool = False,
+        executable: bool = False,
     ) -> None:
-        materialize(self, d, kind, dest, mode, copy_threshold, writable=writable)
+        materialize(
+            self, d, kind, dest, mode, copy_threshold, writable=writable, executable=executable
+        )
 
     # -- GC support -------------------------------------------------------------------------
 

@@ -17,6 +17,7 @@ from tests.helpers.release import Action, finish
 
 Content = Mapping[str, str] | bytes
 LINK = "@link:"  # a tree value "@link:a.sv" is a symlink to a.sv
+EXEC = "@exec:"  # a tree value "@exec:<text>" is an executable file holding <text>
 
 SRCS: dict[str, str] = {
     "rtl/a.sv": "module a; endmodule\n",
@@ -38,11 +39,16 @@ def store_output(cas: FsCAS, tmp: Path, content: Content, *, deterministic: bool
             (root / path).parent.mkdir(parents=True, exist_ok=True)
             if text.startswith(LINK):
                 (root / path).symlink_to(text.removeprefix(LINK))
+            elif text.startswith(EXEC):
+                (root / path).write_text(text.removeprefix(EXEC))
+                (root / path).chmod(0o755)
             else:
                 (root / path).write_text(text)
         digest = cas.put_tree(root)
         kind = "tree"
-        size = sum(len(t.encode()) for t in content.values() if not t.startswith(LINK))
+        size = sum(
+            len(t.removeprefix(EXEC).encode()) for t in content.values() if not t.startswith(LINK)
+        )
     oid = digest if deterministic else hash_bytes(b"nd:" + str(digest).encode())
     return OutputResult(digest=digest, id=oid, type=kind, size=size)  # type: ignore[arg-type]
 

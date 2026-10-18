@@ -1,6 +1,6 @@
 {
- "key": "sha256:326a2a6c961ab9fa876838254b410fc206f7e154ee4cdeb9f1e752a7ee1dceef",
- "key_schema": 1,
+ "key": "sha256:9deb37c2e63ab242be0f02b002f1bee64f239b0eb3ea643d9558288a19f4213d",
+ "key_schema": 2,
  "name": "questa_sim_unicode",
  "spec": {
   "action_id": "sim[seed=17,test=caf%C3%A9]",

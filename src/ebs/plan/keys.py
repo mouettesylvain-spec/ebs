@@ -27,7 +27,7 @@ __all__ = [
     "with_key",
 ]
 
-KEY_SCHEMA_VERSION: Final = 1
+KEY_SCHEMA_VERSION: Final = 2  # 2: `executable` input paths
 
 
 def _param(value: ParamValue) -> JsonValue:
@@ -50,6 +50,7 @@ def action_key_document(spec: ActionSpec) -> JsonValue:
         "inputs": {
             ref.logical_path: None if ref.id is None else str(ref.id) for ref in spec.inputs
         },
+        "executable": {ref.logical_path: True for ref in spec.inputs if ref.executable},
         "outputs": {out.name: {"path": out.path, "type": out.type} for out in spec.outputs},
     }
 

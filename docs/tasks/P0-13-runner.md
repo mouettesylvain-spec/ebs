@@ -87,7 +87,7 @@ Implementation notes (P0-13):
 Follow-ups / open questions:
 - Executable bit of source inputs (P0-08 follow-up) is still open: staged source files are 0444,
   so a Makefile that runs `./script.sh` from the sources fails. Needs `InputRef.executable` + key
-  schema bump.
+  schema bump. **Done (2026-10-18):** executable inputs are staged as 0555 copies.
 - `--array-map` (P1-04) exits 64 for now; large-input bind mounts, `/debug` collection, SLURM
   epilog cleanup are P1-04.
 - An unknown `--build` id surfaces as MetadataError → exit 75 (retried); distinguishing "unknown"

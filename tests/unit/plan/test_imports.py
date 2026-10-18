@@ -20,7 +20,7 @@ from ebs.plan.types import ImportInput, InputRef, Plan, PlanLock
 from ebs.release.lock import LockFile, lock_digest, plan_lock, resolve_lock
 from ebs.runner.stage import resolve_contents, stage_inputs
 from tests.helpers.cli import Site, TestServices, write_site
-from tests.helpers.imports import LINK, SRCS, publish
+from tests.helpers.imports import EXEC, LINK, SRCS, publish
 from tests.helpers.plan import flow, planner
 from tests.helpers.release import finish
 
@@ -366,3 +366,17 @@ def test_release_import_batch_rules(
     known = {int(one.id): one}
     assert check_release_imports(build, "test", [row], known, {"rtl": int(one.id)}) == []
     assert check_release_imports(build, "test", [row], known, {}) == [row]
+
+
+# A file of an imported tree keeps the executable bit the release recorded.
+def test_import_file_executable(cas: FsCAS, tmp_path: Path, store: InMemoryMetadataStore) -> None:
+    publish(store, cas, tmp_path / "rtl", {"pack.srcs": {**SRCS, "bin/gen.sh": f"{EXEC}echo\n"}},
+            channel="stable")  # fmt: skip
+    step = {"kind": "shell", "command": ["true"],
+            "inputs": {"x": "${imports.rtl}/pack.srcs/bin/gen.sh",
+                       "f": "${imports.rtl}/pack.srcs/rtl/files.f"}}  # fmt: skip
+    (action,) = _plan(cas, tmp_path, {"s": step}, plan_lock(_lock(store))).actions
+    assert {r.logical_path: r.executable for r in action.inputs} == {
+        "imports/rtl/pack.srcs/bin/gen.sh": True,
+        "imports/rtl/pack.srcs/rtl/files.f": False,
+    }

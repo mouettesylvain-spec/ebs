@@ -8,9 +8,10 @@ Action layout (one object per action, in plan order):
 
     {"action_id", "step", "rule": {"kind", "version"}, "argv": [...], "params": {...},
      "env": {...}, "runtime_env": {...}, "toolchain": {"name", "module", "id"} | null,
-     "inputs": [{"path", "kind", "id", "writable"?, "source": {"type": "source", "input", "pattern"}
-                                                | {"type": "output", "action", "output"}
-                                                | {"type": "import", "name", "path", "content"}}],
+     "inputs": [{"path", "kind", "id", "writable"?, "executable"?,
+                 "source": {"type": "source", "input", "pattern"}
+                         | {"type": "output", "action", "output"}
+                         | {"type": "import", "name", "path", "content"}}],
      "outputs": [{"name", "path", "type", "deterministic", "optional"}],
      "config_files": {...}, "resources": {"cpus", "mem", "time"[, "max_parallel"][, "constraint"]
                     [, "retry_on_timeout"]},
@@ -285,6 +286,8 @@ def _input_json(ref: InputRef) -> JsonValue:
     }
     if ref.writable:  # only when set: read-only inputs encode as before P1-04
         doc["writable"] = True
+    if ref.executable:
+        doc["executable"] = True
     return doc
 
 
@@ -300,6 +303,7 @@ def _input(value: object, path: str) -> InputRef:
         source=_get(doc, "source", path, _source),
         id=_get(doc, "id", path, _opt_digest),
         writable=_bool(doc.get("writable", False), f"{path}.writable"),
+        executable=_bool(doc.get("executable", False), f"{path}.executable"),
     )
 
 

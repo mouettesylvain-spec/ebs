@@ -1,6 +1,6 @@
 {
- "key": "sha256:b59bb8164595f43fa03fec1f047d99057502aa88859b24c51ecdbc4a4902f575",
- "key_schema": 1,
+ "key": "sha256:db4ce84855fff72a712180c75a344378048c80a8f1cfb350417b5ce078000eac",
+ "key_schema": 2,
  "name": "make_legacy",
  "spec": {
   "action_id": "lint_legacy",

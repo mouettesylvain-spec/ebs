@@ -59,6 +59,7 @@ def materialize(
     copy_threshold: int = DEFAULT_COPY_THRESHOLD,
     *,
     writable: bool = False,
+    executable: bool = False,
 ) -> None:
     """Materialize blob or tree `d` at `dest`, which must not exist yet (see `CAS.materialize`)."""
     if mode not in _MODES:
@@ -76,7 +77,7 @@ def materialize(
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             if kind == "file":
-                _place_file(ctx, d, dest, size=None, executable=False, in_tree=False)
+                _place_file(ctx, d, dest, size=None, executable=executable, in_tree=False)
             else:
                 _place_tree(ctx, d, dest)
         except OSError as exc:

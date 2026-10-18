@@ -185,7 +185,7 @@ def stage_inputs(
 
     Files up to `copy_threshold` bytes are copied, larger ones symlinked read-only from the CAS
     (tree files are hard-linked when the CAS shares the filesystem); `writable` inputs are
-    always private writable copies.
+    always private writable copies, `executable` files executable copies.
     """
     for ref in spec.inputs:
         try:
@@ -196,6 +196,7 @@ def stage_inputs(
                 mode="auto",
                 copy_threshold=copy_threshold,
                 writable=ref.writable,
+                executable=ref.executable,
             )
         except CasError as exc:
             raise InfraError(f"cannot stage input {ref.logical_path!r}: {exc}") from exc
