@@ -1,6 +1,6 @@
 # P2-04 — Provenance queries: `why`, `used-by`, `tests`
 
-Status: review · Phase: 2 · Depends on: P2-02 · Size: M
+Status: done · Phase: 2 · Depends on: P2-02 · Size: M
 
 ## Goal
 Answer "where did this artifact come from", "who consumed this release" and "which tests ran on the RTL

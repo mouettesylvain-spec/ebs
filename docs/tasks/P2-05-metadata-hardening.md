@@ -1,6 +1,6 @@
 # P2-05 — Metadata service hardening
 
-Status: review · Phase: 2 · Depends on: P1-06 · Size: M
+Status: done · Phase: 2 · Depends on: P1-06 · Size: M
 
 ## Goal
 The service is production-ready for ~100 users, CI and a dashboard: browser login, live event stream,
