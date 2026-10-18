@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta
 from typing import TypeVar
 
@@ -16,12 +16,17 @@ from ebs.meta.api import (
     CHANNEL_PATTERN,
     FINAL_BUILD_STATUSES,
     MAX_LEASE_TTL_S,
+    PROVENANCE_DEPTH_MAX,
     TOUCH_INTERVAL_S,
     ActionRow,
     ActionUpdate,
     BlobRef,
     BuildView,
     GcRun,
+    ProvenanceAction,
+    ProvenanceEdge,
+    ProvenanceGraph,
+    ProvenanceRelease,
     ReleaseCreate,
     ReleaseView,
     ResultManifest,
@@ -333,3 +338,107 @@ def check_exportable(release: ReleaseView) -> None:
             f"release {release.name} {release.version} is yanked ({release.yank_reason}); a "
             "yanked release is not exported"
         )
+
+
+# --- provenance walks (P2-04) ---------------------------------------------------------------------
+
+
+def check_walk(
+    domain: object, ids: Iterable[Digest], keys: Iterable[Digest], depth: object, what: str
+) -> tuple[str, list[str], list[str], int]:
+    """(domain, sorted ids, sorted keys, depth) of a walk, or MetadataError."""
+    check_domain(domain)
+    assert isinstance(domain, str)
+    if (
+        isinstance(depth, bool)
+        or not isinstance(depth, int)
+        or not 1 <= depth <= (PROVENANCE_DEPTH_MAX)
+    ):
+        raise MetadataError(
+            f"{what}: depth must be an integer from 1 to {PROVENANCE_DEPTH_MAX}, got {depth!r}"
+        )
+    id_list = sorted({str(check_digest(d, f"{what} id")) for d in ids})
+    key_list = sorted({str(check_digest(k, f"{what} key")) for k in keys})
+    return domain, id_list, key_list, depth
+
+
+def edge_models(
+    rows: Iterable[tuple[str, str, str, str, str | None]], what: str
+) -> list[ProvenanceEdge]:
+    """`ProvenanceEdge`s of stored rows (action_key, direction, logical_path, object_id,
+    content_digest), validated like any database row. Each distinct digest string is parsed
+    once: a large walk repeats every object id on several edges (P2-04 R5)."""
+    parsed: dict[str, Digest] = {}
+
+    def digest(text: str) -> Digest:
+        found = parsed.get(text)
+        if found is None:
+            found = parsed[text] = Digest.parse(text)
+        return found
+
+    try:
+        return [
+            ProvenanceEdge(
+                action_key=digest(key), direction=direction,  # type: ignore[arg-type]
+                logical_path=path, object_id=digest(oid),
+                content_digest=None if content is None else digest(content),
+            )
+            for key, direction, path, oid, content in rows
+        ]  # fmt: skip
+    except (DigestError, ValidationError) as exc:
+        raise MetadataError(f"{what}: a stored provenance edge is invalid: {exc}") from None
+
+
+def walk_levels(
+    first: set[str], step: Callable[[set[str]], set[str]], depth: int
+) -> tuple[set[str], bool]:
+    """Breadth-first: `first` is level 1, `step(level)` the keys next to it. Returns the keys
+    of levels 1..depth and whether a level beyond `depth` has keys not walked (truncated)."""
+    seen, level = set(first), set(first)
+    for _ in range(depth - 1):
+        if not level:
+            break
+        level = step(level) - seen
+        seen |= level
+    return seen, bool(level) and bool(step(level) - seen)
+
+
+def _edge_order(e: ProvenanceEdge) -> tuple[str, str, str, str]:
+    # Plain strings compare much faster than Digest dataclasses; the order is the same.
+    return (e.action_key.algo, e.action_key.hex, e.direction, e.logical_path)
+
+
+def provenance_graph(
+    domain: str,
+    edges: Iterable[ProvenanceEdge],
+    actions: Iterable[ProvenanceAction],
+    releases: Iterable[ProvenanceRelease],
+    truncated: bool,
+    *,
+    presorted: bool = False,
+) -> ProvenanceGraph:
+    """The graph with its lists in the documented order (the same from every store).
+    `presorted`: edges and actions already are (PostgreSQL sorts them in byte order, which is
+    Python's string order); re-sorting 50k edges was a large part of a big walk (R5)."""
+    return ProvenanceGraph(
+        domain=domain,
+        edges=list(edges) if presorted else sorted(edges, key=_edge_order),
+        actions=list(actions)
+        if presorted
+        else sorted(actions, key=lambda a: (a.build, a.action_id)),
+        releases=sorted(releases, key=lambda r: (r.release, r.output)),
+        truncated=truncated,
+    )
+
+
+def release_matches(release: ReleaseView, objects: set[str]) -> list[ProvenanceRelease]:
+    """The outputs of `release` whose id is in `objects`."""
+    return [
+        ProvenanceRelease(
+            release=release.id, name=release.name, version=release.version, output=name,
+            object_id=o.id, exported_from=release.exported_from,
+            yanked=release.yanked_at is not None,
+        )
+        for name, o in sorted(release.outputs.items())
+        if str(o.id) in objects
+    ]  # fmt: skip

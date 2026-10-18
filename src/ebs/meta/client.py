@@ -41,11 +41,13 @@ from ebs.meta._common import (
     check_lease_ttl,
     check_pin,
     check_toolchain,
+    check_walk,
     revalidate,
 )
 from ebs.meta.api import (
     API_PREFIX,
     BATCH_MAX,
+    PROVENANCE_START_MAX,
     ActionBatch,
     ActionList,
     ActionRow,
@@ -79,6 +81,8 @@ from ebs.meta.api import (
     OptionalDigest,
     OptionalResult,
     PinRequest,
+    ProvenanceGraph,
+    ProvenanceQuery,
     RegisterOutcome,
     ReleaseCreate,
     ReleaseId,
@@ -811,6 +815,36 @@ class HttpMetadataStore:
             body=ExportRequest(to_domain=to_domain), idempotent=False,
         )  # fmt: skip
         return self._parse(r, ReleaseView, what)
+
+    # --- provenance (P2-04) ----------------------------------------------------------------------
+
+    def provenance_upstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        return self._walk("upstream", domain, ids, keys, depth)
+
+    def provenance_downstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        return self._walk("downstream", domain, ids, keys, depth)
+
+    def _walk(
+        self, way: str, domain: str, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        domain, id_list, key_list, levels = check_walk(
+            domain, ids, keys, depth, f"provenance_{way}"
+        )
+        what = f"provenance_{way} {domain}"
+        if len(id_list) + len(key_list) > PROVENANCE_START_MAX:
+            raise MetadataError(
+                f"{what}: a walk starts from at most {PROVENANCE_START_MAX} ids and keys, got "
+                f"{len(id_list) + len(key_list)}; query fewer outputs at a time"
+            )
+        query = ProvenanceQuery.model_validate({"ids": id_list, "keys": key_list, "depth": levels})
+        r = self._call(
+            "POST", f"/domains/{_q(domain)}/provenance/{way}", what, body=query, idempotent=True
+        )
+        return self._parse(r, ProvenanceGraph, what)
 
     def list_exports(self, release: ReleaseId) -> list[ExportRecord]:
         what = f"list_exports {release}"

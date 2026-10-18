@@ -51,7 +51,7 @@ from ebs.meta.service.auth import (
 from ebs.meta.service.authz import DomainPolicy, NssGroups
 from ebs.meta.service.deps import BODY_MODELS, ServiceDeps, is_outage
 from ebs.meta.service.readiness import PgReadiness
-from ebs.meta.service.routes import builds, cache, probes, releases, toolchains
+from ebs.meta.service.routes import builds, cache, probes, provenance, releases, toolchains
 from ebs.meta.service.tokens import PgTokenStore
 from ebs.release.channels import GatePolicy
 
@@ -147,7 +147,9 @@ def create_app(deps: ServiceDeps) -> FastAPI:
     )
     app.state.deps = deps
     app.include_router(probes.probes)
-    for router in (probes.api, cache.router, builds.router, toolchains.router, releases.router):
+    routers = (probes.api, cache.router, builds.router, toolchains.router, releases.router,
+               provenance.router)  # fmt: skip
+    for router in routers:
         app.include_router(router, prefix=API_PREFIX, responses=_ERRORS)
     app.add_exception_handler(AuthenticationError, _auth_failed)
     app.add_exception_handler(PermissionDeniedError, _forbidden)

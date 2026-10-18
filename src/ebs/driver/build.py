@@ -32,7 +32,7 @@ from ebs.gc.access import put_registered
 from ebs.gc.leases import LeaseKeeper
 from ebs.meta.api import ActionRow, BuildCreate, BuildId, BuildStatus, MetadataStore
 from ebs.plan.planfile import encode
-from ebs.plan.types import Plan
+from ebs.plan.types import ActionSpec, Plan
 
 _log = get_logger(__name__)
 
@@ -57,6 +57,16 @@ class BuildOutcome:
 
 def events_path(workdir: Path, uuid: UUID) -> Path:
     return workdir / ".ebs" / "builds" / str(uuid) / "events.jsonl"
+
+
+def action_row(spec: ActionSpec) -> ActionRow:
+    """The store row of a planned action: with its rule kind, params and toolchain, which
+    provenance queries show and select on (P2-04)."""
+    params = {k: list(v) if isinstance(v, tuple) else v for k, v in spec.params.items()}
+    return ActionRow(
+        action_id=spec.action_id, step=spec.step, key=spec.key, rule=spec.rule.kind,
+        params=params, toolchain=spec.toolchain.id if spec.toolchain else None,
+    )  # fmt: skip
 
 
 def run_build(
@@ -94,9 +104,7 @@ def run_build(
             cache_mode=config.cache_mode,
         )
     )
-    store.add_actions(
-        build, [ActionRow(action_id=a.action_id, step=a.step, key=a.key) for a in plan.actions]
-    )
+    store.add_actions(build, [action_row(a) for a in plan.actions])
     # GC roots for the build's lifetime (P1-09 R2): the plan and every input id known so far.
     lease = LeaseKeeper(store, plan.domain, build, clock)
     lease.start([plan_digest, *(r.id for a in plan.actions for r in a.inputs if r.id is not None)])

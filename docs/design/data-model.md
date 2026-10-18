@@ -30,6 +30,8 @@ actions(build_id FK, action_id text, step text, key text null, state text, attem
         slurm_job_id text null, pending_reason text null, infra_reason text null,
         queued_at not null, started_at, finished_at, cached bool, result_key text null,
         result jsonb null,                                 -- last ResultManifest (0003, P0-15)
+        rule text null, params jsonb object null,          -- rule kind, plan params and
+        toolchain text null check digest,                  -- toolchain id (0008, P2-04)
         PRIMARY KEY(build_id, action_id))
         check state in (… , 'skipped')                     -- 'skipped' added by 0003 (P0-15)
         check result is null or (object with v = 1)        -- ck_actions_result_manifest
@@ -119,6 +121,9 @@ archives(id, release_id FK, bundle_digest text, location text, created_at)
 - `add_actions`: `COPY` into `actions` (20,000 rows well under 5 s).
 - `ebs status`: `actions WHERE build_id = ? GROUP BY state`.
 - `ebs why <digest>`: walk `provenance_edges` by `object_id` → `action_key` recursively
-  (recursive CTE; depth limit 200).
+  (recursive CTE; depth limit 200). P2-04: one CTE per walk returns the walked keys with their
+  edges (PK on `(domain, action_key, …)` and the `(domain, object_id)` index); a 20-level,
+  50k-edge walk returns in under a second (`tests/integration/test_provenance_perf.py`).
 - `ebs tests <release>`: forward walk from release output ids to actions whose step rule kind is
-  `*.sim`.
+  `*.sim` (`actions.rule`, 0008). Releases holding a walked id are found by scanning the
+  domain's `releases.outputs` (`jsonb_each`); fine while releases number in the thousands.

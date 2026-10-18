@@ -23,6 +23,7 @@ from ebs.core.digest import hash_bytes
 from ebs.domains import Domains
 from ebs.meta.api import (
     API_PREFIX,
+    PROVENANCE_DEPTH_MAX,
     ActionRow,
     BlobRef,
     BuildId,
@@ -207,6 +208,18 @@ OPS: list[tuple[str, Op, frozenset[str]]] = [
         lambda c, m, w: c.gate_builds(A, "gate", [LIB.id]),
         frozenset({A}),
     ),
+    (  # P2-04 R4
+        "POST /domains/{domain}/provenance/upstream",
+        lambda c, m, w: _found_actions(
+            c.provenance_upstream(A, ids=[LIB.id], keys=[], depth=PROVENANCE_DEPTH_MAX)
+        ),
+        frozenset({A}),
+    ),
+    (
+        "POST /domains/{domain}/provenance/downstream",
+        lambda c, m, w: c.provenance_downstream(A, ids=[LIB.id], keys=[], depth=1),
+        frozenset({A}),
+    ),
     (
         "GET /releases/{release}/exports",
         lambda c, m, w: c.list_exports(m.release.id),
@@ -238,6 +251,11 @@ DOMAIN_FREE = {
     "GET /toolchains/{toolchain_id}", "GET /toolchains/{toolchain_id}/manifest",
     "POST /toolchains/{toolchain_id}/touch",
 }  # fmt: skip
+
+
+def _found_actions(graph: Any) -> Any:
+    assert graph.actions, "a member walks the domain's provenance"
+    return graph
 
 
 def _found(value: list[Any]) -> list[Any]:
