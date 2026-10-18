@@ -217,3 +217,22 @@ def test_plans_are_equal_after_reencoding(cas: FsCAS, tmp_path: Path) -> None:
     p, _ = planner(cas, RTL)
     plan: Plan = p.plan(arch_flow(tmp_path), base=tmp_path)
     assert encode(decode(encode(plan))) == encode(plan)
+
+
+# An older key schema: refused to run or cache anything, read as recorded for commands that
+# look at a past build (`any_key_schema`); stored keys are kept, never re-computed. A newer or
+# malformed schema is refused either way.
+def test_older_key_schema_read_as_recorded(cas: FsCAS, tmp_path: Path) -> None:
+    doc = _plan_doc(cas, tmp_path)
+    doc["key_schema"] = KEY_SCHEMA_VERSION - 1
+    doc["actions"][0]["key"] = str(hash_bytes(b"a key of the old schema"))
+    data = json.dumps(doc).encode()
+    with pytest.raises(PlanError, match="key schema"):
+        decode(data)
+    plan = decode(data, any_key_schema=True)
+    assert plan.key_schema == KEY_SCHEMA_VERSION - 1
+    assert plan.actions[0].key == hash_bytes(b"a key of the old schema")
+    for bad in (KEY_SCHEMA_VERSION + 1, 0, "1", None):
+        doc["key_schema"] = bad
+        with pytest.raises(PlanError, match="key schema"):
+            decode(json.dumps(doc).encode(), any_key_schema=True)

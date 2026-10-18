@@ -53,7 +53,16 @@ def gen_command(
     result = write_seeds(path, options)
     if json_mode:
         out.emit(
-            {"v": 1, "table": str(table), "appended": result.appended, "filled": result.filled}
+            {
+                "v": 1,
+                "table": str(table),
+                "appended": result.appended,
+                "filled": result.filled,
+                "rows": [{"change": c.change, "row": dict(c.row)} for c in result.changes],
+            }
         )
         return
     out.line(f"{table}: {result.appended} rows appended, {result.filled} empty seeds filled")
+    for c in result.changes:  # to review before committing the table
+        cells = " ".join(f"{k}={v}" for k, v in c.row.items())
+        out.line(f"  {c.change:<8} {cells}")

@@ -84,6 +84,10 @@ class DriverBusyError(EbsError):
     """Another driver holds the build's driver lease, or the build cannot be driven (P2-08)."""
 
 
+class GcBusyError(EbsError):
+    """Another `ebs gc` run holds the domain's GC lock."""
+
+
 class ExecutorError(EbsError):
     """Failure submitting or tracking actions on an executor."""
 

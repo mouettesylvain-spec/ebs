@@ -1,0 +1,93 @@
+---
+// Landing hero (replaces Starlight's Hero; see astro.config.mjs). Title, tagline and actions
+// come from the `hero` frontmatter of src/content/docs/index.mdx.
+import MakeVsEbsScene from '../../scenes/make-vs-ebs/MakeVsEbsScene.astro';
+
+const { data } = Astro.locals.starlightRoute.entry;
+const { title = data.title, tagline, actions = [] } = data.hero ?? {};
+---
+
+<section class="hero not-content">
+  <p class="eyebrow">EBS · the EDA Build System</p>
+  <h1 id="_top" set:html={title} />
+  {tagline && <p class="tagline" set:html={tagline} />}
+  <div class="actions">
+    {
+      actions.map((a) => (
+        <a class:list={['btn', a.variant === 'primary' ? 'primary' : 'secondary']} href={a.link}>
+          {a.text}
+        </a>
+      ))
+    }
+  </div>
+  <div class="scene">
+    <MakeVsEbsScene />
+  </div>
+</section>
+
+<style>
+  .hero {
+    padding-block: clamp(2rem, 8vw, 6rem) 0;
+    text-align: center;
+  }
+  .eyebrow {
+    color: var(--ebs-accent);
+    font-weight: 600;
+    font-size: var(--ebs-text-body);
+    margin: 0 0 1rem;
+  }
+  h1 {
+    margin: 0 auto;
+    max-width: 14ch;
+    font-family: var(--ebs-font-display);
+    font-size: var(--ebs-text-hero);
+    line-height: 1.04;
+    letter-spacing: var(--ebs-tracking-tight);
+    font-weight: 700;
+    color: var(--ebs-text);
+  }
+  .tagline {
+    margin: 1.5rem auto 0;
+    max-width: 38ch;
+    font-size: var(--ebs-text-lead);
+    line-height: 1.4;
+    color: var(--ebs-text-2);
+  }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    justify-content: center;
+    margin-top: 2rem;
+  }
+  .btn {
+    display: inline-block;
+    padding: 0.75rem 1.5rem;
+    border-radius: 999px;
+    font-size: var(--ebs-text-body);
+    font-weight: 500;
+    text-decoration: none;
+    transition:
+      background var(--ebs-duration-s) var(--ebs-ease),
+      color var(--ebs-duration-s) var(--ebs-ease);
+  }
+  .primary {
+    background: var(--ebs-accent-strong);
+    color: var(--ebs-on-accent);
+  }
+  .primary:hover {
+    background: var(--ebs-accent);
+  }
+  .secondary {
+    color: var(--ebs-accent);
+    border: 1px solid var(--ebs-accent);
+  }
+  .secondary:hover {
+    background: var(--ebs-accent-soft);
+  }
+  .scene {
+    margin: clamp(2rem, 6vw, 4rem) auto 0;
+    max-width: var(--ebs-content);
+    text-align: left;
+  }
+</style>

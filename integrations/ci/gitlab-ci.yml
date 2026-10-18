@@ -1,5 +1,5 @@
 # GitLab CI template for an EBS flow (P2-07). Copy it into the flow's repository and adapt the
-# job tags, the release name and the channel. See docs/user/ci.md.
+# job tags, the release name and the channel. Docs: site Integrations > CI, docs/user/ci.md.
 #
 # Project CI/CD variables (Settings > CI/CD > Variables):
 #   EBS_META_TOKEN  the team's service-account token for the metadata service
@@ -9,7 +9,7 @@ stages: [build, release]
 
 variables:
   EBS_RELEASE: rtl-team/cpu          # the release name this pipeline publishes
-  GIT_DEPTH: "0"                     # ebs records the flow's commit; keep full history
+  GIT_DEPTH: "0"                     # the build records the flow's commit; keep full history
 
 .ebs:
   tags: [ebs-login]                  # a runner on a login node with `ebs` and SLURM access

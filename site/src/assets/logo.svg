@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none" role="img" aria-label="EBS">
+  <!-- A die with three stacked layers: build, cache, release. -->
+  <rect x="3" y="3" width="26" height="26" rx="7" fill="#0071e3"/>
+  <rect x="8.5" y="8.5" width="15" height="3.4" rx="1.7" fill="#fff"/>
+  <rect x="8.5" y="14.3" width="10.5" height="3.4" rx="1.7" fill="#fff" opacity=".8"/>
+  <rect x="8.5" y="20.1" width="15" height="3.4" rx="1.7" fill="#fff" opacity=".6"/>
+</svg>

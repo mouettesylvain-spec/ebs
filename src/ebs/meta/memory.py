@@ -19,6 +19,7 @@ from ebs.meta._common import (
     aggregate_stats,
     attribution_digests,
     build_matches,
+    build_plans,
     cache_refs,
     check_blobs,
     check_build_filter,
@@ -27,6 +28,7 @@ from ebs.meta._common import (
     check_driver_owner,
     check_event_query,
     check_exportable,
+    check_final_plan,
     check_final_status,
     check_lease_ttl,
     check_pin,
@@ -73,6 +75,7 @@ from ebs.meta.api import (
     GcAttribution,
     GcBlob,
     GcCacheEntry,
+    GcLock,
     GcRoots,
     GcRun,
     LeaseId,
@@ -149,6 +152,7 @@ class InMemoryMetadataStore:
         self._next_lease = 1
         self._pins: dict[int, tuple[str, str, datetime]] = {}  # build -> by, reason, at
         self._drivers: dict[int, DriverLease] = {}  # P2-08: build -> its driver lease
+        self._gc_locks: dict[str, GcLock] = {}  # domain -> the GC run holding it
         self._tombstones: dict[tuple[str, str], Tombstone] = {}
         self._policies: dict[str, DomainPolicy] = {}
         self.gc_runs: list[GcRun] = []
@@ -172,13 +176,15 @@ class InMemoryMetadataStore:
             if entry.last_access <= touch_cutoff(now):
                 entry.last_access = now
             payload = entry.result
-        try:
-            return ResultManifest.model_validate(payload)
-        except ValueError as exc:
-            raise MetadataError(
-                f"action cache entry {domain}/{key} holds an invalid result manifest; delete "
-                f"the entry so the action reruns: {exc}"
-            ) from None
+        return _cached_result(domain, key, payload)
+
+    def cache_peek(self, domain: str, key: Digest) -> ResultManifest | None:
+        check_domain(domain)
+        check_digest(key, "cache_peek key")
+        with self._lock:
+            entry = self._cache.get((domain, str(key)))
+            payload = None if entry is None else entry.result
+        return None if payload is None else _cached_result(domain, key, payload)
 
     def cache_put(self, domain: str, key: Digest, result: ResultManifest) -> bool:
         check_domain(domain)
@@ -307,13 +313,22 @@ class InMemoryMetadataStore:
                     return Digest.parse(content)
         return None
 
-    def finish_build(self, build: BuildId, status: BuildStatus) -> None:
+    def finish_build(
+        self, build: BuildId, status: BuildStatus, *, final_plan: Digest | None = None
+    ) -> None:
         check_final_status(status)
+        final_plan = check_final_plan(final_plan)
         with self._lock:
             b = self._build(build)
             if b.view.status != "running":
                 raise MetadataError(f"build {build} is already finished ({b.view.status})")
-            b.view = b.view.model_copy(update={"status": status, "finished_at": self._clock.now()})
+            b.view = b.view.model_copy(
+                update={
+                    "status": status,
+                    "finished_at": self._clock.now(),
+                    "final_plan_digest": final_plan,
+                }
+            )
             # A finished build holds no lease; a pin is a separate root.
             for lease in [i for i, x in self._leases.items() if x.build == build]:
                 del self._leases[lease]
@@ -508,7 +523,7 @@ class InMemoryMetadataStore:
         with self._lock:
             b = self._build(build)
             self._pins.setdefault(build, (by, reason, self._clock.now()))
-            roots = {str(b.view.plan_digest)}
+            roots = {str(d) for d in build_plans(b.view)}
             for payload in b.results.values():
                 roots |= {str(d) for d in attribution_digests(payload)}
             self._touch_rows(b.view.domain, roots)
@@ -816,7 +831,7 @@ class InMemoryMetadataStore:
                 b = self._builds[build_id]
                 if b.view.domain != domain:
                     continue
-                pinned.add(b.view.plan_digest)
+                pinned.update(build_plans(b.view))
                 for payload in b.results.values():
                     pinned.update(attribution_digests(payload))
             leased = {
@@ -913,6 +928,24 @@ class InMemoryMetadataStore:
         with self._lock:
             self._domains.add(checked.domain)
             self.gc_runs.append(checked)
+
+    def gc_lock(self, domain: str, owner: str, *, now: datetime, ttl_s: int) -> GcLock:
+        check_domain(domain)
+        check_driver_owner(owner, "gc_lock")
+        check_lease_ttl(ttl_s)
+        with self._lock:
+            held = self._gc_locks.get(domain)
+            if held is None or held.expires_at <= now or held.owner == owner:
+                held = GcLock(domain, owner, now + timedelta(seconds=ttl_s))
+                self._gc_locks[domain] = held
+            return held
+
+    def gc_unlock(self, domain: str, owner: str) -> None:
+        check_domain(domain)
+        with self._lock:
+            held = self._gc_locks.get(domain)
+            if held is not None and held.owner == owner:
+                del self._gc_locks[domain]
 
     # --- events ---------------------------------------------------------------------------------
 
@@ -1037,3 +1070,13 @@ class InMemoryMetadataStore:
                 row.last_used_at is None or row.last_used_at <= touch_cutoff(now)
             ):
                 self._toolchains[key] = row.model_copy(update={"last_used_at": now})
+
+
+def _cached_result(domain: str, key: Digest, payload: object) -> ResultManifest:
+    try:
+        return ResultManifest.model_validate(payload)
+    except ValueError as exc:
+        raise MetadataError(
+            f"action cache entry {domain}/{key} holds an invalid result manifest; delete "
+            f"the entry so the action reruns: {exc}"
+        ) from None

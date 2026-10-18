@@ -3,12 +3,14 @@ from __future__ import annotations
 import dataclasses
 import os
 import signal
+from typing import Any
 
 import pytest
 
-from ebs.core.digest import hash_bytes
-from ebs.core.errors import ExitCode
+from ebs.core.digest import Digest, hash_bytes
+from ebs.core.errors import CasError, ExitCode
 from ebs.driver.build import action_row
+from ebs.gc.access import put_registered
 from ebs.plan.planfile import plan_digest
 from ebs.plan.types import FlowInfo, GitInfo, RuleRef, ToolchainRef
 from tests.helpers.driver import Env, Node
@@ -37,6 +39,33 @@ def test_build_record(env: Env) -> None:
     assert view.finished_at is not None
     assert view.action_counts == {"done": 2}
     assert outcome.events_path.is_file()
+
+
+# P1-09 follow-up: the refined final plan is stored, registered and recorded with the build, so
+# a pin roots it; a CAS failure there still finishes the build (without it).
+def test_final_plan_recorded(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    plan = env.plan({"a": Node(), "b": Node(deps=(("a", "out"),))})
+    outcome = env.run(plan, env.executor())
+    view = env.store.get_build(outcome.build)
+    assert view.final_plan_digest == plan_digest(outcome.plan)
+    assert view.final_plan_digest != view.plan_digest  # b's key was filled in
+    assert env.cas.has(view.final_plan_digest)
+    env.store.pin_build(outcome.build, by="alice")
+    roots = env.store.gc_roots("test", env.clock.now())
+    assert {view.plan_digest, view.final_plan_digest} <= roots.pinned
+
+    calls: list[tuple[Any, ...]] = []
+
+    def refuse(*args: Any) -> Digest:
+        calls.append(args)
+        if len(calls) > 1:  # start_build stores the plan; the final plan comes second
+            raise CasError("disk full")
+        return put_registered(*args)
+
+    monkeypatch.setattr("ebs.driver.build.put_registered", refuse)
+    failed = env.run(env.plan({"c": Node()}), env.executor())
+    view = env.store.get_build(failed.build)
+    assert (view.status, view.final_plan_digest) == ("passed", None)
 
 
 # R10: a flow outside git is recorded with empty repo/commit, not dirty.

@@ -1,0 +1,49 @@
+---
+title: Dashboard
+description: Serve the web dashboard from the metadata service, with GitLab login.
+sidebar:
+  order: 8
+---
+
+The dashboard is a read-only web UI for the metadata service: builds with their live DAG
+(grouped by step, so a 1,000-test regression stays readable), regression grids of test × seed
+with failures clustered by their first error, action logs streamed in byte ranges, cache hit
+rate and saved CPU time, license waits per feature, releases, channels and provenance.
+
+It is a static React build that the metadata service serves itself at `/ui/`, so the API and
+the session cookie are same-origin and there is nothing else to deploy.
+
+## Set it up
+
+1. Build it once per release of EBS (Node 24):
+
+   ```sh
+   cd web && npm ci && npm run build      # writes web/dist
+   ```
+
+2. Point the service at the build and configure login, in the service's config
+   ([Metadata service](/ebs/operate/metadata-service/)):
+
+   ```toml
+   [meta_service]
+   dashboard_dir = "/opt/ebs/web/dist"
+
+   [meta_service.oidc]                     # GitLab application, scopes openid + profile
+   issuer = "https://gitlab.example"
+   client_id = "<application id>"
+   client_secret_file = "/etc/ebs/oidc_client_secret"
+   redirect_uri = "https://ebs-meta.example/auth/callback"
+   session_secret_file = "/etc/ebs/session_keys"
+   username_claim = "preferred_username"   # must be the Unix user name
+   ```
+
+3. Open `https://ebs-meta.example/ui/` and log in.
+
+## What users see
+
+The service authorizes every request; the dashboard never filters on its own. A user sees the
+domains whose Unix group they belong to, exactly as with the CLI. Live views follow the
+service's event stream (server-sent events) and reconnect where they stopped.
+
+Put `/metrics` and `/auth/*` behind your reverse proxy's access and rate limits: the service
+does not rate-limit logins (there is no principal yet) and serves metrics without credentials.

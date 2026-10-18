@@ -1,0 +1,67 @@
+---
+title: The content-addressed store
+description: How EBS stores every input and output once, by digest, per confidentiality domain.
+sidebar:
+  order: 3
+---
+
+import CasScene from '../../../scenes/cas/CasScene.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+Every byte EBS reads or produces lives in the **content-addressed store** (CAS): a directory
+tree on NFS where an object's path is its SHA-256 digest. Two files with the same content are
+one object. An object never changes after it is written, so anyone who has its digest has
+exactly those bytes, today or in five years.
+
+<CasScene />
+
+## Layout
+
+One root per [domain](/ebs/concepts/domains/), owned by the domain's Unix group:
+
+```text
+/cas/<domain>/blobs/sha256/ab/cd/<digest>       immutable file contents, read-only
+/cas/<domain>/trees/sha256/ab/cd/<digest>.json   directory manifests (Merkle trees)
+/cas/<domain>/tmp/                               upload staging, same filesystem
+```
+
+The two levels of fan-out (`ab/cd`) keep every directory small, even with millions of objects.
+
+## Writing: tmp, fsync, rename
+
+A runner hashes each output on node-local scratch while it is written, then:
+
+1. copies it into `tmp/` under a unique name,
+2. `fsync`s it,
+3. renames it to its final path. A rename within one filesystem is atomic.
+
+A reader therefore sees either nothing or the complete object, never a partial one. When two
+runners upload the same digest at once, the first rename wins and the second is a no-op: the
+bytes are the same by definition. A directory output uploads its files first and its tree
+manifest last, so a visible tree is always complete.
+
+## Directories are Merkle trees
+
+A directory is stored as a manifest: its entries sorted by name, each with its mode and digest.
+The digest of that manifest is the directory's id. Changing one file deep inside changes the
+id of every directory above it, and nothing else. The format is REAPI-compatible, which keeps
+the door open for a Bazel remote-execution backend later.
+
+## Reading: copy small, link large
+
+Inputs up to `[cas].copy_threshold` (256 MiB by default) are copied to the action's scratch
+directory; bigger ones are bind-mounted or symlinked read-only. A 100 GB database is never
+copied just to be read.
+
+<Aside type="note" title="Why not GitLab packages or S3?">
+GitLab generic packages are capped at 5 GB per file, and a first version on the existing NFS
+needs no new infrastructure. An S3 backend behind the same interface is planned (see the
+[Roadmap](/ebs/reference/roadmap/)).
+</Aside>
+
+## Garbage collection
+
+Objects are deleted only by `ebs gc`, run as a service account: anything not reachable from a
+release, a pinned build or a running build's lease, and unused for longer than the domain's TTL.
+Cache entries go first, their bytes a grace period later, so a concurrent build never finds a
+cache entry without its data. See [Garbage collection](/ebs/operate/gc/).

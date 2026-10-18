@@ -1,0 +1,18 @@
+---
+title: PostgreSQL
+description: The metadata database - primary, standby, pooling and backups, with compose or Ansible.
+sidebar:
+  order: 2
+---
+
+import RepoDoc from '../../../components/RepoDoc.astro';
+
+The rest of this page is `deploy/postgres/README.md` from the repository, embedded at build time.
+After the database is up, create the schema once (and again after each upgrade, before starting
+the new metadata service):
+
+```sh
+python -c 'from ebs.meta import migrations; migrations.upgrade("postgresql+psycopg://ebs:…@db.example:6432/ebs?sslmode=require")'
+```
+
+<RepoDoc path="deploy/postgres/README.md" />

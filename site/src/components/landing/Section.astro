@@ -1,0 +1,85 @@
+---
+// A landing-page section: an optional eyebrow, a headline, a lead, then content.
+// It fades up the first time it scrolls into view (instantly with reduced motion or no JS).
+interface Props {
+  eyebrow?: string;
+  title: string;
+  lead?: string;
+}
+
+const { eyebrow, title, lead } = Astro.props;
+---
+
+<section class="section not-content" data-reveal>
+  {eyebrow && <p class="eyebrow">{eyebrow}</p>}
+  <h2>{title}</h2>
+  {lead && <p class="lead">{lead}</p>}
+  <div class="body"><slot /></div>
+</section>
+
+<script>
+  // One observer for every section of the page.
+  const sections = document.querySelectorAll<HTMLElement>('[data-reveal]');
+  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('revealed');
+            observer.unobserve(entry.target);
+          }
+        }
+      },
+      { threshold: 0.15 },
+    );
+    sections.forEach((s) => {
+      s.classList.add('will-reveal');
+      observer.observe(s);
+    });
+  }
+</script>
+
+<style>
+  .section {
+    max-width: var(--ebs-content-wide);
+    margin: 0 auto;
+    padding-block: clamp(3rem, 9vw, 7rem);
+    text-align: center;
+  }
+  .eyebrow {
+    color: var(--ebs-accent);
+    font-weight: 600;
+    margin: 0 0 0.75rem;
+  }
+  h2 {
+    margin: 0 auto;
+    max-width: 20ch;
+    font-family: var(--ebs-font-display);
+    font-size: var(--ebs-text-headline);
+    line-height: 1.08;
+    letter-spacing: var(--ebs-tracking-tight);
+    color: var(--ebs-text);
+  }
+  .lead {
+    margin: 1.25rem auto 0;
+    max-width: 46ch;
+    font-size: var(--ebs-text-lead);
+    line-height: 1.45;
+    color: var(--ebs-text-2);
+  }
+  .body {
+    margin-top: clamp(2rem, 5vw, 3.5rem);
+    text-align: left;
+  }
+  .will-reveal {
+    opacity: 0;
+    transform: translateY(24px);
+    transition:
+      opacity var(--ebs-duration-l) var(--ebs-ease-out),
+      transform var(--ebs-duration-l) var(--ebs-ease-out);
+  }
+  .will-reveal.revealed {
+    opacity: 1;
+    transform: none;
+  }
+</style>

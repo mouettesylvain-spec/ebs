@@ -26,7 +26,8 @@ Faults, `<state>/faults.json`: a list of objects, re-read on every use.
     {"fault": "STUCK_LICENSES", "job_name": glob}
         matching jobs stay PENDING (Licenses) while the fault is present.
     {"fault": "CLI_ERROR", "command": name, "message": text, "count": n, "exit_code": 1}
-        the next n invocations of `command` print `message` on stderr and fail.
+        the next n invocations of `command` print `message` on stderr and fail. With
+        `"accept": true` the command runs first (the controller acted, its reply was lost).
 `count` (default: unlimited) is decremented each time the fault fires.
 """
 

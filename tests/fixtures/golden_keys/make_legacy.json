@@ -1,6 +1,6 @@
 {
- "key": "sha256:b59bb8164595f43fa03fec1f047d99057502aa88859b24c51ecdbc4a4902f575",
- "key_schema": 1,
+ "key": "sha256:d472dc8f4f632c39faa4f30a3ec74fb154c5ea97d567c40798d662347c9b1e02",
+ "key_schema": 2,
  "name": "make_legacy",
  "spec": {
   "action_id": "lint_legacy",
@@ -37,6 +37,17 @@
     "source": {
      "input": "rtl",
      "pattern": "rtl/**",
+     "type": "source"
+    }
+   },
+   {
+    "executable": true,
+    "id": "sha256:acba25512100f80b56fc3ccd14c65be55d94800cda77585c5f41a887e398f9be",
+    "kind": "file",
+    "path": "flows/lint/run.sh",
+    "source": {
+     "input": "ebs.workdir",
+     "pattern": "flows/lint/**",
      "type": "source"
     }
    }

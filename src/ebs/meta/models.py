@@ -118,7 +118,9 @@ builds = sa.Table(
     sa.Column("created_at", _TS, nullable=False),
     sa.Column("finished_at", _TS, nullable=True),
     sa.Column("pinned", sa.Boolean, nullable=False, server_default=sa.false()),
+    sa.Column("final_plan_digest", sa.Text, nullable=True),  # 0012: set by finish_build
     _digest_check("plan_digest"),
+    _digest_check("final_plan_digest"),
     _in_check("cache_mode", CacheMode),
     _in_check("status", BuildStatus),
     sa.CheckConstraint("(status = 'running') = (finished_at IS NULL)", name="finished_at_set"),
@@ -437,6 +439,15 @@ release_imports = sa.Table(  # which release each import alias of a build used (
 
 
 # --- Phase 2: detached and resumed drivers (P2-08, revision 0011) ---------------------------------
+
+gc_locks = sa.Table(  # one GC run per domain (0013); renewed between the run's phases
+    "gc_locks",
+    metadata,
+    sa.Column("domain", sa.Text, primary_key=True),
+    sa.Column("owner", sa.Text, nullable=False),
+    sa.Column("expires_at", _TS, nullable=False),
+    sa.CheckConstraint("length(owner) BETWEEN 1 AND 256", name="owner_length"),
+)
 
 driver_leases = sa.Table(  # one live driver per build; renewed by the driver's heartbeat
     "driver_leases",

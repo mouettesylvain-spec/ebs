@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -558,6 +559,88 @@ def test_transient_retry_gives_up_after_five_retries() -> None:
     assert clock.monotonic() == pytest.approx(1 + 2 + 4 + 8 + 16)
     assert "Socket timed out" in str(exc.value)
     assert "6 attempts" in str(exc.value)
+
+
+TIMEOUT = "sbatch: error: Batch job submission failed: Socket timed out on send/recv operation"
+UUID = "0b9f3c3e-6a51-4c0e-9d7e-2f4d6f1a2b3c"
+
+
+def _comment(argv: list[str]) -> str:
+    (value,) = [a.split("=", 1)[1] for a in argv if a.startswith("--comment=")]
+    return value
+
+
+# P1-01 follow-up: an sbatch whose reply was lost (a timeout after the controller accepted the
+# job) is not submitted again: the job is found by the token in its comment.
+def test_submit_finds_job_of_lost_reply() -> None:
+    def squeue(argv: list[str]) -> CommandResult:
+        assert "--me" in argv
+        assert "--name=j" in argv
+        other = _squeue_job(40, comment=f"{UUID} ebs-submit=0000000000000000")
+        mine = _squeue_job(41, comment=_comment(runner.calls[0]))
+        return ok(_doc(other, mine))
+
+    runner = FakeRunner(sbatch=[err(TIMEOUT)], squeue=squeue)
+    job = make_cli(runner).submit(SCRIPT, SbatchOptions(job_name="j", comment=UUID))
+    assert job == JobId("41")
+    assert runner.commands() == ["sbatch", "squeue", "squeue"]  # found; then no extra job
+    assert re.fullmatch(rf"{UUID} ebs-submit=[0-9a-f]{{16}}", _comment(runner.calls[0]))
+
+
+# The lost reply of an array submission: squeue may already show a running task; the array
+# job id is returned.
+def test_submit_finds_array_of_lost_reply() -> None:
+    def squeue(argv: list[str]) -> CommandResult:
+        task = _squeue_job(
+            57,
+            comment=_comment(runner.calls[0]),
+            array_job_id={"set": True, "infinite": False, "number": 55},
+            array_task_id={"set": True, "infinite": False, "number": 2},
+        )
+        return ok(_doc(task))
+
+    runner = FakeRunner(sbatch=[err(TIMEOUT)], squeue=squeue)
+    assert make_cli(runner).submit(SCRIPT, SbatchOptions(job_name="j", comment=UUID)) == "55"
+
+
+# Nothing was accepted: sbatch is retried with the same tagged comment.
+def test_submit_retries_when_nothing_was_accepted() -> None:
+    runner = FakeRunner(sbatch=[err(TIMEOUT), ok("42\n")], squeue=[ok(_doc()), ok(_doc())])
+    assert make_cli(runner).submit(SCRIPT, SbatchOptions(job_name="j", comment=UUID)) == "42"
+    assert runner.commands() == ["sbatch", "squeue", "sbatch", "squeue"]
+    first, second = (c for c in runner.calls if c[0] == "sbatch")
+    assert _comment(first) == _comment(second)
+
+
+# Review: the lookup missed the first attempt (still being registered), the retry submitted
+# again and then the first attempt landed: the extra job, with our token, is cancelled.
+def test_late_first_attempt_is_cancelled() -> None:
+    def squeue(argv: list[str]) -> CommandResult:
+        if runner.commands().count("squeue") == 1:
+            return ok(_doc())  # the lookup after the timeout: nothing yet
+        tagged = _comment(runner.calls[0])
+        return ok(_doc(_squeue_job(41, comment=tagged), _squeue_job(42, comment=tagged)))
+
+    runner = FakeRunner(sbatch=[err(TIMEOUT), ok("42\n")], squeue=squeue, scancel=[ok()])
+    assert make_cli(runner).submit(SCRIPT, SbatchOptions(job_name="j", comment=UUID)) == "42"
+    assert runner.commands() == ["sbatch", "squeue", "sbatch", "squeue", "scancel"]
+    assert runner.calls[-1][1:] == ["41"]
+
+
+# Review: a lookup that fails is no reason to give up the submission (best effort).
+def test_failed_lookup_does_not_abort_the_submission() -> None:
+    runner = FakeRunner(
+        sbatch=[err(TIMEOUT), ok("43\n")],
+        squeue=[err("squeue: error: Invalid user"), err("squeue: error: Invalid user")],
+    )
+    assert make_cli(runner).submit(SCRIPT, SbatchOptions(job_name="j", comment=UUID)) == "43"
+
+
+# Without a comment there is nothing to find a job by: plain retries, no squeue call.
+def test_submit_without_comment_does_not_look_up() -> None:
+    runner = FakeRunner(sbatch=[err(TIMEOUT), ok("43\n")])
+    assert make_cli(runner).submit(SCRIPT, SbatchOptions(job_name="j")) == "43"
+    assert runner.commands() == ["sbatch", "sbatch"]
 
 
 # R4: a command that hangs past its timeout counts as transient.

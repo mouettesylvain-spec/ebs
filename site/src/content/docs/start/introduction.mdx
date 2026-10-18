@@ -1,0 +1,64 @@
+---
+title: Why EBS
+description: What EBS does that a Makefile cannot, and when you should use it.
+sidebar:
+  order: 1
+---
+
+import MakeVsEbsScene from '../../../scenes/make-vs-ebs/MakeVsEbsScene.astro';
+import { CardGrid, Card, LinkCard } from '@astrojs/starlight/components';
+
+EBS (the EDA Build System) runs EDA flows (RTL lint, compilation and regressions today,
+synthesis and implementation later) as a graph of **actions**. Each action is identified by a
+digest of everything that can change its result. If the digest has been built before, by
+you, a colleague or CI, the result is reused instead of recomputed.
+
+You describe the flow in YAML. Existing Makefiles and Tcl scripts can be wrapped as they are,
+and EBS takes care of the parts a Makefile does not: content hashing, a shared cache, SLURM
+licenses, team releases and provenance.
+
+<MakeVsEbsScene />
+
+## What changes compared to Make
+
+| | Make | EBS |
+| --- | --- | --- |
+| Decides to rerun by | file timestamps | content digests of inputs, params, tools and env |
+| Fresh checkout (CI, new clone) | rebuilds everything | reuses every result already in the shared cache |
+| Comment-only RTL change | reruns everything downstream | reruns the one action; stops where outputs are identical (early cutoff) |
+| Tool upgrade | invisible unless you `make clean` | the toolchain id changes, so dependent actions rerun |
+| Results shared between users | no | yes, scoped by NDA domain |
+| Know what produced an artifact | no | every build stores its full plan: params, input digests, toolchains |
+| Licenses on the grid | job starts, then waits for a license | the job is queued until SLURM has the license |
+
+## Core ideas
+
+<CardGrid>
+  <Card title="Action keys" icon="seti:lock">
+    SHA-256 over the rule version, command, params, declared env, toolchain id and input digests.
+    Nothing else: CPUs, paths and timestamps stay out. [Action keys and caching](/ebs/concepts/caching/)
+  </Card>
+  <Card title="Content-addressed store" icon="seti:folder">
+    Inputs and outputs stored once, by digest, per confidentiality domain, written atomically.
+    [The CAS](/ebs/concepts/cas/)
+  </Card>
+  <Card title="Toolchains" icon="setting">
+    Module + version + install-tree fingerprint + captured env. A silently patched install gets a
+    new id. [Toolchains](/ebs/concepts/toolchains/)
+  </Card>
+  <Card title="Releases" icon="rocket">
+    Immutable, named selections of build outputs, with movable channels like `stable`.
+    [Releases and channels](/ebs/concepts/releases/)
+  </Card>
+</CardGrid>
+
+## When to use it
+
+EBS pays off when the same work is run many times by many people: regressions, lint across
+blocks, nightly CI, or several teams consuming each other's outputs. For a one-person
+experiment that runs once, a Makefile is simpler.
+
+<CardGrid>
+  <LinkCard title="Quickstart" href="/ebs/start/quickstart/" description="Build two example flows in ten minutes, no EDA license needed." />
+  <LinkCard title="Wrap a Makefile" href="/ebs/tutorials/wrap-a-makefile/" description="Keep your Makefile; get caching from day one." />
+</CardGrid>

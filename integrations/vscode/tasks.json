@@ -1,0 +1,68 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "ebs: plan",
+      "type": "shell",
+      "command": "ebs plan -f ${input:flow}",
+      "options": { "cwd": "${fileDirname}" },
+      "problemMatcher": "$ebs-flow"
+    },
+    {
+      "label": "ebs: build",
+      "type": "shell",
+      "command": "ebs build -f ${input:flow} -k",
+      "options": { "cwd": "${fileDirname}" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": "$ebs-flow"
+    },
+    {
+      "label": "ebs: status",
+      "type": "shell",
+      "command": "ebs status",
+      "options": { "cwd": "${fileDirname}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "ebs: logs",
+      "type": "shell",
+      "command": "ebs logs '${input:action}'",
+      "options": { "cwd": "${fileDirname}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "ebs: debug",
+      "type": "shell",
+      "command": "ebs debug '${input:action}'",
+      "options": { "cwd": "${fileDirname}" },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "flow",
+      "type": "promptString",
+      "description": "Flow file",
+      "default": "flow.yaml"
+    },
+    {
+      "id": "action",
+      "type": "promptString",
+      "description": "Action id or a unique prefix, e.g. sim[seed=7"
+    }
+  ],
+  "problemMatchers": [
+    {
+      "name": "ebs-flow",
+      "owner": "ebs",
+      "fileLocation": ["autoDetect", "${fileDirname}"],
+      "pattern": {
+        "regexp": "^ebs: error: (.+?):(\\d+):(\\d+): (.*)$",
+        "file": 1,
+        "line": 2,
+        "column": 3,
+        "message": 4
+      }
+    }
+  ]
+}

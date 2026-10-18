@@ -6,15 +6,17 @@ The sandbox comes from `ebs.runner.reproduce` (the runner's own staging and env 
 
 - nothing more: print where it is and how to go on;
 - `--run`: run the command as the runner would (log in `logs/tool.log`), classify the exit with
-  the action's rule, and compare every deterministic output with the recorded result (R3);
+  the action's rule, and compare every deterministic output with the recorded result (R3); exit
+  1 when an output differs from it, or is missing, so CI can use the comparison directly;
 - `--interactive`: `bash --norc` in `work/` with the sandbox env (and a `PS1` naming the
   action), e.g. to start the tool's GUI on a failing test.
 
 `--salloc` (with `--run` or `--interactive`) runs `salloc <the action's job options> srun --pty
 ebs reproduce ACTION --build <uuid> …` instead: the allocation gets the action's cpus, memory,
-time (+ the runner's grace), licenses, account, QOS, partition and constraint, as the SLURM
-executor would ask for (P1-03), and the inner command builds the sandbox on the node's local
-disk. Reproduce never posts anything: no build, result, cache entry or event (R4).
+time (+ the runner's grace; `--time` overrides it, e.g. for a GUI session), licenses, account,
+QOS, partition and constraint, rendered like the SLURM executor's (`job_options`, P1-03), and
+the inner command builds the sandbox on the node's local disk. Reproduce never posts anything:
+no build, result, cache entry or event (R4).
 """
 
 from __future__ import annotations
@@ -27,15 +29,18 @@ from pathlib import Path
 from typing import Any, Final
 
 import typer
+from pydantic import ValidationError
 
 from ebs.cli._context import SiteServices
 from ebs.cli._output import Output, UsageError, handle_errors, make_output
 from ebs.cli.debug import ActionTarget, load_target
 from ebs.cli.plan import JSON_OPTION
-from ebs.core.errors import CasError, ConfigError, EbsError
+from ebs.core.errors import CasError, ConfigError, EbsError, ExitCode
 from ebs.exec.slurm.accounts import JobPolicy, job_constraint
+from ebs.exec.slurm.cli import SbatchOptions, job_options
 from ebs.exec.slurm.executor import JOB_TIME_GRACE_S, SlurmSettings
-from ebs.exec.slurm.licenses import batch_licenses, license_request, render_licenses
+from ebs.exec.slurm.licenses import batch_licenses, license_request
+from ebs.flow.model import parse_duration
 from ebs.plan.types import ActionSpec
 from ebs.runner.collect import log_tail, output_paths
 from ebs.runner.errors import InfraError, InputVerificationError, RunnerError
@@ -58,13 +63,6 @@ DIR_OPTION = typer.Option(
 )
 
 
-def _duration(seconds: int) -> str:
-    days, rest = divmod(seconds, 86400)
-    hours, rest = divmod(rest, 3600)
-    minutes, secs = divmod(rest, 60)
-    return f"{days}-{hours:02d}:{minutes:02d}:{secs:02d}"
-
-
 def _number(spec: ActionSpec, name: str) -> int | None:
     value = getattr(spec.resources, name)
     if value is None or (isinstance(value, int) and not isinstance(value, bool)):
@@ -81,9 +79,11 @@ def salloc_argv(
     settings: SlurmSettings,
     project: str,
     inner: Sequence[str],
+    time_s: int | None = None,
 ) -> list[str]:
     """`salloc <job options> srun --pty <inner>` with the options the SLURM executor would use
-    for `spec` alone (P1-02/P1-03), each one `--name=value` element."""
+    for `spec` alone (P1-02/P1-03), each one `--name=value` element; `time_s` replaces the
+    action's time limit (and its grace)."""
 
     def command(name: str) -> str:
         return str(settings.bin_dir / name) if settings.bin_dir is not None else name
@@ -103,24 +103,27 @@ def salloc_argv(
         policy.os_constraint,
         [] if spec.resources.constraint is None else [spec.resources.constraint],
     )
-    argv = [command("salloc"), f"--job-name=ebs:repro:{spec.step}"]
-    if settings.default_partition is not None:
-        argv.append(f"--partition={settings.default_partition}")
-    if policy.account is not None:
-        argv.append(f"--account={policy.account}")
-    if policy.qos is not None:
-        argv.append(f"--qos={policy.qos}")
-    if cpus is not None:
-        argv.append(f"--cpus-per-task={cpus}")
-    if mem is not None:
-        argv.append(f"--mem={max(1, math.ceil(mem / _MIB))}M")
-    if time is not None:
-        argv.append(f"--time={_duration(time + JOB_TIME_GRACE_S)}")
-    if licenses:
-        argv.append(f"--licenses={render_licenses(licenses)}")
-    if constraint is not None:
-        argv.append(f"--constraint={constraint}")
-    return [*argv, command("srun"), "--pty", *inner]
+    if time_s is None and time is not None:
+        time_s = time + JOB_TIME_GRACE_S
+    try:
+        opts = SbatchOptions(
+            job_name=f"ebs:repro:{spec.step}",
+            partition=settings.default_partition,
+            account=policy.account,
+            qos=policy.qos,
+            cpus_per_task=cpus,
+            mem_mb=None if mem is None else max(1, math.ceil(mem / _MIB)),
+            time_limit_s=time_s,
+            licenses=licenses,
+            constraint=constraint,
+        )
+    except ValidationError as exc:  # a [slurm] value or a step resource SLURM cannot take
+        problems = "; ".join(f"{e['loc'][0]}: {e['msg']}" for e in exc.errors())
+        raise ConfigError(
+            f"action {spec.action_id}: cannot ask salloc for its allocation ({problems}); fix "
+            "the [slurm] settings or the step's resources"
+        ) from None
+    return [command("salloc"), *job_options(opts), command("srun"), "--pty", *inner]
 
 
 def _cli_error(exc: RunnerError) -> EbsError:
@@ -239,6 +242,12 @@ def reproduce_command(
     salloc: bool = typer.Option(
         False, "--salloc", help="Do it on a compute node, in an allocation like the action's job."
     ),
+    time: str | None = typer.Option(
+        None,
+        "--time",
+        metavar="DURATION",
+        help="With --salloc: the allocation's time limit (e.g. 4h) instead of the action's.",
+    ),
     json_mode: bool = JSON_OPTION,
 ) -> None:
     """Rebuild an action's sandbox exactly as the runner did; run it or open a shell in it."""
@@ -246,6 +255,12 @@ def reproduce_command(
         raise UsageError("give --run or --interactive, not both")
     if salloc and not (run or interactive):
         raise UsageError("--salloc needs --run or --interactive (what to do on the node)")
+    if time is not None and not salloc:
+        raise UsageError("--time sets the --salloc allocation's time limit; add --salloc")
+    try:
+        time_s = None if time is None else parse_duration(time)
+    except ValueError as exc:
+        raise UsageError(f"--time: {exc}") from None
     services: SiteServices = ctx.obj
     out = make_output(services.environ, json_mode=json_mode, tty=services.is_tty())
     target = load_target(services, action, build)
@@ -262,6 +277,7 @@ def reproduce_command(
             settings=SlurmSettings.from_config(services.config()),
             project=target.plan.project,
             inner=inner,
+            time_s=time_s,
         )
         # The inner `ebs reproduce` prints the result (as JSON with --json) on this stdout.
         out.err.print(f"ebs: running {shlex.join(argv)}", markup=False)
@@ -304,3 +320,5 @@ def reproduce_command(
         _render(out, doc, sandbox, spec)
     if interactive:
         _shell(services, spec, sandbox)
+    elif doc["ran"] is not None and doc["ran"]["identical"] is False:
+        raise typer.Exit(int(ExitCode.ACTIONS_FAILED))  # an output differs from the record

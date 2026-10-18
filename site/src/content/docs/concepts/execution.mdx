@@ -1,0 +1,75 @@
+---
+title: How a build runs
+description: From flow.yaml to cached results - plan, keys, cache lookup, dispatch, run, store.
+sidebar:
+  order: 1
+---
+
+import ExecutionScene from '../../../scenes/execution-flow/ExecutionScene.astro';
+
+Every `ebs build` goes through the same stages. The first three happen before anything
+executes, which is why `ebs plan` can tell you exactly what will run and why.
+
+<ExecutionScene />
+
+## 1. Load and expand
+
+The **driver** (the `ebs` process you started) reads `flow.yaml` and validates it against the
+[flow schema](/ebs/reference/flow-schema/); an error points at `file:line:col`. Each step's
+matrix is expanded over its table rows, giving one **action** per row, such as
+`sim[seed=7,test=random]`. `${…}` references are resolved here, never by a shell. Output
+references (`${steps.compile.outputs.model}`) become edges of a static graph.
+
+## 2. Snapshot the sources
+
+Every declared source file is hashed and copied into the [CAS](/ebs/concepts/cas/) at plan
+time. Actions run on those exact bytes, never on your live checkout, so an edit you make while
+a build runs cannot leak into it. Hashing is fast on re-plans: git-tracked files use git's own
+blob ids, and a local stat cache skips rehashing unchanged files, with guards against the
+coarse timestamps and attribute caching of NFS. `--rehash` ignores the stat cache.
+
+## 3. Compute keys bottom-up
+
+For every action, EBS builds a canonical JSON document of what can affect its result: rule
+kind and version, expanded command, params, declared env, toolchain id, and the id of every
+input. Its SHA-256 is the **action key**. An input produced by another action is identified by
+that action's output digest, or by its action key if the output is marked
+`deterministic: false`. Downstream keys are therefore known only once upstream actions finish;
+`ebs plan` shows them as *unknown*. [Action keys and caching](/ebs/concepts/caching/) has the
+details.
+
+## 4. Look up the cache
+
+The driver asks the metadata service for each key, scoped to the flow's domain: one database
+round trip per lookup and no data movement. A hit means the action ran before with identical
+inputs. Its result (outputs, exit status, log) is reused, and the outputs stay in the CAS
+until a consumer needs them.
+
+## 5. Dispatch what missed
+
+Ready actions (inputs available, cache missed) go to the **executor**. The driver keeps the
+graph itself and never chains scheduler dependencies, so a cache hit costs nothing on the grid
+and no job waits for one that will never run. `ebs build` runs actions locally by default;
+`--executor slurm` submits them to the grid as jobs and job arrays with license-aware
+submission ([Dispatch on SLURM](/ebs/concepts/dispatch/)).
+
+## 6. Run, hash, store
+
+`ebs-runner` executes one action:
+
+1. creates a scratch directory on local disk and verifies the digests of its inputs,
+2. stages the declared inputs at their logical paths (copied, or linked read-only when large)
+   and writes the rule's config files,
+3. builds the environment from the toolchain snapshot and the declared `env`, with an empty
+   `HOME`, so `~/.bashrc` and tool dotfiles cannot leak in,
+4. runs the command with a time limit,
+5. lets the rule classify the exit: passed, failed (a result, cached) or infrastructure
+   failure (never cached, retried),
+6. hashes and uploads the outputs to the CAS, records the result, and deletes the scratch
+   directory, also when the job is killed.
+
+## 7. Record everything
+
+The build stores its fully expanded plan, the result of each action and the events of the run.
+`ebs status`, `ebs logs`, `ebs debug` and `ebs reproduce` read them back. Months later, the plan
+says exactly which inputs, params and tool versions produced every output.

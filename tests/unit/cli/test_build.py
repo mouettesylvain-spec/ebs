@@ -4,12 +4,14 @@ import json
 import os
 import re
 import signal
+import socket
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from ebs.cli._context import EXECUTORS, SiteServices
+from ebs.cli._records import BuildRecord
 from ebs.cli.build import CacheChoice, ExecutorChoice
 from ebs.core.errors import ExitCode
 from ebs.driver.cache_policy import CACHE_MODES
@@ -234,6 +236,72 @@ def test_detach_records_cache_mode_and_flags(site: Site) -> None:
 
 class _Captured(Exception):
     pass
+
+
+# Review: once the driver job is queued, a build record that cannot be updated only warns; it
+# never marks the build infra_failed (its driver would then find it finished and give up).
+def test_detach_record_failure_does_not_fail_the_build(
+    site: Site, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(directory: Path, job: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("ebs.cli.build._record_driver_job", broken)
+    stub = _StubSbatch()
+    site.services.slurm_cli = lambda: stub  # type: ignore[assignment,method-assign,return-value]
+    result = site.invoke(["build", "--detach", "--executor", "slurm", "--json"])
+    assert result.exit_code == ExitCode.OK, result.output
+    assert "could not name it" in result.stderr
+    doc = json.loads(result.stdout.splitlines()[-1])
+    assert site.services.memory_store.get_build(BuildId(doc["build"])).status == "running"
+
+
+# Review: the driver job can start (and record its host, pid and job id) before `--detach`
+# returns from sbatch; the detaching process must not overwrite that record.
+def test_detach_keeps_the_record_of_a_started_driver(site: Site) -> None:
+    class _StartsAtOnce(_StubSbatch):
+        def submit(self, script: Path, opts: Any) -> str:
+            job = super().submit(script, opts)
+            directory = script.parent
+            record = BuildRecord.read(directory)
+            record.model_copy(update={"host": "node-a", "pid": 7, "driver_job": job}).write(
+                directory
+            )
+            return job
+
+    stub = _StartsAtOnce()
+    site.services.slurm_cli = lambda: stub  # type: ignore[assignment,method-assign,return-value]
+    result = site.invoke(["build", "--detach", "--executor", "slurm", "--json"])
+    assert result.exit_code == ExitCode.OK, result.output
+    uuid = json.loads(result.stdout.splitlines()[-1])["uuid"]
+    status = json.loads(site.invoke(["status", uuid, "--json"]).stdout)
+    assert status["driver"] == {"job": "4001", "host": "node-a", "pid": 7}
+
+
+# P2-08 follow-up: `ebs status` names the driver of a detached build: its SLURM job until the
+# job starts, then the job, node and pid of the driver that resumed the build there.
+def test_status_names_the_driver(site: Site, monkeypatch: pytest.MonkeyPatch) -> None:
+    doc, _ = _detach(site)
+    text = site.invoke(["status", doc["uuid"]])
+    assert "driver: SLURM job 4001, not started yet (`scancel 4001` cancels)" in text.stdout
+    status = json.loads(site.invoke(["status", doc["uuid"], "--json"]).stdout)
+    assert status["driver"] == {"job": "4001", "host": None, "pid": None}
+
+    site.services.environ["SLURM_JOB_ID"] = "4001"  # the driver job resumes the build
+    seen: dict[str, Any] = {}
+
+    def capture(*args: Any, **kwargs: Any) -> Any:
+        status = json.loads(site.invoke(["status", doc["uuid"], "--json"]).stdout)
+        seen.update(status)
+        text = site.invoke(["status", doc["uuid"]]).stdout
+        seen["text"] = text
+        raise _Captured
+
+    monkeypatch.setattr("ebs.cli.build.resume_build", capture)
+    site.invoke(["build", "--resume-into", doc["uuid"], "--executor", "local"])
+    host, pid = socket.gethostname(), os.getpid()
+    assert seen["driver"] == {"job": "4001", "host": host, "pid": pid}
+    assert f"driver: SLURM job 4001 on {host} (pid {pid})" in seen["text"]
 
 
 # P2-08 R4: both CLI driver paths handle SIGTERM, which `scancel` of a driver job sends.

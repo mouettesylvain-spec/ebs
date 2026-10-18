@@ -1,0 +1,89 @@
+---
+title: Install the CLI
+description: Install ebs and ebs-runner, point them at a database and a store, check the setup.
+sidebar:
+  order: 2
+---
+
+import { Steps, Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+
+EBS is two commands from one Python package: `ebs`, the CLI you run, and `ebs-runner`, which
+executes one action (locally, or later on a compute node). Both must be on `PATH`.
+
+## Requirements
+
+- Linux (the runner relies on Linux process and filesystem semantics) with bash and coreutils.
+- Python 3.11 or newer and [uv](https://docs.astral.sh/uv/).
+- A PostgreSQL 16+ database (17 in production), or the URL of your site's metadata service.
+- A directory for the content-addressed store (CAS) that everyone sharing results can read.
+
+On a shared site, an admin has already set up the database, the metadata service and the CAS:
+ask for the `ebs.toml` to use and skip to step 3. To set them up, see
+[Operate › Prerequisites](/ebs/operate/prerequisites/).
+
+## Install
+
+<Steps>
+
+1. Get the code and install it with its locked dependencies:
+
+   ```sh
+   git clone https://github.com/mouettesylvain-spec/ebs.git && cd ebs
+   uv sync
+   source .venv/bin/activate     # puts `ebs` and `ebs-runner` on PATH
+   ```
+
+   `uv tool install .` instead installs both commands into `~/.local/bin` for your user.
+
+2. On your own database (not on a site's metadata service), create the tables once:
+
+   ```sh
+   python -c 'from ebs.meta import migrations; migrations.upgrade("postgresql+psycopg://me@dbhost/ebs")'
+   ```
+
+3. Write `~/.config/ebs/config.toml`:
+
+   <Tabs>
+   <TabItem label="Your own database">
+   ```toml
+   [metadata]
+   url = "postgresql+psycopg://me@dbhost/ebs"
+
+   [cas]
+   root = "/path/to/ebs-cas"     # shared by everyone who should reuse each other's results
+   ```
+   </TabItem>
+   <TabItem label="A site's metadata service">
+   ```toml
+   [metadata]
+   url = "https://ebs-meta.example"   # the service root; routes are under /api/v1
+
+   [cas]
+   root = "/cas"
+   ```
+   </TabItem>
+   </Tabs>
+
+   Config files are merged key by key, highest precedence first: `$EBS_CONFIG`,
+   `./.ebs/config.toml`, `~/.config/ebs/config.toml`, then `/etc/ebs/config.toml`. Every key
+   is listed in [Site configuration](/ebs/reference/config/).
+
+4. Check the installation:
+
+   ```sh
+   ebs --version
+   ebs rules list        # the step kinds this installation knows
+   ```
+
+</Steps>
+
+<Aside type="caution" title="The stat cache must be on local disk">
+EBS remembers file hashes in a small SQLite database, by default under
+`/var/tmp/ebs-<uid>/`. Never point `[stat_cache].path` at NFS: SQLite locking is unreliable
+there.
+</Aside>
+
+## Next
+
+Run the [Quickstart](/ebs/start/quickstart/): it builds the two examples shipped in
+`examples/` with fake tools, so no EDA license is needed.

@@ -1,0 +1,148 @@
+---
+title: Open-source tool recipes
+description: Ready-to-adapt flows for Icarus Verilog, Verible, Yosys and SymbiYosys.
+sidebar:
+  order: 6
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Each recipe is a complete `flow.yaml` built from `shell` steps, so you can drop it into a
+directory with your RTL and adapt it. Every tool is declared as a toolchain: describe it in
+`.ebs/toolchains.yaml` ([Custom toolchains](/ebs/tutorials/custom-toolchain/)) or ask your admin
+to register the module. The [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build)
+bundles all of these tools in one install tree, which makes it a convenient single toolchain.
+
+<Aside type="note" title="These snippets are validated">
+`tests/unit/docs/test_site_snippets.py` loads every block titled `…flow.yaml` on this site
+through the flow schema and model, so the syntax is always current. The tool command lines
+are the tools' documented usage; check them against the version you install.
+</Aside>
+
+## Icarus Verilog: compile once, simulate a table
+
+```yaml title="icarus/flow.yaml"
+version: 1
+project: icarus-regression
+domain: examples
+
+toolchains:
+  icarus: { module: iverilog/12.0 }
+
+steps:
+  compile:
+    kind: shell
+    toolchain: icarus
+    inputs: { rtl: "rtl/*.sv", tb: "tb/*.sv" }
+    script: |
+      iverilog -g2012 -s tb -o sim.vvp rtl/*.sv tb/*.sv
+    # treat the compiled image as build-specific, like any simulation model
+    outputs: { model: { file: sim.vvp, deterministic: false } }
+
+  sim:
+    kind: shell
+    toolchain: icarus
+    matrix: { table: tests.csv }            # columns: test, seed
+    script: |
+      vvp -n ${steps.compile.outputs.model} +test=${row.test} +seed=${row.seed} | tee sim.log
+      grep -q '^PASS' sim.log                 # no PASS line: a failed (and cached) test
+    outputs: { log: sim.log }
+    resources: { cpus: 1, mem: 2G, time: 10m }
+```
+
+## Verible: lint every block
+
+Verible's report is sorted before it is written, so identical findings give identical bytes and
+downstream steps stop early.
+
+```yaml title="verible/flow.yaml"
+version: 1
+project: verible-lint
+domain: examples
+
+toolchains:
+  verible: { module: verible/0.0-3900 }
+
+steps:
+  lint:
+    kind: shell
+    toolchain: verible
+    matrix: { table: blocks.csv }           # column: block
+    inputs: { rtl: "rtl/${row.block}/*.sv", rules: .rules.verible_lint }
+    script: |
+      verible-verilog-lint --rules_config=.rules.verible_lint rtl/${row.block}/*.sv \
+        > raw.txt 2>&1 || status=$?
+      sort raw.txt > lint.rpt
+      exit $${status:-0}
+    outputs: { report: lint.rpt }
+
+  format:
+    kind: shell
+    toolchain: verible
+    inputs: { rtl: "rtl/**/*.sv" }
+    script: |
+      verible-verilog-format --verify --inplace=false rtl/**/*.sv
+```
+
+<Aside type="caution" title="Shell variables and `${…}`">
+EBS interpolates every `${…}` at plan time and rejects the ones it does not know, so a typo
+never reaches the tool. For a shell variable in braces, write `$${…}`: `$${status:-0}` reaches
+bash as `${status:-0}`. Plain `$status` needs no escaping.
+</Aside>
+
+## Yosys: synthesize each block
+
+```yaml title="yosys/flow.yaml"
+version: 1
+project: yosys-synth
+domain: examples
+
+toolchains:
+  yosys: { module: yosys/0.45 }
+
+steps:
+  synth:
+    kind: shell
+    toolchain: yosys
+    matrix: { table: blocks.csv }
+    inputs: { rtl: "rtl/${row.block}/*.sv" }
+    script: |
+      yosys -q -l yosys.log -p "read_verilog -sv $(echo rtl/${row.block}/*.sv); synth -top ${row.block}; tee -o stat.txt stat; write_json netlist.json"
+    outputs: { netlist: netlist.json, stats: stat.txt }
+    resources: { cpus: 1, mem: 4G, time: 30m }
+
+  area_report:
+    kind: shell
+    command: ["bash", "-c", "grep -H 'Number of cells' \"$@\" > area.txt", "area", "${steps.synth.outputs.stats[*]}"]
+    outputs: { report: area.txt }
+```
+
+`area_report` gathers every block's `stat.txt` with `[*]`. Because the stats are deterministic,
+a change that does not alter a netlist (a comment, a reformatted file) leaves `area_report`
+cached.
+
+## SymbiYosys: a formal proof per property file
+
+```yaml title="formal/flow.yaml"
+version: 1
+project: formal
+domain: examples
+
+toolchains:
+  oss: { module: oss-cad-suite/2026-10-01 }
+
+steps:
+  prove:
+    kind: shell
+    toolchain: oss
+    matrix: { table: proofs.csv }           # column: name (formal/<name>.sby)
+    inputs: { rtl: "rtl/**/*.sv", sby: "formal/${row.name}.sby" }
+    command: ["sby", "-f", "-d", "proof", "formal/${row.name}.sby"]
+    outputs:
+      status: proof/status
+      logs: { dir: proof/engine_0, deterministic: false, optional: true }
+    resources: { cpus: 4, mem: 8G, time: 2h }
+```
+
+`sby` exits non-zero when a property fails, which EBS records as a cacheable failure: rerunning
+the same proof on the same RTL fails the same way.

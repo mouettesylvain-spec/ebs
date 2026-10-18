@@ -1,0 +1,112 @@
+---
+title: A Verilator regression
+description: Compile once, simulate a table of tests and seeds, grow the regression without rerunning it.
+sidebar:
+  order: 2
+---
+
+import RepoFile from '../../../components/RepoFile.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+A regression is the workload EBS was built for: one compiled model and many simulations,
+each identified by its test and seed. This tutorial uses `examples/verilator-sim`. It runs
+with a fake compiler out of the box and with [Verilator](https://verilator.org) when you
+switch flows.
+
+:::tip[These commands are tested]
+The `console` blocks run in CI on a fresh copy of `examples/` (`tests/e2e/test_docs.py`).
+:::
+
+## The flow
+
+<RepoFile path="examples/verilator-sim/flow.yaml" />
+
+Three ideas carry the whole example:
+
+- **`matrix: { table: tests.csv }`** expands `sim` into one action per row. The action id is
+  built from the row, `sim[seed=7,test=random]`, so every result can be traced to its row.
+- **`${steps.compile.outputs.model}`** makes `sim` depend on `compile`, and
+  **`${steps.sim.outputs.result[*]}`** gathers every `sim` result into `report` (a fan-in).
+- **`deterministic: false`** on the model: a compiled model embeds build details, so its bytes
+  differ from run to run. Downstream keys therefore use the *compile action's key* instead of
+  the model's bytes, and stay stable when nothing that matters changed.
+
+The table holds the seeds. They are plain values, never generated on the fly, so any row can
+be rerun bit for bit:
+
+<RepoFile path="examples/verilator-sim/tests.csv" />
+
+## Build the regression
+
+```console
+$ cd examples/verilator-sim
+$ ebs build --cache write
+submitted compile …
+submitted sim[seed=1,test=smoke] …
+submitted sim[seed=7,test=random] …
+submitted sim[seed=42,test=random] …
+build …: build passed (done=5)
+$ ebs logs report
+3 passed, 0 failed
+```
+
+## Grow it: new seeds only run the new rows
+
+`ebs seeds gen` appends rows with fresh seeds. They are deterministic (`--base-seed`, 0 by
+default) and never duplicate a test/seed pair already in the table:
+
+```console
+$ ebs seeds gen tests.csv --per-test 1
+tests.csv: 2 rows appended, 0 empty seeds filled
+$ ebs plan
+  sim[seed=1813382119,test=smoke]: new action …
+  sim[seed=827308000,test=random]: new action …
+$ ebs build --cache write
+cache_hit compile …
+cache_hit sim[seed=1,test=smoke] …
+build …: build passed (cached=4, done=3)
+$ ebs logs report
+5 passed, 0 failed
+```
+
+The model, the three existing simulations and their logs come from the cache. Only the two new
+simulations and the report run. On a real regression of 1,000 tests, adding ten seeds costs
+ten simulations, not 1,010.
+
+## Failures are results too
+
+A simulation that runs and reports FAIL is a valid, cacheable result: rerunning the same seed
+on the same model fails the same way. `ebs build` exits 1, `ebs logs` shows why, and the next
+build does not resimulate it. To force a rerun, for example after fixing a flaky testbench, use
+`--rerun-failed`.
+
+*Infrastructure* failures are different: a license timeout, an out-of-memory kill, a node
+failure or a tool crash is never cached and is retried automatically, with more memory after
+an OOM. See [Cache modes and reruns](/ebs/guides/cache-and-reruns/).
+
+## With real Verilator
+
+<RepoFile path="examples/verilator-sim/flow.verilator.yaml" />
+
+Verilator is declared as a toolchain, so its version and install tree are part of the
+`compile` key and, through the model, of every `sim` key. Describe it once in
+`.ebs/toolchains.yaml`:
+
+```yaml
+version: 1
+toolchains:
+  verilator/system:
+    version: "5.020"                                  # verilator --version
+    install_roots: ["/usr/share/verilator"]           # verilator --getenv VERILATOR_ROOT
+    env: { PATH: "/usr/bin:/bin" }
+```
+
+```sh
+ebs build --cache write -f flow.verilator.yaml
+```
+
+<Aside type="caution">
+`verilator --binary` also needs a C++ compiler and `make`. Do not set `VERILATOR_ROOT` in
+`env` for a distribution package: Debian and Ubuntu install `verilator_bin` in `/usr/bin`,
+outside the root, and the wrapper then fails with exit code 127.
+</Aside>

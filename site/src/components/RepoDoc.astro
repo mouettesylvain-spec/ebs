@@ -1,0 +1,35 @@
+---
+// Renders a README of the repository inside a page, so operations guides are the deploy
+// directories' own documentation:  <RepoDoc path="deploy/slurm/README.md" />
+import type { MarkdownInstance } from 'astro';
+import { repoUrl } from '../lib/repo';
+
+interface Props {
+  path: string;
+}
+
+// Every README the site may embed; add a glob here to embed one from another directory.
+const docs = import.meta.glob<MarkdownInstance<Record<string, unknown>>>(
+  ['../../../deploy/**/README.md', '../../../integrations/**/README.md'],
+  { eager: true },
+);
+
+const { path } = Astro.props;
+const doc = docs[`../../../${path}`];
+if (!doc) {
+  throw new Error(`RepoDoc: ${path} is not an embeddable README (see RepoDoc.astro)`);
+}
+const { Content } = doc;
+---
+
+<div class="ebs-repo-doc">
+  <Content />
+</div>
+<p class="source"><a href={repoUrl(path)}>Source: {path}</a></p>
+
+<style>
+  .source {
+    font-size: var(--ebs-text-small);
+    color: var(--ebs-text-2);
+  }
+</style>

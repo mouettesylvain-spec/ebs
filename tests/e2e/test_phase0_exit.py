@@ -192,7 +192,7 @@ def test_examples_with_real_verilator(site: Site, tmp_path: Path, example: str) 
 
 
 def write_verilator_toolchain(proj: Path, verilator: Path) -> None:
-    """`.ebs/toolchains.yaml` for the `verilator/system` module (docs/user/quickstart.md)."""
+    """`.ebs/toolchains.yaml` for the `verilator/system` module (site: Start here > Quickstart)."""
     env = {"PATH": "/usr/bin:/bin"}
     version = subprocess.run(
         [str(verilator), "--version"], capture_output=True, text=True, check=True, env=env

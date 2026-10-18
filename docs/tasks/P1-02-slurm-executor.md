@@ -77,4 +77,4 @@ status query per poll, clean cancellation.
   import `ebs.exec`, so it needs its own small decoder); P1-01's note about reconciling a
   duplicated sbatch after a retried socket timeout is not done: job names (R4) are not unique per
   batch, so it needs a unique token (e.g. in the job name or an extra comment field), best done
-  with P1-05 retries; P2-08 can re-attach with `actions.slurm_job_id` + `SlurmExecutor.job_ref`.
+  with P1-05 retries; **done 2026-10-18 in `SlurmCli.submit` (a token in the comment);** P2-08 can re-attach with `actions.slurm_job_id` + `SlurmExecutor.job_ref`.

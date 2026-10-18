@@ -58,8 +58,8 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P2-03 | Imports and `flow.lock` | P2-02 | 2 | done |
 | P2-04 | Provenance queries (`why`, `used-by`, `tests`) | P2-02 | 2 | done |
 | P2-07 | GitLab CI integration (`--ci`, JUnit) | P2-02 | 2 | done |
-| P2-08 | `--detach` driver job | P1-02 | 2 | review |
-| P2-06 | Web dashboard v1 | P2-05, P2-04 | 3 | review |
+| P2-08 | `--detach` driver job | P1-02 | 2 | done |
+| P2-06 | Web dashboard v1 | P2-05, P2-04 | 3 | done |
 | P2-09 | Phase 2 acceptance | all P2 | 4 | todo |
 
 ## Phase 3 — Hermeticity and scale (exit: sandbox default for Questa; quarterly revalidation report)
@@ -75,6 +75,12 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P3-04 | Sign-off bundles and `ebs verify` | P3-03, P2-03 | 2 | todo |
 | P3-05 | Revalidation jobs and comparators | P3-04 | 3 | todo |
 | P3-09 | Phase 3 acceptance | all P3 | 4 | todo |
+
+## Documentation (exit: site deployed from main; its tutorials executed in CI)
+
+| ID | Task | Depends on | Wave | Status |
+| --- | --- | --- | --- | --- |
+| D-01 | Documentation site (Astro + Starlight, GitHub Pages) | P0-17 | any | review |
 
 ## Phase 4 — More flows
 
@@ -104,10 +110,10 @@ flowchart LR
 | D1 | How do runners/CLI authenticate to the metadata service? | **Decided (2026-10-11):** MUNGE credentials on cluster hosts, bound to the service and request by a signed payload and verified with `unmunge`; bearer tokens for CI (and services) | P1-06 |
 | D2 | Live log streaming path | **Decided (2026-10-11):** runner appends to `/debug/<domain>/<build>/<action>/live.log` (flushed every 5 s); `ebs logs -f` tails it | P1-04 |
 | D3 | Public repo host / CI for the OSS project | **Decided (2026-10-07):** github.com is the primary repo with GitHub Actions (`.github/workflows/`); supersedes the 2026-10-05 GitLab decision | P0-01 |
-| D4 | Release version format | Free-form string validated by regex `^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`; docs recommend CalVer `YYYY.MM.N` | P2-02 |
+| D4 | Release version format | **Decided (2026-10-18):** free-form string validated by regex `^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`; docs recommend CalVer `YYYY.MM.N` | P2-02 |
 | D5 | SLURM limits (MaxSubmitJobs, MaxArraySize, default partition) | **Decided (2026-10-11):** all from `[slurm]` config with defaults `max_array_size = 1000`, `array_throttle = 200`, `max_pending_jobs = 2000` (array tasks count individually), `max_submits_per_min = 60`, `default_partition = ""` (cluster default); real site values go in site config. Per-team account/QOS mapping is P1-03's `account_map`/`qos` | P1-02 |
 | D6 | Unprivileged user namespaces on compute nodes | Sandbox backend auto-detects; falls back to Apptainer, then to staging-only with a warning | P3-01 |
-| D7 | NDA domains and NFS exports | Domains are config (`[[domains]]`), one CAS root per domain, created by an admin script | P2-01 |
+| D7 | NDA domains and NFS exports | **Decided (2026-10-18):** domains are config (`[[domains]]`), one CAS root per domain, created by an admin script | P2-01 |
 
 Agents never resolve an open decision on their own: they implement the default behind a config
 key or interface so it can change, and note it in the task's "Notes" section.

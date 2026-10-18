@@ -1,0 +1,31 @@
+# Copy to .github/workflows/ebs.yml. Runs on a self-hosted runner that can reach the site's
+# CAS and metadata service. `ebs build --ci` fills the shared cache for everyone else and writes
+# ebs-junit.xml, ebs-summary.md and ebs.env into the working directory.
+name: ebs
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, ebs]
+    env:
+      EBS_CONFIG: /etc/ebs/ci.toml            # site config: CAS root, metadata URL
+      EBS_META_TOKEN: ${{ secrets.EBS_META_TOKEN }}   # a CI bearer token scoped to the domain
+    steps:
+      - uses: actions/checkout@v4
+      - name: Plan
+        run: ebs plan
+      - name: Build
+        run: ebs build --ci -k
+      - name: Summary
+        if: always()
+        run: cat ebs-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ebs-reports
+          path: |
+            ebs-junit.xml
+            ebs-summary.md

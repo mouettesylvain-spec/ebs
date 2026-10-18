@@ -38,7 +38,7 @@ import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
@@ -48,7 +48,7 @@ from ruamel.yaml.util import load_yaml_guess_indent
 from ebs.core.errors import FlowError
 from ebs.flow.tables import Table, load_table
 
-__all__ = ["MAX_SEED", "SeedOptions", "SeedResult", "write_seeds"]
+__all__ = ["MAX_SEED", "SeedChange", "SeedOptions", "SeedResult", "write_seeds"]
 
 MAX_SEED: Final = 2**31 - 1
 _NEWLINE_RE: Final = re.compile(r"\r\n|\r|\n")
@@ -67,9 +67,18 @@ class SeedOptions:
 
 
 @dataclass(frozen=True)
+class SeedChange:
+    """One row `write_seeds` filled or appended, as it reads after the edit (for review)."""
+
+    change: Literal["filled", "appended"]
+    row: Mapping[str, str]
+
+
+@dataclass(frozen=True)
 class SeedResult:
     appended: int
     filled: int
+    changes: tuple[SeedChange, ...] = ()  # filled rows in table order, then appended ones
 
 
 _Pair = tuple[str, int | str]
@@ -273,7 +282,14 @@ def write_seeds(path: Path, opts: SeedOptions) -> SeedResult:
     path = path.resolve()
     table = load_table(path)
     edit = _plan(table, opts)
-    result = SeedResult(appended=len(edit.appends), filled=len(edit.fills))
+    changes = [
+        SeedChange("filled", {**table.rows[i], opts.column: str(seed)})
+        for i, seed in sorted(edit.fills)
+    ] + [
+        SeedChange("appended", {**table.rows[t], opts.column: str(seed)})
+        for t, seed in edit.appends
+    ]
+    result = SeedResult(appended=len(edit.appends), filled=len(edit.fills), changes=tuple(changes))
     if not edit.fills and not edit.appends:
         return result
     data = path.read_bytes()

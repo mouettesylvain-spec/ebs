@@ -1,0 +1,30 @@
+{
+  "name": "ebs-site",
+  "private": true,
+  "type": "module",
+  "description": "Documentation site of EBS, the EDA Build System (Astro + Starlight).",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "scripts": {
+    "reference": "cd .. && uv run --frozen python scripts/gen_site_reference.py",
+    "predev": "npm run reference",
+    "dev": "astro dev",
+    "prebuild": "npm run reference",
+    "build": "astro check && astro build",
+    "preview": "astro preview",
+    "check": "astro check"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "0.42.6",
+    "animejs": "4.5.0",
+    "astro": "7.4.0",
+    "sharp": "0.35.5"
+  },
+  "devDependencies": {
+    "@astrojs/check": "0.9.10",
+    "starlight-links-validator": "0.27.0",
+    "typescript": "6.0.3"
+  }
+}

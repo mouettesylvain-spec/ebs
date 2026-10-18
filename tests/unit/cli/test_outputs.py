@@ -75,7 +75,9 @@ def test_filters_by_action_and_step(site: Site) -> None:
         ("sim[test=random]", "result"),
     ]
     assert _rows(site, "gen", "--step", "sim") == []  # both filters apply
-    ambiguous = site.invoke(["outputs", "sim"])
+    # A step name stands for every action of the step, as in `ebs fetch` (P1-13 follow-up).
+    assert _keys(_rows(site, "sim")) == _keys(_rows(site, "--step", "sim"))
+    ambiguous = site.invoke(["outputs", "s"])  # a prefix of several actions
     assert ambiguous.exit_code == ExitCode.USAGE
     assert "sim[test=smoke]" in ambiguous.stderr
     unknown = site.invoke(["outputs", "--step", "nope"])

@@ -1,0 +1,16 @@
+# Consumes the lint summary that examples/lint-make publishes as release demo/lint
+# (site: Tutorials > Publish and consume a release). The import follows the `stable` channel;
+# `ebs lock update` pins the exact release in flow.lock, and only that pin is ever built.
+version: 1
+project: release-consumer
+domain: examples
+
+imports:
+  lint: { from: demo/lint, channel: stable }
+
+steps:
+  gate:
+    kind: shell
+    inputs: { summary: "${imports.lint}/summary.summary" }
+    script: "tail -n 1 imports/lint/summary.summary | tee verdict.txt"
+    outputs: { verdict: verdict.txt }

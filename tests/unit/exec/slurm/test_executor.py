@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import errno
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -202,9 +203,15 @@ def test_job_name_and_comment(env: Env) -> None:
     ex = env.executor()
     ex.submit(batch(*ids, build=build))
     ex.submit(batch("t[0]", build=build))
+    tokens = set()
     for argv in _sbatches(env.slurm):
         assert _opt(argv, "job-name") == f"ebs:{uuid.hex[:8]}:t"
-        assert _opt(argv, "comment") == str(uuid)
+        # The build UUID first (the epilog's test), then a token unique to each submission.
+        comment = _opt(argv, "comment")
+        assert comment is not None
+        assert re.fullmatch(rf"{uuid} ebs-submit=[0-9a-f]{{16}}", comment), comment
+        tokens.add(comment)
+    assert len(tokens) == 2
 
 
 # R7

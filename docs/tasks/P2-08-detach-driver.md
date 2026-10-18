@@ -1,6 +1,6 @@
 # P2-08 — `--detach` driver job
 
-Status: review · Phase: 2 · Depends on: P1-02 · Size: M
+Status: done · Phase: 2 · Depends on: P1-02 · Size: M
 
 ## Goal
 Long regressions survive logout: `ebs build --detach` hands the driver to a small SLURM job, and any driver
@@ -69,5 +69,7 @@ can re-attach to a build after a crash.
   counting an adopted job sacct forgot as lost; (1) the real `ebs-runner` still exits 64 on `--array-map` ("arrives with task
   P1-04") although P1-04 is done: every SLURM job array fails once and its actions pass on the
   driver's infra retry as plain jobs. Found by `test_detach_submits_driver_job`, which uses a
-  one-row matrix until it is fixed. (2) `ebs status` could show the driver job id and owner
-  (from `driver.out` / the lease).
+  one-row matrix until it is fixed. **Fixed (2026-10-18, D-01 branch audit):** the runner reads the
+  array map (`ebs.runner.main.array_action`); `test_detach_submits_driver_job` runs a two-task array
+  and asserts no task was resubmitted. (2) `ebs status` could show the driver job id and owner
+  (from `driver.out` / the lease). **Done (2026-10-18):** `build.json` `driver_job`, `ebs status` `driver`.

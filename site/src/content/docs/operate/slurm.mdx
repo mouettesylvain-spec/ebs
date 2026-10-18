@@ -1,0 +1,40 @@
+---
+title: SLURM
+description: Prepare compute nodes - runner install, scratch-cleanup epilog, licenses, accounts and QOS.
+sidebar:
+  order: 5
+---
+
+import RepoDoc from '../../../components/RepoDoc.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Status">
+`ebs build --executor slurm` (and `--detach`) is available and tested against a fake SLURM. The
+acceptance run on a real partition is task P1-12. See [Dispatch on SLURM](/ebs/concepts/dispatch/).
+</Aside>
+
+## Grid requirements
+
+- **slurmdbd accounting** and **remote licenses**: define each FlexLM feature once with
+  `sacctmgr add resource msimhdlsim server=flexlm count=… type=license`. EBS requests
+  `-L <feature>@<[slurm].license_server>:N`, or the bare feature with `[slurm].license_fuzzy`
+  and `LicenseParameters=RemoteFuzzyMatch`.
+- **Accounts and QOS**: map flow projects to accounts in `[slurm.account_map]`, and give CI and
+  release builds a QOS in `[slurm.qos]`.
+- **Node features** for the OS image, used as `--constraint` through `[slurm].os_constraint`.
+- **Limits**: tell EBS your `MaxArraySize` and submission limits (`[slurm].max_array_size`,
+  `max_pending_jobs`, `max_submits_per_min`).
+
+- **Detached drivers**: `ebs build --detach` runs the driver as a 1-CPU job. Give it a partition
+  and QOS that allow long, idle jobs:
+
+  ```toml
+  [driver]
+  partition = "service"   # default: the cluster default
+  qos = "driver"
+  time = "72h"            # the longest build a detached driver may drive
+  ```
+
+## Node setup
+
+<RepoDoc path="deploy/slurm/README.md" />

@@ -1,0 +1,26 @@
+---
+title: JetBrains IDEs
+description: flow.yaml schema mapping and an ebs build run configuration for IntelliJ, PyCharm and CLion.
+sidebar:
+  order: 2
+---
+
+import RepoFile from '../../../components/RepoFile.astro';
+
+## Schema mapping
+
+JetBrains IDEs validate YAML against JSON Schemas out of the box. Either add the mapping in
+**Settings › Languages & Frameworks › Schemas and DTDs › JSON Schema Mappings** (schema URL
+`https://mouettesylvain-spec.github.io/ebs/schemas/flow.v1.schema.json`, file patterns
+`flow.yaml` and `flow.*.yaml`), or commit it for the whole team as `.idea/jsonSchemas.xml`:
+
+<RepoFile path="integrations/jetbrains/jsonSchemas.xml" />
+
+## Run configuration
+
+With the bundled Shell Script plugin, this file in `.run/` adds an **ebs build** entry to the
+run menu; it runs in the IDE terminal from the project root:
+
+<RepoFile path="integrations/jetbrains/ebs_build.run.xml" />
+
+Duplicate it for `ebs plan` or `ebs status` by changing `SCRIPT_TEXT`.

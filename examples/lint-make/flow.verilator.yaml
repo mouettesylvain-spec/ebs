@@ -1,6 +1,6 @@
 # flow.yaml with real Verilator. The linter is a toolchain, so its version and install tree are
 # part of every lint action key: results of the fake linter are never reused for Verilator.
-# Needs .ebs/toolchains.yaml describing `verilator/system` (docs/user/quickstart.md).
+# Needs .ebs/toolchains.yaml describing `verilator/system` (site: Start here > Quickstart).
 version: 1
 project: lint-make
 domain: examples

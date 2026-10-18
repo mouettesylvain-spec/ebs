@@ -1,0 +1,118 @@
+---
+// Measured numbers from src/data/bench.json, written by scripts/site_bench.py (the site
+// workflow regenerates it on every deploy). Nothing here is hand-typed.
+import bench from '../../data/bench.json';
+import { link, repoUrl } from '../../lib/repo';
+
+interface Row {
+  id: string;
+  example: string;
+  label: string;
+  executed: number;
+  cached: number;
+  total: number;
+  wall_s: number;
+}
+
+const rows: Row[] = bench.scenarios;
+const byId = (id: string): Row => {
+  const row = rows.find((r) => r.id === id);
+  if (!row) throw new Error(`bench.json has no scenario ${id}; rerun scripts/site_bench.py`);
+  return row;
+};
+const warm = byId('lint-warm');
+const comment = byId('lint-comment');
+const seed = byId('sim-seed');
+const cold = byId('sim-cold');
+
+const cards = [
+  {
+    big: `${warm.executed}`,
+    unit: `of ${warm.total} actions run`,
+    title: 'Fresh checkout',
+    text: `Make rebuilds all ${bench.make.executed} of ${bench.make.total} lint targets in a new clone: it has no shared cache. EBS reuses what CI already built: ${warm.cached} cache hits.`,
+  },
+  {
+    big: `${comment.executed}`,
+    unit: `of ${comment.total} actions`,
+    title: 'Comment-only RTL edit',
+    text: 'Lint reruns for the edited block; its report is byte-identical, so the summary is not rerun.',
+  },
+  {
+    big: `${seed.executed}`,
+    unit: `of ${seed.total} actions`,
+    title: 'One seed changed',
+    text: `One simulation and the report rerun; the model and ${seed.cached - 1} other simulations come from the cache.`,
+  },
+  {
+    big: `${Math.round((1 - warm.wall_s / byId('lint-cold').wall_s) * 100)}%`,
+    unit: 'less wall time',
+    title: 'Warm rebuild',
+    text: `${warm.wall_s.toFixed(1)} s instead of ${byId('lint-cold').wall_s.toFixed(1)} s on the lint example, and the gap grows with tool run time: cache hits cost one database lookup.`,
+  },
+];
+---
+
+<div class="gains">
+  {
+    cards.map((c) => (
+      <article class="card">
+        <p class="big">{c.big}</p>
+        <p class="unit">{c.unit}</p>
+        <h3>{c.title}</h3>
+        <p class="text">{c.text}</p>
+      </article>
+    ))
+  }
+</div>
+<p class="source">
+  {`Measured on the repository's `}<a href={link('/start/quickstart/')}>examples</a>
+  {` (${cold.total}-action regression, ${warm.total}-action lint) at commit `}
+  <a href={repoUrl('scripts/site_bench.py').replace('/blob/main/', `/blob/${bench.commit}/`)}
+    >{bench.commit}</a
+  >{`, ${bench.measured_at.slice(0, 10)}, by `}<code>scripts/site_bench.py</code>
+  {`. Action counts do not depend on the machine; timings do.`}
+</p>
+
+<style>
+  .gains {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+  }
+  .card {
+    padding: 1.75rem 1.5rem;
+    border-radius: var(--ebs-radius-l);
+    background: var(--ebs-surface);
+  }
+  .big {
+    margin: 0;
+    font-family: var(--ebs-font-display);
+    font-size: clamp(2.5rem, 5vw, 3.5rem);
+    font-weight: 700;
+    letter-spacing: var(--ebs-tracking-tight);
+    line-height: 1;
+    color: var(--ebs-accent);
+  }
+  .unit {
+    margin: 0.35rem 0 1.25rem;
+    color: var(--ebs-text-2);
+    font-size: var(--ebs-text-small);
+  }
+  h3 {
+    margin: 0 0 0.4rem;
+    font-size: 1.125rem;
+    color: var(--ebs-text);
+  }
+  .text {
+    margin: 0;
+    color: var(--ebs-text-2);
+    line-height: 1.5;
+  }
+  .source {
+    margin-top: 1.25rem;
+    text-align: center;
+    font-size: var(--ebs-text-small);
+    color: var(--ebs-text-3);
+  }
+</style>

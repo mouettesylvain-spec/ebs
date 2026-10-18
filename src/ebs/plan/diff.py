@@ -5,7 +5,8 @@ Actions are matched by `action_id`. A matched action is `unchanged` when its key
 new key cannot be computed yet; `pending` then names the producers it waits for.
 
 Field names: `schema`, `rule`, `argv`, `toolchain`, `params.<name>`, `env.<name>`,
-`outputs.<name>`, `config_files["<path>"]`, `inputs["<logical path>"]`.
+`outputs.<name>`, `config_files["<path>"]`, `inputs["<logical path>"]`,
+`executable["<logical path>"]`.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from ebs.plan.types import ActionDiff, ActionOutputInput, ActionSpec, Plan
 __all__ = ["diff_plans"]
 
 _DOTTED = ("params", "env", "outputs")
-_QUOTED = ("config_files", "inputs")
+_QUOTED = ("config_files", "inputs", "executable")
 
 
 def _as_dict(value: JsonValue) -> dict[str, JsonValue]:
@@ -65,20 +66,21 @@ def diff_plans(old: Plan, new: Plan) -> list[ActionDiff]:
     """One entry per action of either plan: new plan's order first, then removed actions."""
     before = {spec.action_id: spec for spec in old.actions}
     after = {spec.action_id for spec in new.actions}
+    # Keys of another key schema always differ, whatever the documents say (I4).
+    schema: tuple[str, ...] = ("schema",) if old.key_schema != new.key_schema else ()
     diffs: list[ActionDiff] = []
     for spec in new.actions:
         prev = before.get(spec.action_id)
         if prev is None:
             diffs.append(ActionDiff(spec.action_id, "added"))
         elif spec.key is None:
-            diffs.append(
-                ActionDiff(spec.action_id, "unknown", _changed_fields(prev, spec), _pending(spec))
-            )
+            fields = (*schema, *_changed_fields(prev, spec))
+            diffs.append(ActionDiff(spec.action_id, "unknown", fields, _pending(spec)))
         elif spec.key == prev.key:
             diffs.append(ActionDiff(spec.action_id, "unchanged"))
         else:
             # Equal documents with different keys can only come from another key schema.
-            fields = _changed_fields(prev, spec) or ("schema",)
+            fields = (*schema, *_changed_fields(prev, spec)) or ("schema",)
             diffs.append(ActionDiff(spec.action_id, "changed", fields))
     diffs.extend(
         ActionDiff(spec.action_id, "removed") for spec in old.actions if spec.action_id not in after

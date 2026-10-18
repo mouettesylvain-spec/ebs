@@ -1,0 +1,18 @@
+# A regression run with a tool declared as a toolchain: its version, install tree and
+# environment are part of every action key, so a patched tool reruns everything that used it.
+# Run `python3 configure.py` first (site: Tutorials > Custom toolchains).
+version: 1
+project: custom-toolchain
+domain: examples
+
+toolchains:
+  sim: { module: fakesim/1.0 }
+
+steps:
+  sim:
+    kind: shell
+    toolchain: sim
+    matrix: { table: tests.csv }
+    script: |
+      fakesim +test=${row.test} +seed=${row.seed} | tee result.txt
+    outputs: { result: result.txt }

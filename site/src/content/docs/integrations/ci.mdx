@@ -1,0 +1,71 @@
+---
+title: CI (GitHub Actions, GitLab)
+description: Run ebs in CI so every merge request fills the shared cache for the whole team.
+sidebar:
+  order: 4
+---
+
+import RepoFile from '../../../components/RepoFile.astro';
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+CI is where the cache pays off most. CI builds with `--cache write`, so its results become
+cache hits for every engineer who builds the same inputs afterwards. Personal builds default to
+`--cache read`.
+
+## Requirements for the runner
+
+- It reaches the CAS (the NFS mount) and the metadata service or database.
+- It authenticates with a **CI bearer token** scoped to the flow's domain: an admin creates it
+  with `python -m ebs.meta.service token create ci-cpu --kind ci --team <project>`
+  ([Metadata service](/ebs/operate/metadata-service/)). Pass it as `EBS_META_TOKEN`.
+- `ebs` and `ebs-runner` are installed on it, and an `ebs.toml` points at the site.
+
+<Tabs>
+<TabItem label="GitHub Actions">
+<RepoFile path="integrations/ci/github-actions.yml" />
+</TabItem>
+<TabItem label="GitLab CI">
+<RepoFile path="integrations/ci/gitlab-ci.yml" />
+</TabItem>
+</Tabs>
+
+`ebs build` exits 1 when tests fail and 3 on an infrastructure error, so the job fails in
+both cases ([Exit codes](/ebs/reference/exit-codes/)). `ebs build --json` prints one event per
+line plus a final result document, for your own reporting.
+
+## `ebs build --ci`
+
+`--ci` sets up a build for CI in one flag: `--cache write` (CI results feed the shared cache),
+`--rehash` (every source file is hashed, the stat cache is not trusted), one output line per
+event, the `[slurm.qos].ci` QOS on the grid, and the pipeline's identity
+(`CI_PROJECT_PATH`, `CI_PIPELINE_ID`, `CI_JOB_URL`, `CI_COMMIT_SHA`) stored with the build. It
+refuses to run against the metadata service without a token. When the build ends, passed or
+not, it writes three files into `$CI_PROJECT_DIR`:
+
+| File | What |
+| --- | --- |
+| `ebs-junit.xml` | One test case per simulation (any action with a `test` param): class = step, name = `test[seed]`, the first error signature on failure, the log tail, `ebs.cached=true` for results reused from the cache. Declare it under `artifacts:reports:junit`. |
+| `ebs-summary.md` | Status, build link (`[ci].build_url`), per-step counts, the first 20 failed tests. |
+| `ebs.env` | `EBS_BUILD_ID=<id>`, as a `dotenv` report, so later jobs know the build. |
+
+Secrets never reach these files: the values of `EBS_META_TOKEN`, `CI_JOB_TOKEN` and GitLab's
+other job credentials are replaced by `[MASKED]`, even when a tool printed them into its log.
+
+The GitLab template above runs the build, then, on a tag, releases and gates a channel.
+
+## Gate a channel on CI
+
+```sh
+ebs channel set rtl-team/cpu stable 2026.10.1 --if-passing
+```
+
+The channel moves only if the gate build (`$EBS_BUILD_ID` from the build job, or
+`--gate-build ID`) passed and is in the release's domain, and, when the channel has a
+`[release.gates]` policy, is a passed build of that gate flow. Otherwise the command fails
+without moving the channel, and so does the pipeline.
+
+## Keep the lock honest
+
+`ebs lock check` exits 1 when `ebs lock update` would change `flow.lock`, for example when an
+imported channel moved. Run it in a scheduled pipeline to learn that an upstream release is
+waiting, without ever changing a build behind your back.

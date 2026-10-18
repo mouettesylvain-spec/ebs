@@ -513,6 +513,12 @@ class HttpMetadataStore:
         r = self._call("GET", path, what, idempotent=True)
         return self._parse(r, OptionalResult, what).result
 
+    def cache_peek(self, domain: str, key: Digest) -> ResultManifest | None:
+        what = f"cache_peek {domain}/{key}"
+        path = self._cache_path(domain, key, "cache_peek")
+        r = self._call("GET", path, what, params={"peek": "true"}, idempotent=True)
+        return self._parse(r, OptionalResult, what).result
+
     def cache_get_many(self, domain: str, keys: Iterable[Digest]) -> dict[Digest, ResultManifest]:
         """`cache_get` for many keys in batches of `BATCH_MAX`; only hits are returned."""
         check_domain(domain)
@@ -600,12 +606,16 @@ class HttpMetadataStore:
         )
         return self._parse(r, OptionalResult, what).result
 
-    def finish_build(self, build: BuildId, status: BuildStatus) -> None:
+    def finish_build(
+        self, build: BuildId, status: BuildStatus, *, final_plan: Digest | None = None
+    ) -> None:
         what = f"finish_build {build}"
         try:
-            body = BuildFinish.model_validate({"status": status})
+            body = BuildFinish.model_validate({"status": status, "final_plan": final_plan})
         except ValidationError as exc:
-            raise MetadataError(f"{what}: invalid status {status!r}: {exc}") from None
+            raise MetadataError(
+                f"{what}: invalid status {status!r} or final plan {final_plan!r}: {exc}"
+            ) from None
         self._call("POST", f"/builds/{int(build)}/finish", what, body=body, idempotent=False)
 
     def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:

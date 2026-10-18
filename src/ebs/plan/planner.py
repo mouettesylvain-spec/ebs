@@ -243,8 +243,8 @@ class _Run:
         self._lock = lock
         self._planned: dict[str, _Planned] = {}
         self._toolchains: dict[str, Toolchain] = {}
-        self._snapshots: dict[str, list[tuple[str, Digest]]] = {}
-        self._trees: dict[Digest, list[tuple[str, Digest | None]]] = {}
+        self._snapshots: dict[str, list[tuple[str, Digest, bool]]] = {}
+        self._trees: dict[Digest, list[tuple[str, Digest | None, bool]]] = {}
         self._edges: set[tuple[str, str, str]] = set()
 
     # -- graph ------------------------------------------------------------------------------
@@ -582,10 +582,9 @@ class _Run:
         for iname, pattern in declared:
             pattern = _source_pattern(pattern, iname, where)
             writable = iname in writable_names
-            for path, digest in self._snapshot(pattern):
-                found.append(
-                    InputRef(path, "file", SourceInput(iname, pattern), digest, writable=writable)
-                )
+            for path, digest, executable in self._snapshot(pattern):
+                src = SourceInput(iname, pattern)
+                found.append(InputRef(path, "file", src, digest, writable, executable))
         for iname, alias, pattern in imported:
             found.extend(
                 self._import_inputs(alias, pattern, writable=iname in writable_names, where=where)
@@ -607,7 +606,12 @@ class _Run:
         unique: dict[str, InputRef] = {}
         for ref in found:
             seen = unique.setdefault(ref.logical_path, ref)
-            if (seen.kind, seen.id, type(seen.source)) != (ref.kind, ref.id, type(ref.source)):
+            if (seen.kind, seen.id, seen.executable, type(seen.source)) != (
+                ref.kind,
+                ref.id,
+                ref.executable,
+                type(ref.source),
+            ):
                 raise PlanError(
                     f"{where}: two different inputs are staged at {ref.logical_path!r} "
                     f"({seen.source} and {ref.source}); rename one of them"
@@ -640,12 +644,13 @@ class _Run:
         # A pattern starting with an output's exact name globs inside that output only, so names
         # with glob characters (`compile[lib=a].worklib`) are literal there.
         scope = max((n for n in pin.outputs if norm.startswith(f"{n}/")), key=len, default=None)
-        files: dict[str, tuple[Digest, Digest | None]] = {}  # path -> (id, content | symlink)
+        # path -> (id, content | None for a symlink, executable)
+        files: dict[str, tuple[Digest, Digest | None, bool]] = {}
         for name, out in sorted(pin.outputs.items()):
             if scope is not None and name != scope:
                 continue
             if out.type == "file":
-                files[name] = (out.id, out.digest)
+                files[name] = (out.id, out.digest, False)
                 continue
             try:
                 tree = self._tree_files(out.digest)
@@ -656,8 +661,8 @@ class _Run:
                     f"copied here first: `ebs release export {pin.name} {pin.version} --to "
                     f"{self._flow.domain}`"
                 ) from exc
-            for path, digest in tree:
-                files[f"{name}/{path}"] = (digest or out.id, digest)
+            for path, digest, executable in tree:
+                files[f"{name}/{path}"] = (digest or out.id, digest, executable)
         if scope is None:
             matched = match_paths(files, norm)
         else:
@@ -684,11 +689,11 @@ class _Run:
             )
         refs = []
         for path in matched:
-            oid, content = files[path]
+            oid, content, executable = files[path]
             assert content is not None  # symlinks were refused above
             source = ImportInput(alias, path, content)
             refs.append(
-                InputRef(posixpath.join(root, path), "file", source, oid, writable=writable)
+                InputRef(posixpath.join(root, path), "file", source, oid, writable, executable)
             )
         return refs
 
@@ -697,23 +702,23 @@ class _Run:
         path = posixpath.join(IMPORTS_DIR, alias, name)
         return InputRef(path, out.type, ImportInput(alias, name, out.digest), out.id, writable)
 
-    def _snapshot(self, pattern: str) -> list[tuple[str, Digest]]:
+    def _snapshot(self, pattern: str) -> list[tuple[str, Digest, bool]]:
         files = self._snapshots.get(pattern)
         if files is None:
             result = self._p._sources.snapshot(self._base, pattern)
             files = []
-            for path, digest in self._tree_files(result.digest):
+            for path, digest, executable in self._tree_files(result.digest):
                 if digest is None:
                     raise PlanError(
                         f"source pattern {pattern!r} matches the symlink {path!r}; symlinks "
                         "cannot be staged as action inputs yet: declare the file it points to"
                     )
-                files.append((path, digest))
+                files.append((path, digest, executable))
             self._snapshots[pattern] = files
         return files
 
-    def _tree_files(self, digest: Digest) -> list[tuple[str, Digest | None]]:
-        """(path, file digest) below a stored tree; symlinks have no digest."""
+    def _tree_files(self, digest: Digest) -> list[tuple[str, Digest | None, bool]]:
+        """(path, file digest, executable) below a stored tree; symlinks have no digest."""
         files = self._trees.get(digest)
         if files is None:
             files = []
@@ -721,10 +726,10 @@ class _Run:
                 if entry.type == "dir":
                     assert entry.digest is not None
                     files.extend(
-                        (f"{entry.name}/{p}", d) for p, d in self._tree_files(entry.digest)
+                        (f"{entry.name}/{p}", d, x) for p, d, x in self._tree_files(entry.digest)
                     )
                 else:
-                    files.append((entry.name, entry.digest))
+                    files.append((entry.name, entry.digest, entry.executable))
             self._trees[digest] = files
         return files
 

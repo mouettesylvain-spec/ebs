@@ -181,6 +181,21 @@ def test_equal_documents_with_different_keys_report_the_schema(cas: FsCAS, tmp_p
     assert (elab.status, elab.changed) == ("changed", ("schema",))
 
 
+# A baseline of an older key schema (a build made before an upgrade): every key differs, and
+# the schema is named first, before any field that also changed.
+def test_older_key_schema_baseline_names_the_schema(cas: FsCAS, tmp_path: Path) -> None:
+    new = make_plan(cas, tmp_path)
+    old_keys = tuple(
+        dataclasses.replace(a, key=hash_bytes(f"old {a.action_id}".encode())) for a in new.actions
+    )
+    old = dataclasses.replace(new, actions=old_keys, key_schema=new.key_schema - 1)
+    diffs = by_id(diff_plans(old, new))
+    assert {d.changed for d in diffs.values()} == {("schema",)}
+    salted = make_plan(cas, tmp_path, salt="patched")
+    elab = by_id(diff_plans(old, salted))["elab"]
+    assert elab.changed[:2] == ("schema", "toolchain")  # then the inputs it gets from compile
+
+
 def test_bool_int_param_change_is_named(cas: FsCAS, tmp_path: Path) -> None:
     def plan_with(value: object) -> Plan:
         step = {"kind": "shell", "command": ["x"], "params": {"n": value}}

@@ -209,6 +209,51 @@ def test_salloc_argv(site: Site, built: ReproBuild) -> None:
     assert "--run or --interactive" in no_mode.stderr
 
 
+# P1-10 follow-up: --time replaces the allocation's time limit (the action's time + grace), e.g.
+# for an interactive GUI session; it only makes sense with --salloc.
+def test_salloc_time_override(site: Site, built: ReproBuild) -> None:
+    fg = _Foreground()
+    site.services.run_foreground = fg  # type: ignore[method-assign]
+    result = site.invoke(["reproduce", SIM, "--salloc", "--interactive", "--time", "4h"])
+    assert result.exit_code == ExitCode.OK, result.output
+    ((argv, _, _),) = fg.calls
+    assert "--time=0-04:00:00" in argv[: argv.index("srun")]
+    alone = site.invoke(["reproduce", SIM, "--run", "--time", "4h"])
+    assert alone.exit_code == ExitCode.USAGE
+    assert "add --salloc" in alone.stderr
+    bad = site.invoke(["reproduce", SIM, "--salloc", "--run", "--time", "soon"])
+    assert bad.exit_code == ExitCode.USAGE
+    assert "--time" in bad.stderr
+
+
+# Review: a [slurm] value SLURM cannot take (SbatchOptions' validators) is a usage error
+# naming the field, not an internal error.
+def test_salloc_bad_setting_is_usage_error(site: Site, built: ReproBuild) -> None:
+    config = site.root / "config.toml"
+    config.write_text(config.read_text().replace('"short"', '"short queue"'))
+    site.services._config = None  # re-read
+    fg = _Foreground()
+    site.services.run_foreground = fg  # type: ignore[method-assign]
+    result = site.invoke(["reproduce", SIM, "--salloc", "--interactive"])
+    assert result.exit_code == ExitCode.USAGE, result.output
+    assert "partition" in result.stderr
+    assert fg.calls == []
+
+
+# P1-10 follow-up: `--run` exits 1 when an output differs from the recorded result (CI can use
+# the comparison directly), 0 when every compared output is the same.
+def test_run_exit_code_follows_the_comparison(
+    site: Site, built: ReproBuild, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    same = site.invoke(["reproduce", GEN, "--dir", str(tmp_path / "a"), "--run", "--json"])
+    assert same.exit_code == ExitCode.OK, same.output
+    assert json.loads(same.stdout)["ran"]["identical"] is True
+    monkeypatch.setattr("ebs.cli.reproduce.identical", lambda checks: False)
+    differs = site.invoke(["reproduce", GEN, "--dir", str(tmp_path / "b"), "--run", "--json"])
+    assert differs.exit_code == ExitCode.ACTIONS_FAILED, differs.output
+    assert json.loads(differs.stdout)["ran"]["identical"] is False
+
+
 class _ReadOnlyStore(InMemoryMetadataStore):
     """Fails the test on any write: reproduce only reads results and resolves outputs."""
 

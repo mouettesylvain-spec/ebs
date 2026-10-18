@@ -90,6 +90,7 @@ Follow-ups / open questions:
 - Executable bit of source files: per-file `InputRef`s carry no mode, so a chmod-only change does
   not change the key and the runner (P0-13) cannot restore `+x` on staged scripts. Needs an
   `executable` flag in `InputRef` and the key document (KEY_SCHEMA_VERSION bump) — decide before P0-13.
+  **Done (2026-10-18, decided by the human):** `InputRef.executable`, key schema 2.
 - `OutputSpec.optional` is not in the key (per contract): flipping an output from optional to
   required can hit an old cache entry that lacks it. Either add it to the key (bump) or have the
   driver (P0-15) reject cached manifests missing a required output.

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import socket
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
@@ -51,11 +52,13 @@ class BuildRecord(BaseModel):
     created_at: AwareDatetime
     host: str = ""  # where the driver (`ebs build`) runs; "" = unknown
     pid: int = 0  # the driver's process id; 0 = unknown
+    driver_job: str = ""  # P2-08: the SLURM job driving a detached build; "" = none
     ci: dict[str, str] | None = None  # `ebs build --ci`: the CI job's metadata (P2-07 R1)
 
     def write(self, directory: Path) -> None:
         directory.mkdir(parents=True, exist_ok=True)
-        tmp = directory / f".{RECORD_FILE}.tmp"
+        # A unique name: a detaching CLI and its driver job may write at once.
+        tmp = directory / f".{RECORD_FILE}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
         tmp.write_text(self.model_dump_json(indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, directory / RECORD_FILE)
 

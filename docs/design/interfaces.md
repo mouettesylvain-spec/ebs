@@ -175,7 +175,7 @@ def make_instance_id(name: str, row: Mapping[str, str], keys: Sequence[str]) -> 
 ## 4. Plan — `ebs.plan`
 
 ```python
-KEY_SCHEMA_VERSION: Final = 1
+KEY_SCHEMA_VERSION: Final = 2          # 2: the key document gained `executable`
 
 @dataclass(frozen=True, slots=True)
 class InputRef:
@@ -184,6 +184,7 @@ class InputRef:
     source: SourceInput | ActionOutputInput | ImportInput
     id: Digest | None                  # None only when produced by a not-yet-run deterministic output
     writable: bool = False             # P1-04; NOT in key: stage a writable copy, never a CAS link
+    executable: bool = False           # in key: the file's executable bit (sources, imported tree files)
 
 @dataclass(frozen=True, slots=True)
 class ActionSpec:
@@ -226,6 +227,11 @@ writable input (P1-04; read-only inputs encode as before, so existing plan diges
 The planner marks an input writable when it is staged through a flow input declared
 `writable: true` (source files and output references alike; a path staged by both a writable
 and a read-only declaration is writable). Rule-generated inputs are never writable.
+`"executable": true` likewise appears only on an executable file input. The planner takes it
+from the tree manifest of the source snapshot (the owner `x` bit, I5) or of an imported release's
+tree; whole outputs and output references never set it (a tree carries its own modes). It is in
+the key (**CONTRACT CHANGE**, key schema 2): a `chmod +x` reruns the action, and the runner
+stages the file as an executable copy (`CAS.materialize(executable=True)`).
 `PlanToolchain.env` (P0-13) is the toolchain's captured env, HOME-normalized (literal `$HOME`,
 § 13); the runner applies it with `$HOME` replaced by the action's scratch home. It is already
 hashed into the toolchain id, so it changes no action key; plan.json `toolchains` entries are
@@ -234,9 +240,10 @@ hashed into the toolchain id, so it changes no action key; plan.json `toolchains
 Key document (the only thing hashed):
 
 ```json
-{"schema": 1, "rule": {"kind": "...", "version": "..."}, "argv": [...], "params": {...},
+{"schema": 2, "rule": {"kind": "...", "version": "..."}, "argv": [...], "params": {...},
  "env": {...}, "toolchain": "sha256:…|null", "config_files": {"path": "sha256:…"},
- "inputs": {"<logical_path>": "sha256:…"}, "outputs": {"<name>": {"path": "...", "type": "..."}}}
+ "inputs": {"<logical_path>": "sha256:…"}, "executable": {"<logical_path>": true},
+ "outputs": {"<name>": {"path": "...", "type": "..."}}}
 ```
 
 - `nondeterministic_output_id(k, name) = digest_json({"nd": 1, "producer": str(k), "output": name})`.
@@ -255,12 +262,16 @@ Key document (the only thing hashed):
   after `=`, `+`, `,`, `:` or an option prefix such as `-I`) naming an absolute or `~` path is
   rejected unless it lies under the toolchain's install roots or `planner.SYSTEM_PATHS`; so is a
   relative path leaving the work dir (`../x`). `http(s)://` and `ftp://` URLs are not paths;
-  `file://` URLs are. `decode` rejects an action whose stored key does not match its fields.
+  `file://` URLs are. `decode` rejects an action whose stored key does not match its fields. A plan of another key schema
+is refused too, except that `decode(data, any_key_schema=True)` (**CONTRACT CHANGE**, after the
+schema 2 bump) reads an *older* schema as recorded, keys not re-computed: only for commands that
+look at a past build (`ebs debug`, `reproduce`, `outputs`, the `plan --diff` baseline), never to
+run or cache. `diff_plans` then names `schema` first for every action whose keys differ.
 
 Plan file (`plan.json`, canonical JSON, stored in CAS; its digest is the build's plan digest):
 
 ```json
-{"v": 1, "ebs_version": "…", "key_schema": 1, "flow": {"path": "...", "git": {"repo": "...", "commit": "...", "dirty": false}},
+{"v": 1, "ebs_version": "…", "key_schema": 2, "flow": {"path": "...", "git": {"repo": "...", "commit": "...", "dirty": false}},
  "lock": "sha256:…|null", "domain": "cpu-nda", "project": "rv32x-cpu",
  "toolchains": {"questa": {"module": "questa/2025.2", "id": "sha256:…", "env": {…}}},
  "actions": [ActionSpec…], "edges": [["from_action_id", "output", "to_action_id"]]}
@@ -329,14 +340,17 @@ class CAS(Protocol):
     def local_path(self, d: Digest) -> Path | None: ...    # fs backend only; for read-only bind/symlink
     def materialize(self, d: Digest, kind: Literal["file", "tree"], dest: Path,
                     mode: Literal["copy", "hardlink", "symlink", "auto"] = "auto",
-                    copy_threshold: int = 256 << 20, *, writable: bool = False) -> None: ...
+                    copy_threshold: int = 256 << 20, *, writable: bool = False,
+                    executable: bool = False) -> None: ...
     def verify(self, d: Digest) -> bool: ...
     def delete(self, d: Digest) -> None: ...               # GC only
     def iter_digests(self) -> Iterator[tuple[Digest, int]]: ...   # GC only
 ```
 
 fs layout: `<root>/<domain>/blobs/<algo>/<ab>/<cd>/<hex>`, `…/trees/<algo>/<ab>/<cd>/<hex>.json`,
-`…/tmp/`. Blobs mode 0444, dirs 2750 group `<domain>` (group set by the deployment, not by code).
+`…/tmp/`. Blobs mode 0444. The domain dir is the deployment's (group `<domain>`, 2750); every dir
+the CAS creates below it is 2770 whatever the umask, so any member of the group can add objects. A missing domain dir
+(a development CAS) is created with the plain umask.
 
 `has` is true for a blob or a tree manifest; `open`/`local_path` address blobs, `get_tree`
 manifests; `verify`, `delete` and `iter_digests` cover both. `materialize` requires that `dest`
@@ -344,6 +358,7 @@ does not exist. `auto`: a file ≤ `copy_threshold` is copied, larger ones symli
 the CAS; tree files are hard links when on the same filesystem, else chosen by the same threshold.
 Files are read-only, directories writable; `writable=True` copies every file (0644/0755).
 Executable files are always copied (0555), because a link would share the blob's inode and mode.
+A tree records which files are executable; `executable=True` (file kind only) makes a blob one.
 Tree symlinks are created last and must resolve inside `dest`, else `CasError`. The fs backend
 also has `blob_path`, `tree_path`, `iter_objects() -> Iterator[(Digest, size, "file" | "tree")]`
 and `cleanup_tmp(max_age=24h, *, dry_run=False) -> int` (GC, P1-09; `dry_run` only counts).
@@ -354,6 +369,7 @@ and `cleanup_tmp(max_age=24h, *, dry_run=False) -> int` (GC, P1-09; `dry_run` on
 class MetadataStore(Protocol):
     # action cache
     def cache_get(self, domain: str, key: Digest) -> ResultManifest | None: ...     # also touches last_access
+    def cache_peek(self, domain: str, key: Digest) -> ResultManifest | None: ...    # no hit, no touch
     def cache_put(self, domain: str, key: Digest, result: ResultManifest) -> bool: ...  # False if already present
     def cache_replace_failed(self, domain: str, key: Digest, result: ResultManifest) -> bool: ...  # P0-15: --rerun-failed
     # builds
@@ -362,7 +378,8 @@ class MetadataStore(Protocol):
     def set_action_state(self, build: BuildId, action_id: str, state: ActionState, **fields: object) -> None: ...
     def record_result(self, build: BuildId, action_id: str, result: ResultManifest) -> None: ...  # also writes provenance edges; never changes state
     def get_result(self, build: BuildId, action_id: str) -> ResultManifest | None: ...  # P0-15: last recorded manifest
-    def finish_build(self, build: BuildId, status: BuildStatus) -> None: ...
+    def finish_build(self, build: BuildId, status: BuildStatus, *,
+                     final_plan: Digest | None = None) -> None: ...
     def get_build(self, build: BuildId) -> BuildView: ...
     def list_actions(self, build: BuildId, *, state: ActionState | None = None) -> list[ActionRow]: ...
     # access (P0), leases and GC (P1-09)
@@ -398,7 +415,10 @@ re-validated on write (values must also pass `canonical_json`).
   `cache_put` keeps the old failure.
 - `cache_put` is insert-if-absent and requires `result.action_key == key`. `cache_get` counts a
   hit on every call and rewrites `last_access` at most once per hour (`TOUCH_INTERVAL_S`); `touch`
-  applies the same throttle to known `blobs` rows and ignores unknown digests.
+  applies the same throttle to known `blobs` rows and ignores unknown digests. `cache_peek`
+  (**CONTRACT CHANGE**) answers like `cache_get` without counting a hit or touching: for
+  predictions (`ebs plan`), which use nothing, so they neither inflate the hit ratio nor keep
+  entries alive.
 - `ActionRow.rule` (rule kind), `params` (`ParamJson` values: str, int, bool, list of str) and
   `toolchain` (toolchain id) are what the plan says the action is (**CONTRACT CHANGE (P2-04)**:
   new optional fields, None on rows written before; migration 0010). The driver sets them in
@@ -432,8 +452,12 @@ re-validated on write (values must also pass `canonical_json`).
   runner uses it to fetch the bytes of a `deterministic: false` input, whose id is derived from
   the producer key. `out` edges are never overwritten, so the first recorded bytes win.
 - `BuildStatus = running | passed | failed | infra_failed | cancelled`; `finish_build` takes a
-  final one, once. `BuildView` = `BuildCreate` fields + `id, status, created_at, finished_at,
-  pinned, action_counts` (per-state counts for `ebs status`).
+  final one, once, and optionally the digest of the final (refined) plan, stored and registered
+  in the CAS by the driver. `BuildView` = `BuildCreate` fields + `id, status, created_at,
+  finished_at, pinned, action_counts` (per-state counts for `ebs status`), `final_plan_digest`
+  (None until finished, or when the driver could not store it). **CONTRACT CHANGE (P1-09
+  follow-up, revision 0012):** `final_plan` / `final_plan_digest`, so a pin roots the plan that
+  `ebs outputs`, `plan --diff`, `debug` and `reproduce` read.
 - `Event` (§ 10) is defined in `ebs.meta.api`, because meta (L2) cannot import the driver (L4);
   `ebs.driver.events` re-exports it.
 - Toolchain registry (P1-07, migration `0004`). `ToolchainCreate = {id, name, module, version,
@@ -481,10 +505,18 @@ re-validated on write (values must also pass `canonical_json`).
   with direct database access, never over HTTP): `gc_policy(domain) -> DomainPolicy{ttl_days,
   quota_bytes, high_water, low_water}` (defaults without a `domains` row), `gc_blobs`,
   `gc_cache_entries` (`GcCacheEntry{key, last_access, outputs: content digests, log}`),
-  `gc_roots(domain, now) -> GcRoots{pinned, leased, released}` (pinned: plan, outputs and logs
-  of pinned builds; leased: live leases; released: release outputs, P2-02), `gc_tombstones`,
+  `gc_roots(domain, now) -> GcRoots{pinned, leased, released}` (pinned: plan, final plan,
+  outputs and logs of pinned builds; leased: live leases; released: release outputs, P2-02), `gc_tombstones`,
   `gc_attribution` (`GcAttribution{digest, build, project, step}` for every output and log of a
   recorded result), `register_blobs`, `gc_expire_leases(domain, now) -> int`,
+  `gc_lock(domain, owner, *, now, ttl_s) -> GcLock{domain, owner, expires_at}` (takes the
+  domain's lock when free, expired or `owner`'s, and returns it as it stands: another owner means
+  another run holds it) and `gc_unlock(domain, owner)` (**CONTRACT CHANGE**, revision 0013: one
+  run per domain; a row with an expiry, as PgBouncer's transaction pooling rules out session
+  advisory locks; `collect` takes it for `GC_LOCK_TTL_S = 6 h`, renews it after the snapshot and at
+  least every `GC_LOCK_RENEW_S = 300 s` while it deletes, and raises `GcBusyError` when busy
+  or when its lock was taken over (it stops there; expiry uses the GC hosts' clocks, keep them
+  in NTP sync); a dry run takes none),
   `gc_delete_cache_entries(domain, keys, *, unused_before) -> deleted keys` (re-checks
   `last_access <= unused_before`), `gc_tombstone(domain, digests, *, now, delete_after)`
   (existing tombstones kept), `gc_drop_tombstones`, `gc_claim(domain, digest, now) -> bool`
@@ -595,7 +627,7 @@ in JSON mode (`model_validate_json`):
 
 | Method and path | Store call | Body → response |
 | --- | --- | --- |
-| `GET /domains/{d}/cache/{key}` | `cache_get` | → `OptionalResult` |
+| `GET /domains/{d}/cache/{key}` | `cache_get`; `?peek=true`: `cache_peek` (no hit metric) | → `OptionalResult` |
 | `PUT /domains/{d}/cache/{key}` | `cache_put` | `ResultManifest` → `Changed` |
 | `POST /domains/{d}/cache/{key}/replace-failed` | `cache_replace_failed` | `ResultManifest` → `Changed` |
 | `POST /domains/{d}/cache/lookup` | `cache_get` per key | `DigestBatch` → `CacheHits` (hits only) |
@@ -609,7 +641,7 @@ in JSON mode (`model_validate_json`):
 | `POST /builds/{b}/actions/{a}/state` | `set_action_state` | `StateChange` → 204 |
 | `PUT /builds/{b}/actions/{a}/result` | `record_result` | `ResultManifest` → 204 |
 | `GET /builds/{b}/actions/{a}/result` | `get_result` | → `OptionalResult` |
-| `POST /builds/{b}/finish` | `finish_build` | `BuildFinish` → 204 |
+| `POST /builds/{b}/finish` | `finish_build` | `BuildFinish{status, final_plan?}` → 204 |
 | `POST /builds/{b}/leases` | `acquire_lease` | `LeaseRequest{domain, digests, ttl_s}` → `CreatedLease` (P1-09) |
 | `POST /builds/{b}/leases/{id}/renew` | `renew_lease` | `LeaseRequest{digests, ttl_s}` → 204 |
 | `POST /builds/{b}/driver` | `claim_driver` | `DriverClaim{owner, ttl_s}` → `DriverLease` (P2-08) |
@@ -944,7 +976,14 @@ states.job_status(info: SlurmJobInfo, *, infra_reason: InfraReason | None = None
 ```
 
 - `comment` (P1-02) becomes `--comment=…`: the build UUID, read by admin tooling and the
-  scratch-cleanup epilog (P1-04).
+  scratch-cleanup epilog (P1-04). **CONTRACT CHANGE:** `submit` appends ` ebs-submit=<16 hex>`
+  (`SUBMIT_TAG`), a token unique to the submission, and after each transient sbatch failure
+  runs `squeue --json --states=all --me --name=<job name>`: a job carrying the token means the
+  controller accepted an earlier attempt whose reply was lost, so its id is returned instead
+  of submitting again (an array returns its array job id). The lookup can miss a request still
+  being registered, so after a retried submission `submit` looks once more and `scancel`s every
+  job with the token but the one it returns. Best effort: a failing lookup or cancel is logged.
+  Without a comment, plain retries.
 - argv is always a list; options are single `--name=value` elements; `--export=NONE` always
   (the job's environment is the env file only); `--no-requeue` unless `requeue=True` (the driver
   retries, a SLURM requeue would run the action twice).
@@ -1012,7 +1051,7 @@ render_jobscript(argv) -> str                         # fixed template, every va
   `env` (default: the caller's `PATH` and `EBS_CONFIG`). stdout+stderr go to
   `<debug_root>/<domain>/<build id|local>/slurm/%A_%a.out` (arrays) or `%j.out`; scripts and env
   files sit in its `jobs/` subdirectory. Job name `ebs:<build uuid[:8]|local>:<step>`, comment
-  the build UUID. Partition, cpus, memory (MiB, rounded up) and time (`resources.time` +
+  the build UUID (then the submission token). Partition, cpus, memory (MiB, rounded up) and time (`resources.time` +
   `JOB_TIME_GRACE_S` = 120 s, so the runner's own timeout fires first) come from the batch's
   largest request. P1-03: `--licenses` is `license_request(batch_licenses(actions))` (feature names
   `^[A-Za-z0-9_.-]+$`, an explicit `feat@server` kept as written); `--account`/`--qos` come from
@@ -1051,7 +1090,7 @@ ebs-runner --plan sha256:<plan digest> --array-map sha256:<map digest> [--build 
 
 Array map (P1-02, a blob in the domain's CAS, canonical JSON; `ebs.exec.slurm.arrays`):
 `{"v": 1, "plan": "sha256:<plan digest>", "actions": [<action id of task 0>, <task 1>, …]}`.
-Task `$SLURM_ARRAY_TASK_ID` runs `actions[i]`; its `plan` must equal `--plan` (P1-04 reads it).
+Task `$SLURM_ARRAY_TASK_ID` runs `actions[i]`; its `plan` must equal `--plan` (`ebs.runner.main.array_action`).
 
 Exit codes: `0` result posted (passed or failed), `64` bad usage, `70` internal error,
 `75` infra failure (temporary; driver retries), `76` input verification failed (digest mismatch).
@@ -1064,7 +1103,8 @@ Lifecycle and guarantees: architecture.md "Runner lifecycle on a node". P0-13 de
 - Options: `--domain` is required without `--build` (else taken from the build, must match);
   `--keep-scratch` keeps the scratch dir and prints `scratch kept at <path>` on stderr. Without
   `--build` nothing is posted and the ResultManifest is printed as JSON on stdout. `--array-map`
-  is P1-04 (exit 64 until then). Config: `[cas].root`, `[scratch].dir`, `[runner]`, `[rules]`,
+  picks `actions[$SLURM_ARRAY_TASK_ID]` of the map (exit 64 if the map is missing, for another
+  plan, or has no such task). Config: `[cas].root`, `[scratch].dir`, `[runner]`, `[rules]`,
   `[metadata]` (only with `--build`), via `ebs.config.load_config`.
 - Exit 64 also for: a plan not in the CAS or of another domain, an unknown action id, an
   action whose key or input ids are unset (the driver must refine the plan), a rule kind or
@@ -1075,8 +1115,9 @@ Lifecycle and guarantees: architecture.md "Runner lifecycle on a node". P0-13 de
   is replaced. Under SLURM the dir first gets `.ebs-job` holding `$SLURM_JOB_ID` (P1-04), the
   key of the node epilog `deploy/slurm/epilog.d/ebs-scratch-cleanup.sh`. Inputs are
   materialized at `work/<logical path>` with `CAS.materialize(mode="auto",
-  copy_threshold=[cas].copy_threshold (256 MiB), writable=ref.writable)`: larger files are
-  symlinked read-only from the CAS, writable inputs always copied (P1-04 R1); config files are
+  copy_threshold=[cas].copy_threshold (256 MiB), writable=ref.writable,
+  executable=ref.executable)`: larger files are symlinked read-only from the CAS, writable and
+  executable inputs always copied (P1-04 R1); config files are
   written read-only; each input is re-hashed
   (file: blob digest, tree: manifest digest) against its content digest: the input id, or
   `resolve_output(id)` for a nondeterministic producer output (I10).
@@ -1171,6 +1212,7 @@ def run_build(plan: Plan, *, refiner: Refiner, cas: CAS, store: MetadataStore, e
               handle_sigint: bool = False, handle_sigterm: bool = False,
               owner: str | None = None) -> BuildOutcome: ...   # = start_build + drive_build
 # BuildOutcome(build, uuid, status, exit_code, states: {action_id: final state}, plan (refined), events_path)
+#   The refined plan is stored and passed to finish_build(final_plan=) (a CAS error: None, logged).
 # P2-08: start_build(plan, *, cas, store, workdir, user, cache_mode="read", ci_job=None, clock=None)
 #   -> StartedBuild(build, uuid, plan_digest): build record + queued actions + build_started/plan_ready.
 # drive_build(plan, started, *, refiner, cas, store, executor, workdir, config, clock, retry,
@@ -1243,7 +1285,7 @@ cancels submitted work, keeps results of jobs that already finished, marks the r
 `TreeError`, `PlanError`, `CasError`, `MetadataError`, `ExecutorError`, `RuleError`, `SandboxError`,
 `SourceError` (→ `SourceEscapeError`), `ToolchainError`, `ReleaseError` (P2-02: a broken release,
 channel or export rule; exit 2), `DriverBusyError` (P2-08: the build has another live driver, or
-is finished; exit 2).
+is finished; exit 2), `GcBusyError` (another `ebs gc` run holds the domain's GC lock; exit 2).
 CLI exit codes: `0` ok, `1` build finished with failed actions, `2` usage/flow error,
 `3` infrastructure error (retries exhausted), `4` internal bug (with "please report" hint),
 `130` cancelled by the user (Ctrl-C; 128 + SIGINT, P0-15).
@@ -1424,8 +1466,8 @@ class RegistryToolchainResolver:  # ToolchainResolver over the store
 
 Commands: `ebs plan`, `build`, `status`, `logs`, `outputs`, `fetch` (P1-13), `debug`,
 `reproduce` (P1-10), `rules list`,
-`seeds gen` (P1-11), `toolchain register|list|show|check` (P1-07); global `--debug` (tracebacks,
-debug logs). Exit codes: § 11. Every command has `--json`; `NO_COLOR` disables colors. The
+`seeds gen` (P1-11), `toolchain register|list|show|check` (P1-07); global `--install-completion` / `--show-completion` (D-01) and `--debug` (tracebacks,
+debug logs). Exit codes: § 11. Every command except `pin`, `unpin` and `release yank` has `--json`; `NO_COLOR` disables colors. The
 working directory holds `.ebs/` (config lookup, `builds/`, executor logs); `-f` names the flow
 (default `./flow.yaml`). `ebs.cli._context.SiteServices` builds the CAS, metadata store,
 executor, rules (`[rules]`) and stat cache from ebs.toml; tests pass a subclass as the Typer
@@ -1482,8 +1524,8 @@ folded from events: `queued` (no event yet), `submitted`, `pending: <reason>`, `
 peak memory of their recent successful runs (`.ebs/usage.jsonl`, written by `run_build`; at
 least 5 samples). Text mode prints each as `hint: <message>`. Hints never change the plan.
 
-Prediction mirrors the driver: keyed actions are looked up with `cache_get` (which counts a hit
-and touches `last_access`); the output ids of passed hits refine the plan, repeated until no new
+Prediction mirrors the driver: keyed actions are looked up with `cache_peek` (no hit counted,
+no touch, no metric); the output ids of passed hits refine the plan, repeated until no new
 key appears. `cache` is `unknown` for actions still unkeyed, or for all without
 `[metadata].url`. `change` comes from `diff_plans(baseline final plan, predicted plan)`;
 `status` is null without a baseline.
@@ -1523,10 +1565,15 @@ apply), rewrites the record's `host`/`pid`, and prints `build <uuid> (id <n>): r
 
 **`ebs status --json`**: `{"v": 1, "uuid", "build", "status", "flow", "created_at", "steps":
 [{"step", "actions", "states": {state: n}}], "totals": {state: n}, "retries": [{"action_id",
-"state", "attempts": [{"attempt", "job_id", "node", "reason"}]}]}`. `retries` (P1-05 R2) lists the
+"state", "attempts": [{"attempt", "job_id", "node", "reason"}]}], "driver": {"job", "host",
+"pid"} | null}`. `retries` (P1-05 R2) lists the
 actions with at least one infrastructure failure, with every attempt (`reason` null for one that
 did not fail that way); text mode prints `<action>: <state> after <n> attempts (<reason> on
-<node>, …)` under `infrastructure failures:`. `--watch` redraws every `--interval` seconds until
+<node>, …)` under `infrastructure failures:`. `driver` (P2-08 follow-up) is who drives the build,
+from the local record: `job` the SLURM job of a detached build (`build.json` `driver_job`, set by
+`--detach` and by the driver job from `$SLURM_JOB_ID` when it resumes), `host`/`pid` the driving
+process (null until known); text mode prints `driver: SLURM job <id> on <host> (pid <n>)` (or
+`…, not started yet`) while the build runs. `--watch` redraws every `--interval` seconds until
 the build is no longer `running`.
 
 **`ebs logs ACTION`**: ACTION is an action id or a unique prefix. Finished actions: the log blob
@@ -1550,7 +1597,8 @@ ebs fetch   ACTION[.OUTPUT]… [--build B] [-o|--output-dir DIR] [--flat] [--mod
 Both need `[metadata].url` and only read (no cache, store, build record or CAS writes); a
 successful `fetch` only `touch`es what it copied, so GC sees the use (P1-09 R1). `outputs` lists one row per output of every action of the build with a
 result (`get_result`: done, cached and test-failed actions), in plan order then by output name;
-ACTION arguments (`match_action`: id or unique prefix) and `--step` filter. The declared
+ACTION arguments (as in `fetch`: an exact id, else every action of a step of that name, else
+a unique prefix; step names since the P1-13 follow-up) and `--step` filter. The declared
 logical `path` comes from the build's `final_plan` (else `plan`) in the CAS, matched by output
 name; an output the plan does not declare has `path: null` (`-` in the table). `--json` (v1):
 
@@ -1580,7 +1628,7 @@ output, `<action_id>.<name> -> <dest>`. `--json`: `{"v": 1, "uuid", "build", "fe
 
 ```
 ebs debug     ACTION [--build B] [--json]
-ebs reproduce ACTION [--build B] [--dir D] [--run | --interactive] [--salloc] [--json]
+ebs reproduce ACTION [--build B] [--dir D] [--run | --interactive] [--salloc [--time T]] [--json]
 ```
 
 Both read the build record and events, the build's `final_plan` (else `plan`) from the CAS and,
@@ -1612,18 +1660,23 @@ runs `bash --norc` in `work/` with the sandbox env (+ `PS1`). `--salloc` (needs 
 `--interactive`) runs `salloc --job-name=ebs:repro:<step> [--partition --account --qos
 --cpus-per-task --mem=<MiB>M --time=<time + JOB_TIME_GRACE_S> --licenses --constraint] srun
 --pty ebs reproduce ACTION --build <uuid> --run|--interactive [--dir D] [--json]` (options as the SLURM
-executor would give the action alone; account/QOS for build kind `dev`), so the sandbox is
-built on the node. Reproduce never writes to the metadata store: no build, result, cache entry,
+executor would give the action alone, rendered by the same `ebs.exec.slurm.cli.job_options`;
+account/QOS for build kind `dev`), so the sandbox is built on the node. `--time T` (a flow
+duration such as `4h`; only with `--salloc`) replaces the allocation's time limit. Reproduce never writes to the metadata store: no build, result, cache entry,
 event, lease or touch (R4). `--json`: `{"v": 1, "uuid", "build", "action_id", "dir", "work",
 "argv", "env", "interactive", "ran": null | {"exit_code", "status", "timed_out", "error", "log",
 "outputs": [{"name", "status", "recorded", "reproduced"}], "identical"}}`; with `--salloc`
 the outer command prints the salloc line on stderr and the inner one the document. The exit
-code is 0 once the sandbox is built, whatever the tool or the comparison gave.
+code is 0 once the sandbox is built, whatever the tool gave, except that `--run` exits 1 when
+`identical` is false (an output differs from, or is missing in, the reproduction); `--salloc`
+passes the inner command's exit code on. **CONTRACT CHANGE (P1-10 follow-up).**
 
 **`ebs rules list --json`**: `{"v": 1, "rules": [{"kind", "version", "impl"}]}`, sorted by kind.
 
 **`ebs seeds gen TABLE --json`**: `{"v": 1, "table": "<TABLE as given>", "appended": n,
-"filled": n}`. Options `--per-test N`, `--replace`, `--column` (default `seed`),
+"filled": n, "rows": [{"change": "filled" | "appended", "row": {column: value}}]}` (`rows`: the
+changed rows as they read after the edit, filled ones in table order then appended ones; text
+mode prints them under the summary, one `<change> col=value …` line each, for review). Options `--per-test N`, `--replace`, `--column` (default `seed`),
 `--test-column` (default `test`), `--base-seed` (default 0); algorithm and formatting rules:
 `ebs.flow.seeds` docstring (task P1-11).
 

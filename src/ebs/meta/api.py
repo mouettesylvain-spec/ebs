@@ -102,6 +102,7 @@ __all__ = [
     "GcAttribution",
     "GcBlob",
     "GcCacheEntry",
+    "GcLock",
     "GcRoots",
     "GcRun",
     "GcStore",
@@ -396,6 +397,7 @@ class BuildView(BuildCreate):
     finished_at: AwareDatetime | None
     pinned: StrictBool
     action_counts: dict[ActionState, _NonNegative]
+    final_plan_digest: DigestField | None = None  # set by finish_build (revision 0012)
 
 
 ParamJson = StrictBool | StrictInt | StrictStr | list[StrictStr]
@@ -525,6 +527,11 @@ class MetadataStore(Protocol):
         `last_access` at most once per hour."""
         ...
 
+    def cache_peek(self, domain: str, key: Digest) -> ResultManifest | None:
+        """`cache_get` without its side effects: no hit counted, no touch (`ebs plan`'s
+        prediction, which uses nothing)."""
+        ...
+
     def cache_put(self, domain: str, key: Digest, result: ResultManifest) -> bool:
         """Insert if absent; True if this call inserted, False if the key was already cached."""
         ...
@@ -559,7 +566,12 @@ class MetadataStore(Protocol):
         driver reads it when the executor reports `done`, in every cache mode)."""
         ...
 
-    def finish_build(self, build: BuildId, status: BuildStatus) -> None: ...
+    def finish_build(
+        self, build: BuildId, status: BuildStatus, *, final_plan: Digest | None = None
+    ) -> None:
+        """Set the final status. `final_plan` is the plan as refined at the end (every key that
+        could be computed), stored in the CAS; a pinned build roots it with its plan."""
+        ...
 
     def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
         """Record which release each import alias of `build` used (P2-03 R5, for `used-by`),
@@ -711,6 +723,7 @@ class BuildFinish(BaseModel):
     model_config = _WIRE
 
     status: Annotated[StrictStr, Field(max_length=64)]
+    final_plan: DigestField | None = None
 
 
 class CreatedBuild(BaseModel):
@@ -877,9 +890,18 @@ class GcCacheEntry:
 class GcRoots:
     """Digests GC must never delete (with everything below them, I15)."""
 
-    pinned: frozenset[Digest]  # plan, outputs and logs of pinned builds
+    pinned: frozenset[Digest]  # plan, final plan, outputs and logs of pinned builds
     leased: frozenset[Digest]  # objects of live leases
     released: frozenset[Digest]  # content digests of release outputs, yanked ones too (P2-02)
+
+
+@dataclass(frozen=True, slots=True)
+class GcLock:
+    """Who runs GC on a domain, until when (one run per domain at a time)."""
+
+    domain: str
+    owner: str  # host:pid:token
+    expires_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -962,6 +984,16 @@ class GcStore(Protocol):
         ...
 
     def gc_record_run(self, run: GcRun) -> None: ...
+
+    def gc_lock(self, domain: str, owner: str, *, now: datetime, ttl_s: int) -> GcLock:
+        """Take the domain's GC lock until `now + ttl_s` if it is free, expired or already
+        `owner`'s (a renewal); returns the lock as it now stands, so another owner means
+        another GC run holds it. `1 <= ttl_s <= MAX_LEASE_TTL_S`."""
+        ...
+
+    def gc_unlock(self, domain: str, owner: str) -> None:
+        """Drop the domain's GC lock if `owner` holds it, else do nothing."""
+        ...
 
 
 # --- releases and channels (P2-02) ---------------------------------------------------------------

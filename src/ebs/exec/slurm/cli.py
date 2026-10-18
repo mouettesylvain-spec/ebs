@@ -6,8 +6,13 @@ string), run through an injectable `CommandRunner`, and retried with exponential
 SLURM reports a transient failure (controller or database unreachable, socket timeout). Any other
 non-zero exit raises `ExecutorError` at once, quoting SLURM's message.
 
-Retrying `sbatch` after a socket timeout can submit a job twice if the controller accepted the
-first request before the reply was lost; the executor (P1-02) reconciles by job name.
+Retrying `sbatch` after a socket timeout could submit a job twice if the controller accepted the
+first request before the reply was lost. `submit` therefore tags a job that has a comment (the
+build UUID) with a token, `<comment> ebs-submit=<token>`, and after each transient failure looks
+for a job carrying it (`squeue --me --name=<job name>`) before trying again. That lookup can
+miss a request the controller is still registering, so after a retried submission it looks
+once more and cancels any job with the token other than the one returned. Best effort: a
+failing lookup or cancel is logged, never fatal.
 """
 
 from __future__ import annotations
@@ -15,8 +20,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import subprocess
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Final, Protocol, TypeVar
@@ -50,6 +56,7 @@ from ebs.exec.slurm.models import (
 __all__ = [
     "DEFAULT_COMMAND_TIMEOUT_S",
     "DEFAULT_MAX_RETRIES",
+    "SUBMIT_TAG",
     "ArraySpec",
     "CommandResult",
     "CommandRunner",
@@ -57,6 +64,7 @@ __all__ = [
     "SlurmCli",
     "SubprocessRunner",
     "is_transient",
+    "job_options",
     "sbatch_argv",
     "write_env_file",
 ]
@@ -69,6 +77,8 @@ DEFAULT_MAX_RETRIES: Final = 5
 DEFAULT_COMMAND_TIMEOUT_S: Final = 60.0
 _BACKOFF_BASE_S: Final = 1.0
 _BACKOFF_MAX_S: Final = 30.0
+SUBMIT_TAG: Final = "ebs-submit="
+"""Precedes the per-submission token appended to a job's comment (after the build UUID)."""
 
 # Messages of failures that go away on their own: the controller or slurmdbd is busy, failing
 # over or briefly unreachable. Matched case-insensitively anywhere in the output.
@@ -234,7 +244,29 @@ def sbatch_argv(script: Path, opts: SbatchOptions, *, command: str = "sbatch") -
     Each option is one `--name=value` element, so a value starting with `-` can't be read as
     another option. The job never inherits the submitter's environment (`--export=NONE`).
     """
-    argv = [command, "--parsable", f"--job-name={opts.job_name}"]
+    argv = [command, "--parsable", *job_options(opts)]
+    if opts.array is not None:
+        argv.append(f"--array={opts.array.render()}")
+    if opts.output is not None:
+        argv.append(f"--output={opts.output}")
+    if opts.error is not None:
+        argv.append(f"--error={opts.error}")
+    if opts.workdir is not None:
+        argv.append(f"--chdir={opts.workdir}")
+    if opts.comment is not None:
+        argv.append(f"--comment={opts.comment}")
+    argv.append("--export=NONE")
+    if opts.export_file is not None:
+        argv.append(f"--export-file={opts.export_file}")
+    argv.append("--requeue" if opts.requeue else "--no-requeue")
+    argv.append(str(script.absolute()))
+    return argv
+
+
+def job_options(opts: SbatchOptions) -> list[str]:
+    """The job's name, placement and resource options, as sbatch and salloc both take them
+    (`ebs reproduce --salloc` asks for the allocation an action's job would get)."""
+    argv = [f"--job-name={opts.job_name}"]
     if opts.partition is not None:
         argv.append(f"--partition={opts.partition}")
     if opts.account is not None:
@@ -254,21 +286,6 @@ def sbatch_argv(script: Path, opts: SbatchOptions, *, command: str = "sbatch") -
         argv.append(f"--constraint={opts.constraint}")
     if opts.exclude:
         argv.append(f"--exclude={','.join(sorted(opts.exclude))}")
-    if opts.array is not None:
-        argv.append(f"--array={opts.array.render()}")
-    if opts.output is not None:
-        argv.append(f"--output={opts.output}")
-    if opts.error is not None:
-        argv.append(f"--error={opts.error}")
-    if opts.workdir is not None:
-        argv.append(f"--chdir={opts.workdir}")
-    if opts.comment is not None:
-        argv.append(f"--comment={opts.comment}")
-    argv.append("--export=NONE")
-    if opts.export_file is not None:
-        argv.append(f"--export-file={opts.export_file}")
-    argv.append("--requeue" if opts.requeue else "--no-requeue")
-    argv.append(str(script.absolute()))
     return argv
 
 
@@ -373,7 +390,15 @@ class SlurmCli:
     def _cmd(self, name: str) -> str:
         return str(self._bin_dir / name) if self._bin_dir is not None else name
 
-    def _run(self, argv: list[str], *, ok_if: re.Pattern[str] | None = None) -> CommandResult:
+    def _run(
+        self,
+        argv: list[str],
+        *,
+        ok_if: re.Pattern[str] | None = None,
+        recover: Callable[[], CommandResult | None] | None = None,
+    ) -> CommandResult:
+        """Run with retries on transient failures; after each one, `recover` may answer for the
+        command (its effect already happened) instead of running it again."""
         name = Path(argv[0]).name
         attempts = self._max_retries + 1
         delay = _BACKOFF_BASE_S
@@ -393,6 +418,9 @@ class SlurmCli:
                 message = "; ".join(rest)
             if not is_transient(message):
                 raise ExecutorError(f"{name} failed: {message}")
+            recovered = recover() if recover is not None else None
+            if recovered is not None:
+                return recovered
             if attempt == attempts:
                 raise ExecutorError(
                     f"{name} still failing after {attempts} attempts (SLURM controller or "
@@ -412,8 +440,23 @@ class SlurmCli:
     # sbatch ------------------------------------------------------------------------------
 
     def submit(self, script: Path, opts: SbatchOptions) -> JobId:
-        """Submit `script` with `sbatch --parsable`; returns the (array) job id."""
-        result = self._run(sbatch_argv(script, opts, command=self._cmd("sbatch")))
+        """Submit `script` with `sbatch --parsable`; returns the (array) job id. A job with a
+        comment is submitted once even when a transient failure hid an accepted request."""
+        recover: Callable[[], CommandResult | None] | None = None
+        failed: list[None] = []  # one entry per transient sbatch failure
+        if opts.comment is not None:
+            tagged = f"{opts.comment} {SUBMIT_TAG}{secrets.token_hex(8)}"
+            opts = opts.model_copy(update={"comment": tagged})
+
+            def recover() -> CommandResult | None:
+                failed.append(None)
+                found = self._tagged(opts)
+                if not found:
+                    return None
+                log.warning("sbatch reply lost; the job was submitted", job_id=found[0])
+                return CommandResult(0, f"{found[0]}\n", "")
+
+        result = self._run(sbatch_argv(script, opts, command=self._cmd("sbatch")), recover=recover)
         first = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
         job = first.split(";", 1)[0].strip()
         if not job.isdigit():
@@ -422,7 +465,31 @@ class SlurmCli:
                 "is the SLURM client wrapped by a site script?"
             )
         log.info("submitted", job_id=job, job_name=opts.job_name)
+        if failed:
+            # An attempt the lookup missed (the controller was still registering it) may land
+            # after the retry: keep the job we return, cancel any other with our token.
+            extra = [j for j in self._tagged(opts) if j != job]
+            if extra:
+                log.warning("sbatch submitted twice; cancelling the extra jobs", jobs=extra)
+                try:
+                    self.cancel([JobId(j) for j in extra])
+                except ExecutorError as exc:
+                    log.warning("cancelling the extra jobs failed", jobs=extra, error=str(exc))
         return JobId(job)
+
+    def _tagged(self, opts: SbatchOptions) -> list[str]:
+        """Ids of the (array) jobs carrying this submission's tagged comment, oldest first;
+        best effort: a lookup that fails finds nothing."""
+        argv = [
+            self._cmd("squeue"), "--json", "--states=all", "--me", f"--name={opts.job_name}"
+        ]  # fmt: skip
+        try:
+            jobs = self._parse(self._run(argv).stdout, SqueueResponse, "squeue").jobs
+        except ExecutorError as exc:
+            log.warning("cannot look for an earlier attempt of sbatch", error=str(exc))
+            return []
+        found = {str(j.array_job_id.value or j.job_id) for j in jobs if j.comment == opts.comment}
+        return sorted(found, key=int)
 
     # squeue / sacct ----------------------------------------------------------------------
 

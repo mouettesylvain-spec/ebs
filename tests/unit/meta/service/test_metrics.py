@@ -80,6 +80,9 @@ def test_cache_hit_ratio() -> None:
     assert client.cache_get("test", key) is not None
     assert client.cache_get("test", hash_bytes(b"nothing")) is None
     client.cache_get_many("test", [key, hash_bytes(b"other"), hash_bytes(b"third")])
+    # A peek (`ebs plan`'s prediction) is no lookup: it counts neither way.
+    assert client.cache_peek("test", key) is not None
+    assert client.cache_peek("test", hash_bytes(b"nothing")) is None
     m = _metrics(svc)
     assert m['ebs_cache_lookups_total{result="hit"}'] == 2
     assert m['ebs_cache_lookups_total{result="miss"}'] == 3

@@ -68,13 +68,15 @@ class CAS(Protocol):
         copy_threshold: int = DEFAULT_COPY_THRESHOLD,
         *,
         writable: bool = False,
+        executable: bool = False,
     ) -> None:
         """Place a blob (at `dest`) or a tree (as directory `dest`) on local disk.
 
         `auto`: a file ≤ `copy_threshold` is copied, a larger one symlinked from the CAS; tree
         files are hard-linked when on the same filesystem, else chosen by the same threshold.
         Files are read-only and directories writable; `writable=True` copies every file instead.
-        Executable files are always copied (the shared blob's mode must not change).
+        Executable files are always copied (the shared blob's mode must not change); a tree
+        records which of its files are executable, `executable=True` makes a blob one.
         """
         ...
 

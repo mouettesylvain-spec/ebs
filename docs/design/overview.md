@@ -71,6 +71,10 @@ Dev: `pytest`, `pytest-cov`, `hypothesis`, `jsonschema` (schema tests, P0-04), `
 (JUnit XSD validation, P2-07).
 The runner entry point must import only stdlib + `pydantic` + `httpx` + `core`/`cas`/`runner`.
 
+Documentation site (`site/`, D-01; Node, never shipped with the package): `astro`,
+`@astrojs/starlight`, `animejs`, `sharp`; dev: `@astrojs/check`, `typescript`,
+`starlight-links-validator`. Exact versions are pinned in `site/package.json` and its lockfile.
+
 Dashboard (`web/`, P2-06; Node 24, exact versions in `web/package.json`): runtime `react`,
 `react-dom`, `react-router-dom`, `openapi-fetch`, `elkjs` (DAG layout); dev `vite`,
 `@vitejs/plugin-react`, `typescript`, `vitest`, `jsdom`, `openapi-typescript`,

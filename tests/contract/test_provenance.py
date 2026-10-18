@@ -12,7 +12,7 @@ from sqlalchemy.engine import URL
 
 from ebs.core.clock import FakeClock
 from ebs.core.digest import hash_bytes
-from ebs.meta.api import PROVENANCE_DEPTH_MAX
+from ebs.meta.api import PROVENANCE_DEPTH_MAX, ReleaseCreate, ReleaseOutput, release_output_name
 from ebs.meta.memory import InMemoryMetadataStore
 from ebs.meta.pg import PgMetadataStore
 from ebs.release import provenance as prov
@@ -128,6 +128,29 @@ def test_used_by_transitive(s: S) -> None:
     assert [b.build for b in soc.builds] == [w.soc, w.rerun]  # not the release's own build
     assert soc.releases == ()
     assert used.builds[0].project == "verif"
+
+
+# R2: a release holding an output and something its own build derived from it (a filelist and
+# the library compiled from it) is not a consumer of itself.
+def test_used_by_excludes_the_release_itself(s: S) -> None:
+    w = world(s)
+    outputs = {}
+    for action_id, output in (("gen", "filelist"), ("compile[lib=core]", "worklib")):
+        result = s.store.get_result(w.rtl, action_id)
+        assert result is not None
+        o = result.outputs[output]
+        outputs[release_output_name(action_id, output)] = ReleaseOutput(
+            action_id=action_id, output=output, **o.model_dump()
+        )
+    both = s.store.create_release(
+        ReleaseCreate(domain=D, name="rtl/full", version="1.0", build=w.rtl, outputs=outputs),
+        by="alice",
+    )
+    used = prov.used_by(s.store, both)
+    assert (D, "rtl/full") not in {(r.domain, r.name) for r in used.releases}
+    assert (D, "verif/model", "1.0", "outputs") in {
+        (r.domain, r.name, r.version, r.via) for r in used.releases
+    }
 
 
 # R3: every *.sim action whose inputs derive from the release, with test, seed, status,

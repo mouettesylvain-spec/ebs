@@ -107,3 +107,30 @@ def test_runner_uses_configured_threshold(cas: FsCAS, tmp_path: Path) -> None:
     manifest = h.result(build)
     assert manifest is not None
     assert manifest.status == "passed", h.log_text(manifest)
+
+
+# An executable source file is staged as an executable private copy, never as a link to the
+# shared 0444 blob, and a script the action runs from its sources works.
+def test_executable_input_staged(cas: FsCAS, tmp_path: Path) -> None:
+    digest = cas.put_bytes(b"#!/bin/sh\necho from-script > out.txt\n")
+    ref = InputRef("tools/run.sh", "file", SourceInput("t", "tools/*"), digest, executable=True)
+    plain = _ref("tools/data.txt", digest)
+    spec = shell_spec("./tools/run.sh\n", inputs=[ref, plain])
+    scratch = Scratch.create(tmp_path / "scratch", "1", spec.action_id)
+    contents = {"tools/run.sh": digest, "tools/data.txt": digest}
+
+    stage_inputs(spec, cas, scratch.work, contents, copy_threshold=DEFAULT_COPY_THRESHOLD)
+
+    staged = scratch.work / "tools" / "run.sh"
+    assert not staged.is_symlink()
+    assert stat.S_IMODE(staged.stat().st_mode) == 0o555
+    assert stat.S_IMODE((scratch.work / "tools" / "data.txt").stat().st_mode) == 0o444
+    assert stat.S_IMODE(cas.blob_path(digest).stat().st_mode) == 0o444  # shared blob untouched
+    verify_inputs(spec, scratch.work, contents)
+
+    h = Harness(tmp_path / "h", cas)
+    code, build = h.run(spec)
+    assert code == EXIT_OK, h.err.getvalue()
+    manifest = h.result(build)
+    assert manifest is not None
+    assert manifest.status == "passed", h.log_text(manifest)

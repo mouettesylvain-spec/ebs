@@ -91,6 +91,17 @@ def check_final_status(status: object) -> None:
         )
 
 
+def check_final_plan(final_plan: object) -> Digest | None:
+    if final_plan is None or isinstance(final_plan, Digest):
+        return final_plan
+    raise MetadataError(f"finish_build: final_plan must be a Digest or None, got {final_plan!r}")
+
+
+def build_plans(view: BuildView) -> list[Digest]:
+    """The plans a pinned build roots: its plan and, once finished, its final plan."""
+    return [d for d in (view.plan_digest, view.final_plan_digest) if d is not None]
+
+
 def touch_cutoff(now: datetime) -> datetime:
     """`last_access` at or before this instant is stale enough to be rewritten (R3)."""
     return now - timedelta(seconds=TOUCH_INTERVAL_S)

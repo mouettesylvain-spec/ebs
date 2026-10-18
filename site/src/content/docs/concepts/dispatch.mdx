@@ -1,0 +1,95 @@
+---
+title: Dispatch on SLURM
+description: How actions become sbatch jobs and job arrays, with licenses, accounts and retries.
+sidebar:
+  order: 4
+---
+
+import DispatchScene from '../../../scenes/dispatch/DispatchScene.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+`ebs build --executor slurm` runs a build on the grid, and `--detach` hands the driver itself
+to a small SLURM job so a long regression survives logout ([Long builds](#long-builds-detach-and-resume)).
+
+<Aside type="caution" title="Status">
+The SLURM executor is tested against a fake SLURM in CI. The full-regression acceptance run on
+a real partition is still to do (task P1-12 on the [Roadmap](/ebs/reference/roadmap/)).
+</Aside>
+
+<DispatchScene />
+
+## The driver keeps the graph
+
+The driver submits an action only once its inputs exist and its cache lookup has missed. It
+never uses SLURM `--dependency` chains: a cached action costs nothing on the grid, and no job
+waits in the queue for a job that will never run.
+
+## Submission shapes
+
+| Action shape | Submitted as |
+| --- | --- |
+| Long or heavy (compile a large library, elaborate) | One `sbatch` per action |
+| Many similar actions (a regression of 1,000+ tests) | One **job array** per step and batch; each element reads its action from the plan; `%N` throttles concurrency (`resources.max_parallel`, else `[slurm].array_throttle`) |
+
+Submission is rate-limited (`[slurm].max_submits_per_min`) and capped in flight
+(`[slurm].max_pending_jobs`, array tasks counted individually). Status comes from one
+`squeue --json` / `sacct --json` call per poll for the whole build, with adaptive intervals,
+never one call per job.
+
+## Licenses: queued, not blocked
+
+Each toolchain or step declares license features:
+
+```yaml
+toolchains:
+  questa: { module: questa/2025.2, licenses: { msimhdlsim: 1 } }
+```
+
+They are requested as SLURM licenses, `sbatch -L msimhdlsim@flexlm:1` (or the bare feature with
+`[slurm].license_fuzzy` and `LicenseParameters=RemoteFuzzyMatch`). A job starts only when SLURM
+has the license, so it never holds a node while waiting on FlexLM. `ebs status` reports
+"pending: licenses" separately from "pending: resources".
+
+## Accounts, QOS and node features
+
+- The flow's `project` maps to a SLURM account (`[slurm.account_map]`), so fair-share and team
+  priorities are SLURM's own.
+- CI and release builds can use another QOS (`[slurm.qos]`).
+- `resources.constraint` and `[slurm].os_constraint` become `--constraint`, so actions land on
+  nodes with the right OS image. The OS is enforced this way rather than hashed into keys.
+
+## On the node
+
+`ebs-runner` runs inside the job as the submitting user, with the user's groups and NDA
+permissions:
+
+1. creates `<[scratch].dir>/<build>/<action>/` on local disk and writes the job id into it,
+2. fetches its action spec, verifies input digests, and stages inputs,
+3. runs the tool with the toolchain env, streaming a live log to the debug area,
+4. uploads outputs to the CAS and posts the result to the metadata service,
+5. copies `debug.collect` files on failure,
+6. deletes its scratch. A SLURM epilog removes what a killed job could not
+   ([SLURM setup](/ebs/operate/slurm/)).
+
+## Retries
+
+Infrastructure failures are retried with exponential backoff (`[retry]`): after an OOM with
+`oom_mem_factor` more memory, after a license failure with a longer wait, after a node failure
+on another node. A node that fails twice in a build is excluded for the rest of that build.
+Test failures are never retried.
+
+## Long builds: detach and resume
+
+```sh
+ebs build --executor slurm --detach        # prints the build UUID and the driver's job id
+ebs status <uuid>                          # follow it from any login node; names the driver job
+ebs build --resume <uuid>                  # take over a build whose driver died
+```
+
+`--detach` submits a 1-CPU driver job (`[driver]` partition, QOS and walltime, 72 h by default)
+that drives the build exactly as `ebs build` would have. Only one driver at a time can drive a
+build: it holds a lease it renews every few minutes, so a second driver refuses until the lease
+expires. `--resume` reloads the plan from the CAS, re-attaches to the SLURM jobs already
+recorded and continues without resubmitting anything that is running or finished. Cancelling
+the driver job (`scancel`) cancels the build's jobs.
+

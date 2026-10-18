@@ -1,0 +1,52 @@
+---
+title: Cache modes and reruns
+description: Read, write or bypass the cache, rerun failures, and understand why an action reruns.
+sidebar:
+  order: 2
+---
+
+## Cache modes
+
+| Option | Looks up | Stores | Typical use |
+| --- | --- | --- | --- |
+| `--cache read` (default) | yes | no | personal builds: reuse CI's results without polluting the cache |
+| `--cache write` | yes | yes | CI and release builds |
+| `--cache off`, `--no-cache` | no | no | measuring, or distrusting a result |
+
+Personal sandboxes default to `read` so that half-finished experiments never become someone
+else's cache hit. Let CI fill the cache with `--cache write`.
+
+## Why does this action rerun?
+
+`ebs plan` predicts hits and misses and explains every miss against the latest build of the
+same flow in this directory:
+
+```text
+why these actions run:
+  lint[block=alu]: inputs["rtl/alu/alu.sv"]
+  sim[seed=1,test=smoke]: toolchain
+  sim[seed=99,test=smoke]: new action (not in build …)
+  report: unknown until it runs (depends on sim[…])
+```
+
+`ebs plan --diff BUILD` compares with any earlier build instead. *Unknown* means the key depends
+on outputs not produced yet; it is decided while the build runs, and early cutoff often turns it
+into a hit.
+
+## Rerunning
+
+| You want to | Do |
+| --- | --- |
+| Rerun actions whose cached result is a test failure | `ebs build --rerun-failed` |
+| Run only some steps (and what they need) | `ebs build compile sim` |
+| Keep going after a failure | `ebs build -k` |
+| Rehash every source, ignoring git ids and the stat cache | `ebs build --rehash` |
+| Ignore the cache entirely | `ebs build --no-cache` |
+
+Infrastructure failures (license, OOM, node failure, preemption, crash) are never cached and
+are retried automatically according to `[retry]` in [ebs.toml](/ebs/reference/config/).
+
+## Exit codes
+
+`ebs build` exits 0 when every action passed, 1 when the build finished with failed actions,
+2 for a flow or usage error, 3 for an infrastructure error. See [Exit codes](/ebs/reference/exit-codes/).

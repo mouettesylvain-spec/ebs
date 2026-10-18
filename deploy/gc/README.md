@@ -20,8 +20,9 @@ run is recorded in the `gc_runs` table.
 
 The unit allows writes only below `/cas/<domain>` (`ReadWritePaths`, with
 `ProtectSystem=strict`); if `[cas].root` is elsewhere, change that line with
-`systemctl edit ebs-gc@.service`. Do not run two collections of the same domain at once (the
-timer and a manual `ebs gc`): each is safe against builds, but they are not coordinated.
+`systemctl edit ebs-gc@.service`. One collection per domain runs at a time: a second one (the
+timer and a manual `ebs gc`) exits 2 and names the run that holds the domain's lock. A run that
+crashed frees the lock after 6 hours; `ebs gc --dry-run` takes no lock.
 
 Per-domain policy is set in the database, for example:
 

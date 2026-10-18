@@ -48,7 +48,7 @@ class FetchMode(enum.StrEnum):
 
 
 ACTIONS_ARGUMENT = typer.Argument(
-    None, metavar="[ACTION]...", help="Action ids or unique prefixes; default: all."
+    None, metavar="[ACTION]...", help="Action ids, step names or unique prefixes; default: all."
 )
 TARGETS_ARGUMENT = typer.Argument(
     ...,
@@ -104,7 +104,7 @@ class _Build:
         digest = self.record.final_plan or self.record.plan
         try:
             with self.cas().open(digest) as f:
-                plan = decode(f.read())
+                plan = decode(f.read(), any_key_schema=True)  # a past build, as recorded
         except (CasError, PlanError) as exc:
             out.warn(
                 f"cannot read the plan of build {self.record.uuid} ({exc}); output paths are "
@@ -175,7 +175,7 @@ def outputs_command(
     if step is not None and step not in record.actions.values():
         steps = ", ".join(sorted(set(record.actions.values())))
         raise ConfigError(f"no step {step!r} in build {record.uuid}; its steps: {steps}")
-    wanted = {match_action(a, record.actions) for a in actions or ()}
+    wanted = {a for given in actions or () for a in _resolve_actions(given, record)}
     rows: list[_Row] = []
     for action_id, action_step in record.actions.items():
         if (wanted and action_id not in wanted) or (step is not None and action_step != step):

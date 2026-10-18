@@ -1,0 +1,82 @@
+---
+// Feature tiles of the landing page; each links to the page that explains it.
+import { link } from '../../lib/repo';
+
+const features = [
+  {
+    title: 'Content, not timestamps',
+    text: 'Every action is keyed by a SHA-256 of its command, params, toolchain and input digests.',
+    href: '/concepts/caching/',
+  },
+  {
+    title: 'One cache for everyone',
+    text: 'Results built by CI or a colleague are reused across users, scoped by NDA domain.',
+    href: '/concepts/cas/',
+  },
+  {
+    title: 'Wrap what you have',
+    text: 'Makefiles and Tcl scripts run as they are, cached from day one.',
+    href: '/tutorials/wrap-a-makefile/',
+  },
+  {
+    title: 'Tools you can trust',
+    text: 'Toolchains fingerprint install trees: a patched tool can never serve a stale result.',
+    href: '/concepts/toolchains/',
+  },
+  {
+    title: 'Licenses on the grid',
+    text: 'SLURM starts a job only when its license is free; a test failure is cached, a license timeout is retried.',
+    href: '/concepts/dispatch/',
+  },
+  {
+    title: 'Releases and provenance',
+    text: 'Immutable releases, channels pinned in a reviewed flow.lock, and `ebs why` back to every source.',
+    href: '/concepts/releases/',
+  },
+];
+---
+
+<div class="features">
+  {
+    features.map((f) => (
+      <a class="tile" href={link(f.href)}>
+        <h3>{f.title}</h3>
+        <p>{f.text}</p>
+        <span class="more">Learn more ›</span>
+      </a>
+    ))
+  }
+</div>
+
+<style>
+  .features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1rem;
+  }
+  .tile {
+    display: block;
+    padding: 1.75rem 1.5rem;
+    border-radius: var(--ebs-radius-l);
+    background: var(--ebs-surface);
+    text-decoration: none;
+    transition: transform var(--ebs-duration-s) var(--ebs-ease);
+  }
+  .tile:hover {
+    transform: translateY(-3px);
+  }
+  h3 {
+    margin: 0 0 0.5rem;
+    font-size: 1.25rem;
+    color: var(--ebs-text);
+  }
+  p {
+    margin: 0 0 1rem;
+    line-height: 1.5;
+    color: var(--ebs-text-2);
+  }
+  .more {
+    color: var(--ebs-accent);
+    font-weight: 500;
+  }
+</style>

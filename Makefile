@@ -1,4 +1,6 @@
-.PHONY: check check-all check-web lint test-unit test-perf test-integration fmt cov nightly
+.PHONY: check check-all check-web lint test-unit test-perf test-integration test-perf-integration \
+	fmt cov nightly \
+	site-ref site-dev site-build site-bench
 
 UV ?= uv
 RUN := $(UV) run --frozen --extra dev
@@ -20,15 +22,19 @@ test-unit:
 	$(PYTEST) -m "$(PYTEST_SELECT)" $(PYTEST_EXTRA) -q --cov --cov-report=term --cov-report=json:coverage.json
 	$(RUN) python scripts/coverage_gate.py coverage.json src
 
-# Wall-clock budgets, measured without coverage tracing (it slows code down 2-3x).
+# Wall-clock budgets, measured without coverage tracing (it slows code down 2-3x), in their own
+# run so no other test competes for the CPU.
 test-perf:
-	$(PYTEST) -m perf -q
+	$(PYTEST) -m "perf and not integration" -q
 
 # Every MR: also integration and e2e tests (Postgres via EBS_TEST_PG_URL or Docker).
-check-all: check test-integration
+check-all: check test-integration test-perf-integration
 
 test-integration:
-	$(PYTEST) -m integration -q
+	$(PYTEST) -m "integration and not perf" -q
+
+test-perf-integration:
+	$(PYTEST) -m "integration and perf" -q
 
 # The dashboard (web/, P2-06): needs Node 24 and, for e2e, `npx playwright install chromium`.
 check-web:
@@ -46,3 +52,22 @@ cov:
 # Nightly: real grid, vendor tools and the long Hypothesis run.
 nightly:
 	HYPOTHESIS_PROFILE=nightly $(PYTEST) -m "grid or vendor or unit" -q
+
+# Documentation site (site/, task D-01). Needs Node (site/.nvmrc); see site/README.md.
+SITE_NPM := npm --prefix site
+
+site-ref:
+	$(RUN) python scripts/gen_site_reference.py
+
+site-dev:
+	$(SITE_NPM) ci
+	$(SITE_NPM) run dev
+
+# Generates the reference, type-checks, builds and validates every internal link.
+site-build:
+	$(SITE_NPM) ci
+	$(SITE_NPM) run build
+
+# Remeasures the landing page's numbers (needs a PostgreSQL server: EBS_TEST_PG_URL).
+site-bench:
+	$(RUN) python scripts/site_bench.py --pg-server "$(EBS_TEST_PG_URL)"

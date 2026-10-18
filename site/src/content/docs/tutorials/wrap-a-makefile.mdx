@@ -1,0 +1,127 @@
+---
+title: Wrap an existing Makefile
+description: Keep your Makefile unchanged and get content hashing, a shared cache and early cutoff.
+sidebar:
+  order: 1
+---
+
+import RepoFile from '../../../components/RepoFile.astro';
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Most teams already have flows in Make. You do not have to rewrite them: a `make` step runs a
+Makefile target as it is, once per row of a table, inside a scratch directory that holds only
+what you declared. This tutorial uses `examples/lint-make`, a lint flow over two RTL blocks.
+
+:::tip[These commands are tested]
+The `console` blocks run in CI on a fresh copy of `examples/` (`tests/e2e/test_docs.py`).
+:::
+
+## The Makefile you already have
+
+Nothing in it knows about EBS. It lints one block, chosen with `BLOCK=`, and writes a
+normalized report: sorted, relative paths, no dates.
+
+<RepoFile path="examples/lint-make/lint/Makefile" />
+
+The normalization matters: when the findings don't change, the report's bytes don't change
+either, and EBS can stop there (early cutoff).
+
+## The flow that wraps it
+
+<RepoFile path="examples/lint-make/flow.yaml" />
+
+What each key does in the `lint` step:
+
+| Key | Meaning |
+| --- | --- |
+| `kind: make` | Run `make -C <workdir> <target> NAME=value…`, with the params as make variables (sorted). |
+| `workdir: lint` | The directory to run in. Everything under it (`lint/**`) is an implicit input, so editing the Makefile reruns the step. |
+| `matrix: { table: blocks.csv }` | One action per row: `lint[block=alu]`, `lint[block=counter]`. |
+| `inputs` | Every other file the Makefile reads. Only declared files are staged: an undeclared one does not exist for the tool. |
+| `params` | Become `BLOCK=alu LINTER=fake` on the make command line, and are part of the action key. |
+| `outputs` | Files kept after the run, copied into the store. Everything else in the scratch directory is discarded. |
+
+`make` also gets `MAKEFLAGS=-j<cpus>` from `resources.cpus`. That is set at run time and is not
+part of the key, so changing the CPU count never invalidates the cache.
+
+## Run it
+
+<Steps>
+
+1. Plan first. Nothing runs; EBS expands the matrix and computes the keys it can:
+
+   ```console
+   $ cd examples/lint-make
+   $ ebs plan
+   plan … of flow.yaml: 3 actions, 0 hit, 2 miss, 1 unknown (no previous build)
+   ```
+
+   `summary` is *unknown*: its key includes the digests of the reports, which do not exist yet.
+
+2. Build. `--cache write` stores the results in the shared cache (CI and release builds do
+   this; personal builds default to `--cache read`):
+
+   ```console
+   $ ebs build --cache write
+   build …: build passed (done=3)
+   ```
+
+3. See exactly what EBS ran for one action, and what it staged:
+
+   ```console
+   $ ebs debug 'lint[block=alu]'
+   command    make -C lint lint BLOCK=alu LINTER=fake
+     lint/Makefile … from source ebs.workdir (lint/**)
+     rtl/alu/alu.sv … from source rtl (rtl/alu/*.sv)
+     tools/fake-lint … from source linter (tools/fake-lint)
+   ```
+
+</Steps>
+
+## Change the Makefile itself
+
+The Makefile is an input like any other. Edit one of its comments: both lint actions must run
+again, because their inputs changed. Their reports, though, come out byte-identical, so
+`summary` keeps its key and is reused:
+
+```console
+$ sed -i 's|^# A lint flow as a team might already have it|# Our lint flow|' lint/Makefile
+$ ebs plan
+  lint[block=alu]: inputs["lint/Makefile"]
+  lint[block=counter]: inputs["lint/Makefile"]
+$ ebs build --cache write
+cache_hit summary …
+build …: build passed (cached=1, done=2)
+```
+
+Make cannot tell a comment edit from a real one. With the Makefile listed as a prerequisite it
+reruns everything downstream, the summary included; without it, it reruns nothing, even after a
+real change.
+
+## With a real linter
+
+`flow.verilator.yaml` runs the same Makefile with `LINTER=verilator`, and declares Verilator as
+a **toolchain**. A result produced with the fake linter is never reused for Verilator, nor one
+from Verilator 5.020 for 5.028:
+
+<RepoFile path="examples/lint-make/flow.verilator.yaml" />
+
+Describe the toolchain in `.ebs/toolchains.yaml` as shown in the
+[Quickstart](/ebs/start/quickstart/#6-with-real-verilator), then run
+`ebs build -f flow.verilator.yaml`.
+
+## Checklist for your own Makefile
+
+<Aside type="caution" title="Declare everything the Makefile reads">
+In v1 the tool runs in a scratch directory with only the declared inputs staged. A file the
+Makefile reads but the flow does not declare is missing, and the action fails loudly rather
+than silently using a stale copy. Typical misses are include directories, `.f` file lists and
+helper scripts.
+</Aside>
+
+- Make the target **always rebuild** (`.PHONY`): EBS decides whether to run, Make must not skip.
+- Pass every knob as a make variable through `params`, never through the environment.
+- Write outputs **under the work directory**, at fixed paths, and declare them.
+- **Normalize reports** (sort, strip dates and absolute paths) to get early cutoff.
+- Split coarse targets later: one action per block or library caches far better than one
+  action for the whole chip.

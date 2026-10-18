@@ -37,7 +37,7 @@ app = typer.Typer(
     name="ebs",
     help="EDA Build System: hash-based builds of EDA flows on SLURM.",
     no_args_is_help=True,
-    add_completion=False,
+    add_completion=True,  # --install-completion / --show-completion (site: Shell and Make)
 )
 
 

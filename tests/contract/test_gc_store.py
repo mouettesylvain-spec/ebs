@@ -151,6 +151,17 @@ def test_pinned_build_without_results(g: G) -> None:
     assert g.store.gc_roots(D, g.clock.now()).pinned == {dg("plan")}
 
 
+# P1-09 follow-up: a pinned build also roots the final plan it finished with, so `ebs outputs`
+# and `plan --diff` of an old pinned build keep their paths after the TTL.
+def test_pinned_build_roots_final_plan(g: G) -> None:
+    b = build(g)
+    g.store.finish_build(b, "passed", final_plan=dg("final"))
+    g.store.pin_build(b, by="alice")
+    assert g.store.gc_roots(D, g.clock.now()).pinned == {dg("plan"), dg("final")}
+    g.store.unpin_build(b)
+    assert g.store.gc_roots(D, g.clock.now()).pinned == frozenset()
+
+
 def test_leases_expire(g: G) -> None:
     b = build(g)
     g.store.acquire_lease(D, b, [dg("a")], 60)
@@ -212,3 +223,26 @@ def test_record_run(g: G) -> None:
         g.store.gc_record_run(GcRun(D, now, now, 1, 2, 3, False, {"x": 1.5}))
     with pytest.raises(MetadataError, match="negative"):
         g.store.gc_record_run(GcRun(D, now, now, -1, 2, 3, False, {}))
+
+
+# P1-09 follow-up: one GC run per domain. The lock is taken when free, expired or already the
+# caller's (a renewal); another owner gets the lock as it stands; unlock only by the owner.
+def test_gc_lock(g: G) -> None:
+    now = g.clock.now()
+    first = g.store.gc_lock(D, "host:1:a", now=now, ttl_s=600)
+    assert (first.owner, first.expires_at) == ("host:1:a", now + timedelta(seconds=600))
+    assert g.store.gc_lock(D, "host:2:b", now=now, ttl_s=600) == first  # busy
+    assert g.store.gc_lock("other", "host:2:b", now=now, ttl_s=600).owner == "host:2:b"
+    renewed = g.store.gc_lock(D, "host:1:a", now=now + timedelta(seconds=60), ttl_s=600)
+    assert renewed.expires_at == now + timedelta(seconds=660)
+    g.store.gc_unlock(D, "host:2:b")  # not the owner: nothing happens
+    assert g.store.gc_lock(D, "host:2:b", now=now, ttl_s=600).owner == "host:1:a"
+    later = now + timedelta(seconds=660)  # expired: anyone takes it
+    assert g.store.gc_lock(D, "host:2:b", now=later, ttl_s=600).owner == "host:2:b"
+    g.store.gc_unlock(D, "host:2:b")
+    assert g.store.gc_lock(D, "host:3:c", now=later, ttl_s=600).owner == "host:3:c"
+    for bad in ("", "x" * 257, "a\nb"):
+        with pytest.raises(MetadataError):
+            g.store.gc_lock(D, bad, now=now, ttl_s=600)
+    with pytest.raises(MetadataError):
+        g.store.gc_lock(D, "host:1:a", now=now, ttl_s=0)

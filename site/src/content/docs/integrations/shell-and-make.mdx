@@ -1,0 +1,42 @@
+---
+title: Shell and Make
+description: Tab completion for ebs, and calling ebs from an existing top-level Makefile.
+sidebar:
+  order: 5
+---
+
+import RepoFile from '../../../components/RepoFile.astro';
+
+## Tab completion
+
+`ebs` completes commands and options in bash, zsh, fish and PowerShell:
+
+```sh
+ebs --install-completion        # adds completion to your shell's startup file
+ebs --show-completion           # prints the script, to install it yourself
+```
+
+Open a new shell afterwards.
+
+## From a top-level Makefile
+
+Many projects have a `Makefile` people type `make` into. Keep that habit and let EBS decide
+what actually runs: include `ebs.mk` and the usual targets call EBS.
+
+<RepoFile path="integrations/make/ebs.mk" />
+
+```make
+include tools/ebs.mk
+
+lint: ebs-build              # make lint EBS_STEPS=lint
+```
+
+Make only forwards the request; caching, staging and dispatch are EBS's. The other direction,
+running an existing Makefile *from* EBS, is the `make` step kind:
+[Wrap an existing Makefile](/ebs/tutorials/wrap-a-makefile/).
+
+## Scripting
+
+Nearly every command accepts `--json` (see the [CLI reference](/ebs/reference/cli/)): `ebs build --json` prints one event per line and a final result
+document; `ebs plan --json`, `ebs status --json` and `ebs outputs --json` print one document.
+Check exit codes rather than parsing text ([Exit codes](/ebs/reference/exit-codes/)).

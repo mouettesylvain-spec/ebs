@@ -11,7 +11,8 @@ fsync the shard directory. `rename` is atomic on one filesystem (also on NFS), s
 either nothing or the complete object (I8); if the object already exists the upload is discarded
 (first writer wins; concurrent writers of one digest carry identical bytes anyway). Nothing relies
 on `O_EXCL` lock files or `flock`, whose NFS semantics are unreliable (R9): temporary names carry
-128 random bits instead. Directory modes and the domain group are left to the deployment.
+128 random bits instead. The domain directory and its group are the deployment's; directories
+below it are created 2770 whatever the umask, so every member of the domain group can add objects.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ _DOMAIN_RE: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _HEX_RE: Final = re.compile(r"[0-9a-f]{64}")
 _TMP_MAX_AGE: Final = timedelta(hours=24)
 _OBJECT_MODE: Final = 0o444
+_DIR_MODE: Final = 0o2770  # group-writable, setgid: members share shards (interfaces.md § 5)
 _Area = Literal["blobs", "trees"]
 
 
@@ -169,7 +171,7 @@ class FsCAS:
         algo: Algo = expected.algo if expected is not None else self._algo
         tmp = self._tmp / f"{secrets.token_hex(16)}.tmp"
         try:
-            os.makedirs(self._tmp, exist_ok=True)
+            _makedirs(self._tmp, self._base)
             # No O_EXCL: the random name already makes collisions impossible (R9).
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
             with open(fd, "wb", closefd=True) as out:
@@ -188,7 +190,7 @@ class FsCAS:
                     )
                 os.fchmod(fd, _OBJECT_MODE)
             target = self._path(area, digest)
-            os.makedirs(target.parent, exist_ok=True)
+            _makedirs(target.parent, self._base)
             if os.path.lexists(target):
                 os.unlink(tmp)  # first writer wins; the object is immutable
                 return digest, size
@@ -277,8 +279,11 @@ class FsCAS:
         copy_threshold: int = DEFAULT_COPY_THRESHOLD,
         *,
         writable: bool = False,
+        executable: bool = False,
     ) -> None:
-        materialize(self, d, kind, dest, mode, copy_threshold, writable=writable)
+        materialize(
+            self, d, kind, dest, mode, copy_threshold, writable=writable, executable=executable
+        )
 
     # -- GC support -------------------------------------------------------------------------
 
@@ -349,6 +354,23 @@ class FsCAS:
         if removed and not dry_run:
             _log.info("cas.tmp_cleaned", domain=self.domain, removed=removed)
         return removed
+
+
+def _makedirs(path: Path, domain_dir: Path) -> None:
+    """`os.makedirs`, but each directory it creates below `domain_dir` gets `_DIR_MODE` (mkdir's
+    mode is umasked). The domain dir itself is the deployment's (group `<domain>`, 2750); a
+    missing one (a development CAS) is created with the plain umask, like its parents."""
+    if path.is_dir():
+        return
+    if path == domain_dir:
+        os.makedirs(path, exist_ok=True)
+        return
+    _makedirs(path.parent, domain_dir)
+    try:
+        os.mkdir(path, _DIR_MODE)
+    except FileExistsError:
+        return  # another writer created it; its mode is that writer's business
+    os.chmod(path, _DIR_MODE)
 
 
 def _fsync_dir(path: Path) -> None:

@@ -441,6 +441,22 @@ def test_cache_get_touch_throttled(h: Harness) -> None:
     assert h.inspect.cache_stats("test", key) == (3, t1)
 
 
+# `cache_peek` (`ebs plan`): the same answer as cache_get, scoped by domain, but no hit is
+# counted and last_access is not touched.
+def test_cache_peek_has_no_side_effects(h: Harness) -> None:
+    key = dg("k")
+    t0 = h.clock.now()
+    h.store.cache_put("test", key, make_result(key))
+    h.clock.advance(2 * 3600)
+    assert h.store.cache_peek("test", key) == make_result(key)
+    assert h.store.cache_peek("test", dg("absent")) is None
+    assert h.store.cache_peek("other", key) is None
+    assert h.inspect.cache_stats("test", key) == (0, t0)
+    h.inspect.set_raw_cache_result("test", key, {"v": 1, "action_key": "nope"})
+    with pytest.raises(MetadataError, match="action cache entry"):
+        h.store.cache_peek("test", key)
+
+
 # R3
 def test_cache_get_rejects_invalid_stored_result(h: Harness) -> None:
     key = dg("k")
@@ -1264,3 +1280,23 @@ def test_leases_and_pins_touch(h: Harness) -> None:
     h.store.pin_build(build, by="alice")
     assert h.inspect.blob_last_access("test", dg("plan")) == h.clock.now()
     assert h.inspect.blob_last_access("test", dg("rep")) == h.clock.now()
+
+
+# P1-09 follow-up: the final plan is recorded with the build, and a pin touches it like the
+# plan (the GC roots are in test_gc_store.py).
+def test_finish_build_records_final_plan(h: Harness) -> None:
+    final = dg("final plan")
+    h.store.register_blobs(
+        "test", [BlobRef(digest=d, size=1, kind="file") for d in (dg("plan"), final)]
+    )
+    build = new_build(h, "a")
+    assert h.store.get_build(build).final_plan_digest is None
+    h.store.finish_build(build, "passed", final_plan=final)
+    assert h.store.get_build(build).final_plan_digest == final
+    h.clock.advance(2 * 3600)
+    h.store.pin_build(build, by="alice")
+    assert h.inspect.blob_last_access("test", final) == h.clock.now()
+
+    plain = new_build(h, "a")
+    h.store.finish_build(plain, "failed")  # no final plan: only the plan is rooted
+    assert h.store.get_build(plain).final_plan_digest is None

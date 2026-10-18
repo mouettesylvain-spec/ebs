@@ -30,7 +30,7 @@ from uuid import UUID, uuid4
 from ebs.cas.api import CAS
 from ebs.core.clock import Clock, SystemClock
 from ebs.core.digest import Digest
-from ebs.core.errors import DriverBusyError, ExitCode, MetadataError
+from ebs.core.errors import DriverBusyError, EbsError, ExitCode, MetadataError
 from ebs.core.log import get_logger
 from ebs.driver.events import EventLog
 from ebs.driver.resources_tuning import UsageLog, record_usage, usage_path
@@ -341,7 +341,7 @@ def drive_build(
             _finish_quietly(store, build, "cancelled" if interrupted else "infra_failed")
             raise
         status = _status(scheduler)
-        store.finish_build(build, status)
+        store.finish_build(build, status, final_plan=_store_final_plan(cas, store, scheduler))
         counts = Counter(states.values())
         events.emit("build_finished", status=status, counts=dict(sorted(counts.items())))
         record_usage(UsageLog(usage_path(workdir)), scheduler.usage)
@@ -358,6 +358,17 @@ def _status(scheduler: Scheduler) -> BuildStatus:
     if scheduler.failures:
         return "failed"
     return "passed"
+
+
+def _store_final_plan(cas: CAS, store: MetadataStore, scheduler: Scheduler) -> Digest | None:
+    """The refined plan, stored and registered, so a pin of the build roots it; None (the
+    build still finishes) if the CAS or the store refuses it."""
+    plan = scheduler.plan
+    try:
+        return put_registered(cas, store, plan.domain, encode(plan))
+    except EbsError as exc:
+        _log.warning("driver.final_plan_not_stored", error=str(exc))
+        return None
 
 
 def _finish_quietly(store: MetadataStore, build: BuildId, status: BuildStatus) -> None:

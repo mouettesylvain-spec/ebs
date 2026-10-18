@@ -170,8 +170,15 @@ class _View:
             self.out.line(f"build {self.record.uuid} (id {self.record.build})")
 
     def resumed(self, record: BuildRecord) -> None:
-        """Follow a recorded build that this process now drives."""
-        self.record = record.model_copy(update={"host": socket.gethostname(), "pid": os.getpid()})
+        """Follow a recorded build that this process now drives (in a SLURM job: that job)."""
+        job = self.services.environ.get("SLURM_JOB_ID", "")
+        self.record = record.model_copy(
+            update={
+                "host": socket.gethostname(),
+                "pid": os.getpid(),
+                "driver_job": job if job.isdigit() else "",
+            }
+        )
         self.record.write(build_dir(self.services.cwd, record.uuid))
         self.events = record.events(self.services.cwd)
         if not self.out.json:
@@ -609,6 +616,10 @@ def _detach(
         if isinstance(exc, EbsError):
             raise
         raise ConfigError(f"cannot submit the driver job of build {started.uuid}: {exc}") from exc
+    try:  # the job is queued now: a record that cannot be updated must not fail the build
+        _record_driver_job(directory, str(job))
+    except (EbsError, OSError) as exc:
+        out.warn(f"driver job {job} submitted, but the build record could not name it: {exc}")
     if out.json:
         out.emit(
             {
@@ -623,6 +634,14 @@ def _detach(
             f"driver job {job} submitted: follow the build with `ebs status {started.uuid}`, "
             f"cancel it with `scancel {job}`"
         )
+
+
+def _record_driver_job(directory: Path, job: str) -> None:
+    """Name the driver job in the build record (`ebs status`), unless the job already started
+    and wrote its own host, pid and job id: re-read, never overwrite what it wrote."""
+    record = BuildRecord.read(directory)
+    if not record.host:
+        record.model_copy(update={"driver_job": job}).write(directory)
 
 
 def _report(out: Output, outcome: BuildOutcome, json_mode: bool) -> None:

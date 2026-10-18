@@ -1,0 +1,78 @@
+---
+// Dispatch on SLURM: the driver submits a job array; SLURM starts elements only when a
+// license is free; runners execute in node scratch, upload to the CAS, report, clean up.
+import SceneFrame from '../_lib/SceneFrame.astro';
+
+const nodes = [
+  { y: 30, name: 'node-a' },
+  { y: 120, name: 'node-b' },
+  { y: 210, name: 'node-c' },
+];
+---
+
+<SceneFrame
+  name="dispatch"
+  viewBox="0 0 780 380"
+  caption="The driver submits one job array for three simulations. SLURM holds the third until a license is free, so no node idles on FlexLM. Each runner stages its inputs in local scratch, uploads its outputs to the CAS, reports to the metadata service, and deletes its scratch."
+  label="A driver submits a job array of three simulation jobs to the SLURM controller. Two licenses are available, so two jobs start on compute nodes; the third waits until a license frees up. Each node writes its outputs to the CAS and its result to the metadata service, then clears its scratch."
+>
+  <g class="driver">
+    <rect class="box accent" x="20" y="120" width="140" height="80" rx="14" />
+    <text class="label" x="90" y="152" text-anchor="middle">Driver</text>
+    <text class="sub" x="90" y="172" text-anchor="middle">ebs build</text>
+    <text class="mono" x="90" y="190" text-anchor="middle">sbatch --array</text>
+  </g>
+
+  <g class="slurm">
+    <rect class="box" x="230" y="90" width="170" height="140" rx="14" />
+    <text class="label" x="315" y="118" text-anchor="middle">SLURM</text>
+    <text class="mono" x="250" y="146">-L msimhdlsim:1</text>
+    <text class="sub" x="250" y="176">licenses</text>
+    <circle class="lic lic-0" cx="320" cy="172" r="7" />
+    <circle class="lic lic-1" cx="342" cy="172" r="7" />
+    <text class="tag-stale pending" x="250" y="210">job 3: pending (licenses)</text>
+  </g>
+
+  {
+    nodes.map((n, i) => (
+      <g class="node" data-i={i}>
+        <rect class="box" x="470" y={n.y} width="170" height="72" rx="14" />
+        <text class="label" x="486" y={n.y + 26} style="font-size:13px">{n.name}</text>
+        <rect class="box accent scratch" x="486" y={n.y + 36} width="138" height="24" rx="6" />
+        <text class="mono scratch-text" x="494" y={n.y + 52}>scratch: sim[{i}]</text>
+        <text class="tag-hit done" x="632" y={n.y + 26} text-anchor="end">done</text>
+      </g>
+    ))
+  }
+
+  <g class="cas">
+    <rect class="box" x="690" y="40" width="80" height="110" rx="14" />
+    <text class="label" x="730" y="90" text-anchor="middle">CAS</text>
+    <text class="sub" x="730" y="110" text-anchor="middle">outputs</text>
+  </g>
+  <g class="meta">
+    <rect class="box" x="690" y="180" width="80" height="110" rx="14" />
+    <text class="label" x="730" y="230" text-anchor="middle">Meta</text>
+    <text class="sub" x="730" y="250" text-anchor="middle">results</text>
+  </g>
+
+  <path class="wire" d="M160 160 H230 M400 130 C435 130 435 66 470 66 M400 160 H470 M400 190 C435 190 435 246 470 246" />
+
+  <text class="sub" x="20" y="330">Cache hits never reach SLURM: the driver only submits actions whose lookup missed.</text>
+  <text class="sub" x="20" y="352">Status: one squeue/sacct call per poll for the whole build.</text>
+
+  {[0, 1, 2].map((i) => <circle class="dot job" data-i={i} cx="160" cy="160" r="6" opacity="0" />)}
+  {[0, 1, 2].map((i) => <circle class="dot hit out" data-i={i} cx="640" cy="66" r="5" opacity="0" />)}
+</SceneFrame>
+
+<script>
+  import { mountScene } from '../_lib/scene';
+  import { buildDispatch } from './dispatch';
+  mountScene('dispatch', buildDispatch);
+</script>
+
+<style>
+  .lic {
+    fill: var(--ebs-hit);
+  }
+</style>

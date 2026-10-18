@@ -413,6 +413,19 @@
         "additionalProperties": false,
         "description": "Body of `finish_build`; the store checks that `status` is final.",
         "properties": {
+          "final_plan": {
+            "anyOf": [
+              {
+                "pattern": "^(sha256|blake3):[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Final Plan"
+          },
           "status": {
             "maxLength": 64,
             "title": "Status",
@@ -499,6 +512,18 @@
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
             "title": "Domain",
             "type": "string"
+          },
+          "final_plan_digest": {
+            "anyOf": [
+              {
+                "pattern": "^(sha256|blake3):[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Plan Digest"
           },
           "finished_at": {
             "anyOf": [
@@ -6275,6 +6300,7 @@
     },
     "/api/v1/domains/{domain}/cache/{key}": {
       "get": {
+        "description": "`peek=true`: `cache_peek` (a prediction such as `ebs plan`): no hit is counted, in the\nstore or in the metrics.",
         "operationId": "cache_get_api_v1_domains__domain__cache__key__get",
         "parameters": [
           {
@@ -6293,6 +6319,16 @@
             "schema": {
               "title": "Key",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "peek",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Peek",
+              "type": "boolean"
             }
           }
         ],

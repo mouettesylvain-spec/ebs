@@ -45,7 +45,13 @@ def specs(draw: st.DrawFn) -> ActionSpec:
         env=draw(st.dictionaries(names.map(str.upper), texts, max_size=3)),
         toolchain=draw(st.none() | st.builds(ToolchainRef, names, texts, digests)),
         inputs=tuple(
-            InputRef(p, draw(st.sampled_from(["file", "tree"])), draw(sources), draw(digests))
+            InputRef(
+                p,
+                draw(st.sampled_from(["file", "tree"])),
+                draw(sources),
+                draw(digests),
+                executable=draw(st.booleans()),
+            )
             for p in sorted(input_paths)
         ),
         outputs=tuple(

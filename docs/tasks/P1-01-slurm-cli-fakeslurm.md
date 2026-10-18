@@ -64,5 +64,7 @@ FakeSlurm good enough that every executor behaviour can be tested on a laptop.
   controller may have accepted the first request, so a job can be submitted twice. P1-02 should
   reconcile by its unique job name (R4 naming) before or after a retried submit, and cancel the
   extra job.
+  **Done (2026-10-18):** `SlurmCli.submit` tags the comment with a submission token and finds
+  the job of a lost reply with `squeue --me --name` before retrying.
 - No new dependencies. D5 (SLURM limits) is not touched here; the adapter takes whatever
   throttle/partition/QOS the executor passes.

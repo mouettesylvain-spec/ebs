@@ -1,0 +1,137 @@
+---
+title: Publish and consume a release
+description: Turn a build's outputs into a versioned release, point a channel at it, pin it in another flow's flow.lock and trace it.
+sidebar:
+  order: 5
+---
+
+import RepoFile from '../../../components/RepoFile.astro';
+
+A build is a run; a **release** is a decision. When a team is happy with a build, it publishes
+selected outputs under a name and version, like tagging a commit. A **channel** such as
+`stable` is a movable pointer to one release, like a branch. The concepts page
+[Releases and channels](/ebs/concepts/releases/) shows how the pieces fit.
+
+:::tip[These commands are tested]
+The `console` blocks run in CI on a fresh copy of `examples/` and a fresh database, so the
+first build has id 1. On your site, use the id `ebs status` prints.
+:::
+
+## 1. Build what you want to release
+
+```console
+$ cd examples/lint-make
+$ ebs build --cache write
+build … (id 1)
+build …: build passed (done=3)
+$ ebs status
+build … (id 1): passed, 3 actions
+```
+
+## 2. Create the release
+
+Pick outputs by `step.output`. `[*]` takes the output of every matrix instance of the step:
+
+```console
+$ ebs release create demo/lint 2026.10.1 --build 1 --output 'lint.report[*]' --output summary.summary --notes 'first release'
+released demo/lint 2026.10.1 (3 output(s))
+  lint[block=alu].report      file  sha256:…
+  summary.summary             file  sha256:…
+```
+
+The release records digests, not copies: the bytes stay in the CAS, and the release keeps them
+from garbage collection. Only outputs of actions that passed can be released, unless you say
+why with `--allow-failed REASON`.
+
+## 3. Point a channel at it
+
+```console
+$ ebs channel set demo/lint stable 2026.10.1
+demo/lint:stable -> 2026.10.1
+$ ebs channel show demo/lint stable
+demo/lint:stable -> 2026.10.1
+$ ebs release list
+demo/lint 2026.10.1  build 1 …  3 output(s)
+```
+
+Every move of a channel is kept: `ebs channel history demo/lint stable` lists them, oldest
+first.
+
+## Gates
+
+A site can require a passing **gate build** before a channel moves, per channel, in `ebs.toml`:
+
+```toml
+[release.gates]
+stable = "cpu-gate"          # moving any release's `stable` needs a passed build of project cpu-gate
+"rtl-team/cpu:nightly" = "cpu-smoke"
+```
+
+`ebs channel set … --gate-build ID` names the gate build to check; by default any passing
+build of the gate project for that release qualifies.
+
+## Withdrawing a release
+
+```sh
+ebs release yank demo/lint 2026.10.1 --reason "wrong filelist"
+```
+
+A yanked release is never deleted: builds that used it stay reproducible, but no channel can
+point at it any more.
+
+## 4. Consume it from another flow
+
+A downstream team imports the release by channel. `examples/release-consumer` reads the lint
+summary that `demo/lint` published:
+
+<RepoFile path="examples/release-consumer/flow.yaml" />
+
+Following a channel never changes a build by surprise: the flow cannot be planned until
+`ebs lock update` pins the exact release the channel points at now, in a `flow.lock` you commit
+and review like code.
+
+```console
+$ cd ../release-consumer
+$ ebs lock update
+lint: added demo/lint 2026.10.1 (channel stable)
+$ ebs lock check
+$ ebs build --cache write
+build … (id 2)
+build …: build passed (done=1)
+```
+
+The imported outputs are staged read-only at `imports/<alias>/<step>.<output>`. When the
+producing team moves `stable` to a newer release, your builds keep using the pinned one, and
+`ebs lock check` (exit 1, for CI) tells you an update is waiting. Run `ebs lock update` when you
+decide to take it.
+
+## 5. Ask where things came from
+
+Every action records which inputs produced which outputs, so the questions an auditor asks
+have direct answers:
+
+```console
+$ ebs used-by demo/lint 2026.10.1
+used by demo/lint 2026.10.1 (domain examples)
+builds: 1
+  examples  build 2  release-consumer  …
+$ ebs why demo/lint@2026.10.1:summary.summary
+why demo/lint@2026.10.1:summary.summary (domain examples)
+└── output  sha256:…  [release demo/lint 2026.10.1 summary.summary]
+    └── summary  shell  passed  build 1 lint-make
+        ├── report/lint[block=alu]/alu.rpt  sha256:…
+        │   ├── lint[block=alu]  make  passed  build 1 lint-make
+        │   │   params BLOCK=alu LINTER=fake
+        │   │   ├── rtl/alu/alu.sv  sha256:…  (source)
+```
+
+`ebs why` walks back to the actions, params, toolchains and source files behind an artifact
+(`--dot` draws it with Graphviz). `ebs used-by` lists every build and release that consumed a
+release, transitively. `ebs tests <name> <version>` lists every simulation that ran on a release
+or on anything built from it, with its seed and verdict (`--junit FILE` for a report). See
+[Provenance](/ebs/guides/provenance/).
+
+## Across domains
+
+A release lives in the domain of its build. `ebs release export --to <domain>` copies it into
+another confidentiality domain; the copy is audited and needs membership in both.

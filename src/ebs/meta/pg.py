@@ -36,6 +36,7 @@ from ebs.meta._common import (
     check_driver_owner,
     check_event_query,
     check_exportable,
+    check_final_plan,
     check_final_status,
     check_lease_ttl,
     check_pin,
@@ -81,6 +82,7 @@ from ebs.meta.api import (
     GcAttribution,
     GcBlob,
     GcCacheEntry,
+    GcLock,
     GcRoots,
     GcRun,
     LeaseId,
@@ -111,6 +113,7 @@ from ebs.meta.models import (
     driver_leases,
     events,
     exports,
+    gc_locks,
     gc_runs,
     lease_objects,
     leases,
@@ -339,6 +342,23 @@ class PgMetadataStore:
                 f"the entry so the action reruns: {exc}"
             ) from None
 
+    def cache_peek(self, domain: str, key: Digest) -> ResultManifest | None:
+        check_domain(domain)
+        check_digest(key, "cache_peek key")
+        t = action_cache
+        stmt = sa.select(t.c.result).where(t.c.domain == domain, t.c.key == str(key))
+        with self._tx(f"cache_peek {domain}/{key}") as conn:
+            payload: dict[str, object] | None = conn.execute(stmt).scalar_one_or_none()
+        if payload is None:
+            return None
+        try:
+            return ResultManifest.model_validate(payload)
+        except ValueError as exc:
+            raise MetadataError(
+                f"action cache entry {domain}/{key} holds an invalid result manifest; delete "
+                f"the entry so the action reruns: {exc}"
+            ) from None
+
     def cache_put(self, domain: str, key: Digest, result: ResultManifest) -> bool:
         check_domain(domain)
         check_digest(key, "cache_put key")
@@ -543,13 +563,20 @@ class PgMetadataStore:
         payload: dict[str, object] | None = found[0]
         return None if payload is None else stored_result(payload, build, action_id)
 
-    def finish_build(self, build: BuildId, status: BuildStatus) -> None:
+    def finish_build(
+        self, build: BuildId, status: BuildStatus, *, final_plan: Digest | None = None
+    ) -> None:
         check_final_status(status)
+        final_plan = check_final_plan(final_plan)
         with self._tx(f"finish_build {build}") as conn:
             done = conn.execute(
                 sa.update(builds)
                 .where(builds.c.id == build, builds.c.status == "running")
-                .values(status=status, finished_at=self._clock.now())
+                .values(
+                    status=status,
+                    finished_at=self._clock.now(),
+                    final_plan_digest=None if final_plan is None else str(final_plan),
+                )
                 .returning(builds.c.id, builds.c.domain)
             ).first()
             if done is None:
@@ -970,17 +997,17 @@ class PgMetadataStore:
                     actions.c.build_id == build, actions.c.result.is_not(None)
                 )
             ).scalars()
-            roots = {str(self._plan_of(conn, build))}
+            roots = set(self._plans_of(conn, build))
             for payload in results:
                 roots |= {str(d) for d in attribution_digests(payload)}
             self._touch_rows(conn, domain, roots, self._clock.now())
 
     @staticmethod
-    def _plan_of(conn: sa.Connection, build: BuildId) -> str:
-        plan: str = conn.execute(
-            sa.select(builds.c.plan_digest).where(builds.c.id == build)
-        ).scalar_one()
-        return plan
+    def _plans_of(conn: sa.Connection, build: BuildId) -> list[str]:
+        row = conn.execute(
+            sa.select(builds.c.plan_digest, builds.c.final_plan_digest).where(builds.c.id == build)
+        ).one()
+        return [str(d) for d in row if d is not None]
 
     def unpin_build(self, build: BuildId) -> bool:
         with self._tx(f"unpin_build {build}") as conn:
@@ -1442,7 +1469,7 @@ class PgMetadataStore:
         check_domain(domain)
         with self._tx(f"gc_roots {domain}") as conn:
             pinned_builds = conn.execute(
-                sa.select(builds.c.plan_digest, actions.c.result)
+                sa.select(builds.c.plan_digest, builds.c.final_plan_digest, actions.c.result)
                 .select_from(pins)
                 .join(builds, builds.c.id == pins.c.build_id)
                 .outerjoin(actions, actions.c.build_id == builds.c.id)
@@ -1465,8 +1492,10 @@ class PgMetadataStore:
             )
         released = {o["digest"] for outputs in released_outputs for o in outputs.values()}
         pinned: set[Digest] = set()
-        for plan_digest, result in pinned_builds:
+        for plan_digest, final_plan, result in pinned_builds:
             pinned.add(Digest.parse(plan_digest))
+            if final_plan is not None:
+                pinned.add(Digest.parse(final_plan))
             pinned.update(attribution_digests(result))
         return GcRoots(
             frozenset(pinned),
@@ -1595,6 +1624,35 @@ class PgMetadataStore:
             conn.execute(sa.delete(t).where(t.c.domain == domain, t.c.digest == key))
             conn.execute(sa.delete(b).where(b.c.domain == domain, b.c.digest == key))
         return True
+
+    def gc_lock(self, domain: str, owner: str, *, now: datetime, ttl_s: int) -> GcLock:
+        check_domain(domain)
+        check_driver_owner(owner, "gc_lock")
+        check_lease_ttl(ttl_s)
+        g = gc_locks
+        stmt = pg_insert(g).values(
+            domain=domain, owner=owner, expires_at=now + timedelta(seconds=ttl_s)
+        )
+        with self._tx(f"gc_lock {domain}") as conn:
+            # Concurrent runs serialize on the row; at most one takes a free or expired lock.
+            conn.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=[g.c.domain],
+                    set_={"owner": stmt.excluded.owner, "expires_at": stmt.excluded.expires_at},
+                    where=sa.or_(g.c.expires_at <= now, g.c.owner == stmt.excluded.owner),
+                )
+            )
+            row = conn.execute(
+                sa.select(g.c.owner, g.c.expires_at).where(g.c.domain == domain)
+            ).one()
+        return GcLock(domain, str(row.owner), row.expires_at)
+
+    def gc_unlock(self, domain: str, owner: str) -> None:
+        check_domain(domain)
+        with self._tx(f"gc_unlock {domain}") as conn:
+            conn.execute(
+                sa.delete(gc_locks).where(gc_locks.c.domain == domain, gc_locks.c.owner == owner)
+            )
 
     def gc_record_run(self, run: GcRun) -> None:
         checked = check_run(run)

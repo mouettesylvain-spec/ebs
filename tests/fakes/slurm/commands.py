@@ -267,6 +267,8 @@ def _query_args(prog: str, argv: Sequence[str], *, squeue: bool) -> argparse.Nam
     p.add_argument("-j", "--jobs")
     if squeue:
         p.add_argument("-t", "--states")
+        p.add_argument("-n", "--name")
+        p.add_argument("--me", action="store_true")  # every fake job is the caller's
     else:
         p.add_argument("-X", "--allocations", action="store_true")
         p.add_argument("-S", "--starttime")
@@ -291,6 +293,9 @@ def squeue(st: State, argv: Sequence[str]) -> str:
     if "ALL" not in states:
         wanted = states or {"PENDING", "RUNNING", "SUSPENDED", "COMPLETING", "CONFIGURING"}
         known = [r for r in known if r["state"] in wanted]
+    if a.name:
+        names = set(a.name.split(","))
+        known = [r for r in known if r["name"] in names]
     jobs = [squeue_job(row, ts) for row, ts in visible_records(known)]
     if a.json:
         doc = {"jobs": jobs, "meta": meta(["squeue", *argv]), "errors": [], "warnings": []}
@@ -381,6 +386,8 @@ def main(command: str, argv: Sequence[str], state_dir: str) -> int:
         with locked(root) as st:
             fault = st.consume_fault("CLI_ERROR", command=command)
             if fault is not None:
+                if fault.get("accept"):  # the command ran, but its reply was lost
+                    COMMANDS[command](st, argv)
                 sys.stderr.write(str(fault.get("message", f"{command}: error: injected")) + "\n")
                 return int(fault.get("exit_code", 1))
             out = COMMANDS[command](st, argv)

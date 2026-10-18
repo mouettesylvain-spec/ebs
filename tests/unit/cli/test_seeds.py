@@ -18,16 +18,33 @@ def test_gen_appends_rows(site: Site) -> None:
     assert [r["test"] for r in rows] == ["smoke", "long", "smoke", "smoke", "long", "long"]
 
 
+# P1-11 follow-up: the new and filled rows are printed, as they now read, for review before
+# the table is committed.
+def test_gen_prints_the_changed_rows(site: Site) -> None:
+    (site.proj / "reg.csv").write_text("test,seed,plusargs\nsmoke,,+v\nlong,2,\n")
+    result = site.invoke(["seeds", "gen", "reg.csv", "--per-test", "1", "--replace"])
+    assert result.exit_code == 0, result.output
+    rows = load_table(site.proj / "reg.csv").rows
+    lines = result.stdout.splitlines()
+    assert lines[1:] == [
+        f"  filled   test=smoke seed={rows[0]['seed']} plusargs=+v",
+        f"  appended test=smoke seed={rows[2]['seed']} plusargs=+v",
+        f"  appended test=long seed={rows[3]['seed']} plusargs=",
+    ]
+
+
 # R2
 def test_gen_replace_json(site: Site) -> None:
     path = site.proj / "reg.yaml"
     path.write_text("- {test: smoke, seed: ''}\n")
     result = site.invoke(["seeds", "gen", str(path), "--replace", "--json"])
     assert result.exit_code == 0, result.output
+    seed = load_table(path).rows[0]["seed"]
+    assert seed != ""
     assert json.loads(result.stdout) == {
         "v": 1, "table": str(path), "appended": 0, "filled": 1,
+        "rows": [{"change": "filled", "row": {"test": "smoke", "seed": seed}}],
     }  # fmt: skip
-    assert load_table(path).rows[0]["seed"] != ""
 
 
 def test_gen_errors_exit_2(site: Site) -> None:

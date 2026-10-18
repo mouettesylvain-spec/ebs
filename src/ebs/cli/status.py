@@ -67,12 +67,27 @@ def status_document(record: BuildRecord, events: list[Event]) -> dict[str, Any]:
         ],
         "totals": _sorted(totals),
         "retries": retries,
+        "driver": _driver(record),
+    }
+
+
+def _driver(record: BuildRecord) -> dict[str, Any] | None:
+    """Who drives (or drove) the build: its SLURM job (detached builds), host and pid."""
+    if not record.driver_job and not record.host:
+        return None
+    return {
+        "job": record.driver_job or None,
+        "host": record.host or None,
+        "pid": record.pid or None,
     }
 
 
 def _print(out: Output, doc: dict[str, Any]) -> None:
     total = sum(doc["totals"].values())
     out.line(f"build {doc['uuid']} (id {doc['build']}): {doc['status']}, {total} actions")
+    driver = doc["driver"]
+    if driver is not None and doc["status"] == "running":
+        out.line(f"driver: {_driver_text(driver)}")
     columns = list(doc["totals"])
     table = Table(box=None, pad_edge=False, header_style="bold")
     table.add_column("STEP")
@@ -94,6 +109,15 @@ def _print(out: Output, doc: dict[str, Any]) -> None:
             f"  {entry['action_id']}: {entry['state']} after {len(attempts)} attempt{plural} "
             f"({failures})"
         )
+
+
+def _driver_text(driver: dict[str, Any]) -> str:
+    where = f"{driver['host']} (pid {driver['pid']})" if driver["host"] else None
+    if driver["job"] is None:
+        return str(where)
+    if where is None:
+        return f"SLURM job {driver['job']}, not started yet (`scancel {driver['job']}` cancels)"
+    return f"SLURM job {driver['job']} on {where}"
 
 
 def _failure(attempt: dict[str, Any]) -> str:

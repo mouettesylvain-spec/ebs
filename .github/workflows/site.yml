@@ -1,0 +1,109 @@
+# Documentation site (site/, task D-01): build and check on pull requests, deploy to GitHub
+# Pages from main. The reference pages are generated from the code at build time, and the
+# landing page's numbers are measured on the examples (scripts/site_bench.py) before deploying.
+# One-time setup: Settings > Pages > Source = "GitHub Actions".
+
+name: site
+
+on:
+  pull_request:
+    paths:
+      - "site/**"
+      - "docs/**"
+      - "examples/**"
+      - "schemas/**"
+      - "integrations/**"
+      - "deploy/**"
+      - "src/ebs/cli/**"
+      - "src/ebs/rules/**"
+      - "src/ebs/toolchain/**"
+      - "src/ebs/core/errors.py"
+      - "scripts/gen_site_reference.py"
+      - "scripts/site_bench.py"
+      - ".github/workflows/site.yml"
+  push:
+    branches: [main]
+    paths:  # keep in sync with pull_request above
+      - "site/**"
+      - "docs/**"
+      - "examples/**"
+      - "schemas/**"
+      - "integrations/**"
+      - "deploy/**"
+      - "src/ebs/cli/**"
+      - "src/ebs/rules/**"
+      - "src/ebs/toolchain/**"
+      - "src/ebs/core/errors.py"
+      - "scripts/gen_site_reference.py"
+      - "scripts/site_bench.py"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_FROZEN: "1"
+  UV_PYTHON: "3.13"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: ebs_test
+          POSTGRES_USER: ebs
+          POSTGRES_PASSWORD: ebs
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ebs -d ebs_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: site/.nvmrc
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: uv sync
+      - name: Docs tests (flow snippets, integration files, generator, bench)
+        run: uv run --extra dev pytest tests/unit/docs tests/unit/scripts/test_gen_site_reference.py tests/unit/scripts/test_site_bench.py -q
+      - name: Measure the examples for the landing page
+        if: github.event_name != 'pull_request'
+        run: uv run python scripts/site_bench.py --pg-server postgresql+psycopg://ebs:ebs@localhost:5432/ebs_test
+      - run: npm ci
+        working-directory: site
+      - name: Generate the reference, type-check, build, validate links
+        run: npm run build
+        working-directory: site
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: site/dist
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
