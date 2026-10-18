@@ -54,15 +54,17 @@ Any failing action can be inspected and re-run bit-for-bit from a login node, in
   time, so a kept sandbox is never replaced and other users' are never touched.
 - Follow-ups:
   - `salloc_argv` renders options itself, mirroring `ebs.exec.slurm.cli.sbatch_argv`; a shared
-    option renderer (built from `SbatchOptions`, with its validators) would keep them in step.
+    option renderer (built from `SbatchOptions`, with its validators) would keep them in step. **Done (2026-10-18):** `job_options`.
   - `--salloc` uses the action's own time limit (+ grace); an interactive GUI session may need a
-    `--time` override.
+    `--time` override. **Done (2026-10-18):** `--time`.
   - `ebs reproduce --run` exits 0 whatever the comparison; a non-zero exit when outputs differ
-    would let CI use R3 directly.
+    would let CI use R3 directly. **Done (2026-10-18):** exit 1.
   - Reproduce holds no GC lease on the inputs it links from the CAS (leases need a running
     build); a sweep during a long interactive session could remove linked blobs.
+    Still open (2026-10-18): a touch or lease would write to the store, which the R4 decision
+    rules out; it needs the human's call (copy large inputs instead, or allow a touch).
   - A build that did not finish has no `final_plan`; reproduce then fills unset input ids from
     the action's recorded result only, so an infra-failed action of an interrupted build may not
     be reproducible.
   - `ebs build` still only offers the local executor (`cli/_context.py` `EXECUTORS`); P1-12
-    needs the SLURM executor wired into the CLI.
+    needs the SLURM executor wired into the CLI. **Done by P2-08** (`--executor slurm`).

@@ -62,6 +62,7 @@ __all__ = [
     "SlurmCli",
     "SubprocessRunner",
     "is_transient",
+    "job_options",
     "sbatch_argv",
     "write_env_file",
 ]
@@ -241,7 +242,29 @@ def sbatch_argv(script: Path, opts: SbatchOptions, *, command: str = "sbatch") -
     Each option is one `--name=value` element, so a value starting with `-` can't be read as
     another option. The job never inherits the submitter's environment (`--export=NONE`).
     """
-    argv = [command, "--parsable", f"--job-name={opts.job_name}"]
+    argv = [command, "--parsable", *job_options(opts)]
+    if opts.array is not None:
+        argv.append(f"--array={opts.array.render()}")
+    if opts.output is not None:
+        argv.append(f"--output={opts.output}")
+    if opts.error is not None:
+        argv.append(f"--error={opts.error}")
+    if opts.workdir is not None:
+        argv.append(f"--chdir={opts.workdir}")
+    if opts.comment is not None:
+        argv.append(f"--comment={opts.comment}")
+    argv.append("--export=NONE")
+    if opts.export_file is not None:
+        argv.append(f"--export-file={opts.export_file}")
+    argv.append("--requeue" if opts.requeue else "--no-requeue")
+    argv.append(str(script.absolute()))
+    return argv
+
+
+def job_options(opts: SbatchOptions) -> list[str]:
+    """The job's name, placement and resource options, as sbatch and salloc both take them
+    (`ebs reproduce --salloc` asks for the allocation an action's job would get)."""
+    argv = [f"--job-name={opts.job_name}"]
     if opts.partition is not None:
         argv.append(f"--partition={opts.partition}")
     if opts.account is not None:
@@ -261,21 +284,6 @@ def sbatch_argv(script: Path, opts: SbatchOptions, *, command: str = "sbatch") -
         argv.append(f"--constraint={opts.constraint}")
     if opts.exclude:
         argv.append(f"--exclude={','.join(sorted(opts.exclude))}")
-    if opts.array is not None:
-        argv.append(f"--array={opts.array.render()}")
-    if opts.output is not None:
-        argv.append(f"--output={opts.output}")
-    if opts.error is not None:
-        argv.append(f"--error={opts.error}")
-    if opts.workdir is not None:
-        argv.append(f"--chdir={opts.workdir}")
-    if opts.comment is not None:
-        argv.append(f"--comment={opts.comment}")
-    argv.append("--export=NONE")
-    if opts.export_file is not None:
-        argv.append(f"--export-file={opts.export_file}")
-    argv.append("--requeue" if opts.requeue else "--no-requeue")
-    argv.append(str(script.absolute()))
     return argv
 
 

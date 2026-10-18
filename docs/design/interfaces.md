@@ -1617,7 +1617,7 @@ output, `<action_id>.<name> -> <dest>`. `--json`: `{"v": 1, "uuid", "build", "fe
 
 ```
 ebs debug     ACTION [--build B] [--json]
-ebs reproduce ACTION [--build B] [--dir D] [--run | --interactive] [--salloc] [--json]
+ebs reproduce ACTION [--build B] [--dir D] [--run | --interactive] [--salloc [--time T]] [--json]
 ```
 
 Both read the build record and events, the build's `final_plan` (else `plan`) from the CAS and,
@@ -1649,13 +1649,16 @@ runs `bash --norc` in `work/` with the sandbox env (+ `PS1`). `--salloc` (needs 
 `--interactive`) runs `salloc --job-name=ebs:repro:<step> [--partition --account --qos
 --cpus-per-task --mem=<MiB>M --time=<time + JOB_TIME_GRACE_S> --licenses --constraint] srun
 --pty ebs reproduce ACTION --build <uuid> --run|--interactive [--dir D] [--json]` (options as the SLURM
-executor would give the action alone; account/QOS for build kind `dev`), so the sandbox is
-built on the node. Reproduce never writes to the metadata store: no build, result, cache entry,
+executor would give the action alone, rendered by the same `ebs.exec.slurm.cli.job_options`;
+account/QOS for build kind `dev`), so the sandbox is built on the node. `--time T` (a flow
+duration such as `4h`; only with `--salloc`) replaces the allocation's time limit. Reproduce never writes to the metadata store: no build, result, cache entry,
 event, lease or touch (R4). `--json`: `{"v": 1, "uuid", "build", "action_id", "dir", "work",
 "argv", "env", "interactive", "ran": null | {"exit_code", "status", "timed_out", "error", "log",
 "outputs": [{"name", "status", "recorded", "reproduced"}], "identical"}}`; with `--salloc`
 the outer command prints the salloc line on stderr and the inner one the document. The exit
-code is 0 once the sandbox is built, whatever the tool or the comparison gave.
+code is 0 once the sandbox is built, whatever the tool gave, except that `--run` exits 1 when
+`identical` is false (an output differs from, or is missing in, the reproduction); `--salloc`
+passes the inner command's exit code on. **CONTRACT CHANGE (P1-10 follow-up).**
 
 **`ebs rules list --json`**: `{"v": 1, "rules": [{"kind", "version", "impl"}]}`, sorted by kind.
 
