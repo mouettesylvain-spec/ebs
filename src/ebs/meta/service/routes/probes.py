@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from ebs.meta.service.auth import Principal
+from ebs.meta.service.authz import DomainPolicy
 from ebs.meta.service.deps import ServiceDeps, current_principal, get_deps
 from ebs.meta.service.routes import ok
 from ebs.meta.service.tokens import TokenKind
@@ -39,6 +40,9 @@ class Whoami(BaseModel):
     via: Literal["munge", "token", "session"]
     token_kind: TokenKind | None
     team: str | None
+    # P2-06: the served domains the caller is a member of; None when the service does not
+    # scope by domain (no `[meta_service].domains`).
+    domains: list[str] | None = None
 
 
 @api.get("/whoami", response_model=Whoami)
@@ -48,6 +52,14 @@ def whoami(
 ) -> Response:
     """The authenticated caller, to check credentials (`curl -H "X-EBS-Munge: $(munge -n)"`)."""
     deps.check(caller, "read", domain=None, owner=None)
+    policy = deps.authorize
+    domains = sorted(policy.member_of(caller)) if isinstance(policy, DomainPolicy) else None
     return ok(
-        Whoami(name=caller.name, via=caller.via, token_kind=caller.token_kind, team=caller.team)
+        Whoami(
+            name=caller.name,
+            via=caller.via,
+            token_kind=caller.token_kind,
+            team=caller.team,
+            domains=domains,
+        )
     )

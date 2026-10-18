@@ -31,8 +31,9 @@ SINGLE = {
     "GET /toolchains/{toolchain_id}",
     "GET /channels",
 }
-# Bodies with a list that are bounded by the request itself (a batch of ids).
-BOUNDED = {"BuildList"}
+# Bodies with a list that are bounded by the request itself (a batch of ids), or aggregates
+# (DomainStats: one row per step and per pending reason and license feature, P2-06).
+BOUNDED = {"BuildList", "DomainStats"}
 
 
 def _service(max_page_size: int = 1000) -> tuple[Service, InMemoryMetadataStore]:
@@ -82,7 +83,9 @@ def test_every_list_route_is_paginated() -> None:
     assert sorted(paged) == [
         "GET /builds/{build}/actions",
         "GET /builds/{build}/release-imports",
+        "GET /builds/{build}/results",
         "GET /channels/history",
+        "GET /domains/{domain}/builds",
         "GET /releases",
         "GET /releases/{release}/exports",
         "GET /toolchains",

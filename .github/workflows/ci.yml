@@ -2,6 +2,7 @@
 #   lint (ruff, mypy for 3.11, import-linter, 3.11 import smoke)
 #     -> unit (py3.13, "unit and not slow", -x, coverage gate)
 #     -> full (slow unit + integration with Postgres + e2e), only on ready PRs and main.
+#     -> web (dashboard: API types in sync, typecheck, Vitest, Playwright + axe), same gate.
 # perf, grid, vendor, the long Hypothesis run and mutmut live in nightly.yml.
 # Jobs are billed rounded up to the minute, so tiers are merged into as few jobs as possible.
 
@@ -108,5 +109,46 @@ jobs:
         with:
           name: junit
           path: junit-*.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The dashboard (P2-06): generated API types in sync with the service, typecheck, unit tests
+  # and the Playwright suite (with axe-core) against the service on seeded data.
+  web:
+    needs: lint
+    if: github.event_name == 'push' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: uv sync --all-extras
+        working-directory: .
+      - run: npm ci
+      - run: npm run check:api
+      - run: npm run typecheck
+      - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+        env:
+          CI: "1"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: web-e2e
+          path: |
+            web/e2e-junit.xml
+            web/test-results/
           if-no-files-found: ignore
           retention-days: 7

@@ -30,7 +30,7 @@ from ebs.meta.client import BearerCredential, HttpMetadataStore
 from ebs.meta.memory import InMemoryMetadataStore
 from ebs.meta.service.auth import BuildOwner, Operation, Principal
 from ebs.meta.service.tokens import TokenKind
-from tests.helpers.meta_http import FakeMunge, Service, make_service
+from tests.helpers.meta_http import BASE_URL, FakeMunge, Service, make_service
 
 B = f"{API_PREFIX}/builds"
 
@@ -429,6 +429,40 @@ def test_app_from_config(tmp_path: Path) -> None:
         )
         with pytest.raises(ConfigError, match=match):
             app_from_config(env)
+
+
+# P2-06 R3: with [cas].root the service reads logs; with dashboard_dir it serves the dashboard.
+def test_app_from_config_dashboard(tmp_path: Path) -> None:
+    from ebs.meta.service.app import app_from_config
+    from tests.helpers.meta_http import TestClient  # type: ignore[attr-defined]
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><title>EBS</title>")
+    config = tmp_path / "config.toml"
+    base = (
+        '[metadata]\nurl = "postgresql+psycopg://ebs@db.example.invalid/ebs"\n'
+        '[[domains]]\nname = "test"\nunix_group = "test-nda"\n'
+        '[meta_service]\nmunge = false\ndomains = ["test"]\n'
+    )
+    config.write_text(base + f'dashboard_dir = "{dist}"\n[cas]\nroot = "{tmp_path / "cas"}"\n')
+    env = {"EBS_CONFIG": str(config), "HOME": str(tmp_path)}
+    app = app_from_config(env)
+    try:
+        assert app.state.deps.logs is not None
+        client = TestClient(app, base_url=BASE_URL)
+        assert client.get("/ui/").text == "<!doctype html><title>EBS</title>"
+        home = client.get("/", follow_redirects=False)
+        assert (home.status_code, home.headers["location"]) == (307, "/ui/")
+    finally:
+        app.state.deps.store.close()
+    config.write_text(base)
+    app = app_from_config(env)
+    assert app.state.deps.logs is None  # no [cas].root: no logs
+    app.state.deps.store.close()
+    config.write_text(base + f'dashboard_dir = "{tmp_path}"\n')
+    with pytest.raises(ConfigError, match=r"no index\.html"):
+        app_from_config(env)
 
 
 # R1 (review): action ids that look like URL syntax survive the path, as in the other stores.

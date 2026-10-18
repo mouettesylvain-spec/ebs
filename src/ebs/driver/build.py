@@ -77,6 +77,17 @@ def action_row(spec: ActionSpec) -> ActionRow:
     )  # fmt: skip
 
 
+def step_graph(plan: Plan) -> dict[str, list[str]]:
+    """Each step of `plan` with the steps it consumes outputs of, sorted (the `steps` of the
+    `plan_ready` event: the dashboard draws the build's DAG by step, P2-06 R1)."""
+    step_of = {a.action_id: a.step for a in plan.actions}
+    graph: dict[str, set[str]] = {a.step: set() for a in plan.actions}
+    for producer, _output, consumer in plan.edges:
+        if step_of[producer] != step_of[consumer]:
+            graph[step_of[consumer]].add(step_of[producer])
+    return {step: sorted(ups) for step, ups in sorted(graph.items())}
+
+
 def run_build(
     plan: Plan,
     *,
@@ -126,7 +137,9 @@ def run_build(
     if ci:  # P2-07 R1: the CI job's project, pipeline, job URL and commit
         started["ci"] = dict(sorted(ci.items()))
     events.emit("build_started", None, **started)
-    events.emit("plan_ready", plan=str(plan_digest), actions=len(plan.actions))
+    events.emit(
+        "plan_ready", plan=str(plan_digest), actions=len(plan.actions), steps=step_graph(plan)
+    )
     scheduler = Scheduler(
         plan,
         plan_digest=plan_digest,

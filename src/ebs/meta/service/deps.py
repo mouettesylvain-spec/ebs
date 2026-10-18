@@ -14,8 +14,9 @@ from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
 
+from ebs.core.clock import Clock, SystemClock
 from ebs.core.errors import MetadataError
-from ebs.meta.api import API_PREFIX, BuildId, EventReader
+from ebs.meta.api import API_PREFIX, BuildId, DashboardReader, EventReader
 from ebs.meta.service.auth import (
     Authenticator,
     AuthorizeHook,
@@ -28,6 +29,7 @@ from ebs.meta.service.auth import (
 )
 from ebs.meta.service.events_stream import EventStreamConfig, Wakeup, build_key, domain_key
 from ebs.meta.service.limits import LimitsConfig, RateLimiter
+from ebs.meta.service.logs import LogSource
 from ebs.meta.service.metrics import Metrics
 from ebs.meta.service.readiness import Readiness
 from ebs.release.channels import GatePolicy
@@ -74,7 +76,7 @@ BODY_MODELS: set[type[BaseModel]] = set()
 """Request body models, published in the OpenAPI components by `app.create_app`."""
 
 
-class ServiceBackend(ReleaseBackend, EventReader, Protocol):
+class ServiceBackend(ReleaseBackend, EventReader, DashboardReader, Protocol):
     """What the service needs of its store: the PostgreSQL store (the in-memory one in tests)."""
 
 
@@ -87,6 +89,7 @@ class ServiceDeps:
     `gates` is the channel gate policy (`[release.gates]` of the service's config, P2-02).
     P2-05: `events` and `wakeup` drive the event streams, `limits` and `limiter` the request
     limits, `metrics` the Prometheus metrics, and `oidc` the dashboard login (None: off).
+    P2-06: `logs` reads action logs for the dashboard (None: the log route answers 404).
     """
 
     store: ServiceBackend
@@ -100,6 +103,8 @@ class ServiceDeps:
     limiter: RateLimiter | None = None  # None: the limits' rate, on the system clock
     metrics: Metrics = field(default_factory=Metrics)
     oidc: OidcLogin | None = None
+    logs: LogSource | None = None
+    clock: Clock = field(default_factory=SystemClock)  # P2-06: the stats route's default window
     owner_cache_size: int = 10_000
     _owners: OrderedDict[int, BuildOwner] = field(default_factory=OrderedDict, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)

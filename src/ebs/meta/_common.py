@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import TypeVar
+from typing import TypeVar, get_args
 
 from pydantic import BaseModel, ValidationError
 
@@ -18,12 +19,18 @@ from ebs.meta.api import (
     FINAL_BUILD_STATUSES,
     MAX_LEASE_TTL_S,
     PROVENANCE_DEPTH_MAX,
+    STATS_WINDOW_MAX_DAYS,
     TOUCH_INTERVAL_S,
     ActionRow,
     ActionUpdate,
     BlobRef,
+    BuildFilter,
     BuildView,
+    DomainStats,
+    Event,
     GcRun,
+    PendingReason,
+    PendingWait,
     ProvenanceAction,
     ProvenanceEdge,
     ProvenanceGraph,
@@ -32,6 +39,8 @@ from ebs.meta.api import (
     ReleaseImport,
     ReleaseView,
     ResultManifest,
+    ResultSummary,
+    StepStats,
     ToolchainCreate,
     check_domain,
     check_transition,
@@ -39,6 +48,8 @@ from ebs.meta.api import (
 )
 
 _M = TypeVar("_M", bound=BaseModel)
+
+PENDING_REASONS: frozenset[str] = frozenset(get_args(PendingReason))
 
 
 def revalidate(model: _M, cls: type[_M], what: str) -> _M:
@@ -507,3 +518,139 @@ def next_month(start: datetime) -> datetime:
 
 def month_name(start: datetime) -> str:
     return f"{start.year:04}-{start.month:02}"
+
+
+# --- dashboard reads (P2-06) ---------------------------------------------------------------------
+
+
+def check_build_filter(domain: str, flt: BuildFilter) -> BuildFilter:
+    check_domain(domain)
+    return revalidate(flt, BuildFilter, f"list_builds {domain}")
+
+
+def check_stats_window(domain: str, since: datetime, until: datetime) -> None:
+    check_domain(domain)
+    for name, value in (("since", since), ("until", until)):
+        if not isinstance(value, datetime) or value.tzinfo is None:
+            raise MetadataError(f"domain_stats {domain}: {name} must be an aware datetime")
+    if not since < until <= since + timedelta(days=STATS_WINDOW_MAX_DAYS):
+        raise MetadataError(
+            f"domain_stats {domain}: the window {since.isoformat()}..{until.isoformat()} must "
+            f"be non-empty and at most {STATS_WINDOW_MAX_DAYS} days"
+        )
+
+
+def build_matches(view: BuildView, flt: BuildFilter) -> bool:
+    return (
+        (flt.user is None or view.user_name == flt.user)
+        and (flt.status is None or view.status == flt.status)
+        and (flt.project is None or view.project == flt.project)
+        and (flt.since is None or view.created_at >= flt.since)
+        and (flt.until is None or view.created_at < flt.until)
+    )
+
+
+def _resources(result: Mapping[str, object] | None) -> tuple[int, int]:
+    """(cpu_s, wall_s) of a stored ResultManifest JSON, (0, 0) without one."""
+    usage = result.get("resources") if result is not None else None
+    if not isinstance(usage, Mapping):
+        return 0, 0
+    cpu, wall = usage.get("cpu_s"), usage.get("wall_s")
+    return (cpu if isinstance(cpu, int) else 0), (wall if isinstance(wall, int) else 0)
+
+
+def aggregate_stats(
+    domain: str,
+    *,
+    since: datetime,
+    until: datetime,
+    now: datetime,
+    builds: int,
+    actions: Iterable[tuple[str, str, Mapping[str, object] | None]],
+    events: Iterable[Event],
+) -> DomainStats:
+    """`DomainStats` from the window's actions as (step, state, stored result JSON) and their
+    `pending` events and the events that follow them, in any order.
+
+    A wait starts at a `pending` event and ends at the action's next event of another type, or
+    of another reason (a new wait starts), else at `until` or `now`, whichever is earlier. A
+    `licenses` wait counts once per feature its event names (two features wait together), or
+    under feature "" if it names none.
+    """
+    steps: dict[str, list[int]] = {}
+    for step, state, result in actions:
+        row = steps.setdefault(step, [0, 0, 0, 0, 0])
+        cpu, wall = _resources(result)
+        if state == "cached":
+            row[0] += 1
+            row[2] += cpu
+            row[3] += wall
+        elif state in ("done", "failed"):
+            row[1] += 1
+            row[4] += cpu
+    by_action: dict[tuple[int, str], list[Event]] = {}
+    for event in events:
+        if event.action_id is not None:
+            by_action.setdefault((int(event.build), event.action_id), []).append(event)
+    waits: dict[tuple[str, str | None], list[int]] = {}
+
+    def close(start: Event, end: datetime) -> None:
+        raw_reason = start.data.get("reason")
+        reason = raw_reason if raw_reason in PENDING_REASONS else "other"  # events are free-form
+        seconds = max(0, int((min(end, until, now) - start.ts).total_seconds()))
+        raw = start.data.get("licenses")
+        names = sorted({str(f) for f in raw}) if isinstance(raw, list) else []
+        features: list[str | None] = [None]
+        if reason == "licenses":
+            features = list(names) or [""]
+        for feature in features:
+            row = waits.setdefault((reason, feature), [0, 0])
+            row[0] += 1
+            row[1] += seconds
+
+    for evs in by_action.values():
+        evs.sort(key=lambda e: e.ts)
+        open_: Event | None = None
+        for event in evs:
+            if open_ is not None and (
+                event.type != "pending" or event.data.get("reason") != open_.data.get("reason")
+            ):
+                close(open_, event.ts)
+                open_ = None
+            if event.type == "pending" and open_ is None:
+                open_ = event
+        if open_ is not None:
+            close(open_, until)
+    return DomainStats(
+        domain=domain,
+        since=since,
+        until=until,
+        builds=builds,
+        steps=[
+            StepStats(
+                step=s, cached=r[0], ran=r[1], cached_cpu_s=r[2], cached_wall_s=r[3], ran_cpu_s=r[4]
+            )
+            for s, r in sorted(steps.items())
+        ],
+        waits=[
+            PendingWait(reason=reason, feature=feature, waits=r[0], wait_s=r[1])  # type: ignore[arg-type]  # a PENDING_REASONS member
+            for (reason, feature), r in sorted(
+                waits.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")
+            )
+        ],
+    )
+
+
+def result_summary(action_id: str, result: Mapping[str, object]) -> ResultSummary:
+    """The `ResultSummary` of a stored ResultManifest JSON (or of those of its fields)."""
+    return ResultSummary.model_validate_json(
+        json.dumps(
+            {
+                "action_id": action_id,
+                "status": result.get("status"),
+                "exit_code": result.get("exit_code"),
+                "log": result.get("log"),
+                "summary": result.get("summary") or {},
+            }
+        )
+    )

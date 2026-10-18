@@ -45,10 +45,12 @@ __all__ = [
     "FINAL_BUILD_STATUSES",
     "IMPORT_ALIAS_PATTERN",
     "LEASE_TTL_S",
+    "LOG_CHUNK_MAX",
     "MAX_LEASE_TTL_S",
     "PROVENANCE_DEPTH_MAX",
     "PROVENANCE_START_MAX",
     "RELEASE_NAME_PATTERN",
+    "STATS_WINDOW_MAX_DAYS",
     "TERMINAL_STATES",
     "TOUCH_INTERVAL_S",
     "TRANSITIONS",
@@ -62,11 +64,13 @@ __all__ = [
     "BlobBatch",
     "BlobRef",
     "BuildCreate",
+    "BuildFilter",
     "BuildFinish",
     "BuildId",
     "BuildList",
     "BuildStatus",
     "BuildView",
+    "BuildViewList",
     "CacheHits",
     "CacheMode",
     "Changed",
@@ -77,9 +81,11 @@ __all__ = [
     "ChannelView",
     "CreatedBuild",
     "CreatedLease",
+    "DashboardReader",
     "DigestBatch",
     "DigestField",
     "DomainPolicy",
+    "DomainStats",
     "ErrorBody",
     "Event",
     "EventReader",
@@ -105,6 +111,7 @@ __all__ = [
     "OutputResult",
     "ParamJson",
     "PendingReason",
+    "PendingWait",
     "PinRequest",
     "ProvenanceAction",
     "ProvenanceEdge",
@@ -124,8 +131,11 @@ __all__ = [
     "ReleaseView",
     "ResourceUsage",
     "ResultManifest",
+    "ResultSummary",
+    "ResultSummaryList",
     "RunnerInfo",
     "StateChange",
+    "StepStats",
     "StoredEvent",
     "Tombstone",
     "ToolchainCreate",
@@ -1326,3 +1336,114 @@ class EventReader(Protocol):
         ends at or before `before` (UTC months, the partitions of the `events` table); return
         them as `YYYY-MM`, oldest first."""
         ...
+
+
+# --- dashboard reads (P2-06) ---------------------------------------------------------------------
+
+LOG_CHUNK_MAX: Final = 4 << 20
+"""Most log bytes one `GET /builds/{b}/actions/{a}/log` answers (and its default `limit`)."""
+
+STATS_WINDOW_MAX_DAYS: Final = 366
+"""The longest `since..until` window `domain_stats` aggregates over."""
+
+
+class BuildFilter(BaseModel):
+    """Which builds of a domain `list_builds` answers; every field set must match. `since` and
+    `until` bound `created_at` (`since <= created_at < until`)."""
+
+    model_config = _FROZEN
+
+    user: _Name | None = None
+    status: BuildStatus | None = None
+    project: _Name | None = None
+    since: AwareDatetime | None = None
+    until: AwareDatetime | None = None
+
+
+class StepStats(BaseModel):
+    """One step's actions in a stats window: those served from the cache and those that ran.
+    `cached_cpu_s` sums the CPU time recorded in the cached results (what the cache saved)."""
+
+    model_config = _FROZEN
+
+    step: _Name
+    cached: _NonNegative
+    ran: _NonNegative  # executed to a result: done or failed
+    cached_cpu_s: _NonNegative
+    cached_wall_s: _NonNegative
+    ran_cpu_s: _NonNegative
+
+
+class PendingWait(BaseModel):
+    """Time actions spent pending for one reason; `feature` splits `licenses` waits by license
+    feature (the `licenses` of the `pending` event), "" when the event named none."""
+
+    model_config = _FROZEN
+
+    reason: PendingReason
+    feature: StrictStr | None
+    waits: _NonNegative
+    wait_s: _NonNegative
+
+
+class DomainStats(BaseModel):
+    """What the dashboard's metrics pages show for the builds created in `since..until`."""
+
+    model_config = _FROZEN
+
+    domain: _Domain
+    since: AwareDatetime
+    until: AwareDatetime
+    builds: _NonNegative
+    steps: list[StepStats]
+    waits: list[PendingWait]
+
+
+class ResultSummary(BaseModel):
+    """What the regression grid shows of an action's ResultManifest (`summary` holds e.g. the
+    test, seed and failure `signature` of a `questa.sim` result)."""
+
+    model_config = _FROZEN
+
+    action_id: ActionId
+    status: Literal["passed", "failed"]
+    exit_code: StrictInt
+    log: DigestField | None
+    summary: dict[_Name, StrictStr | StrictInt]
+
+
+class DashboardReader(Protocol):
+    """What the dashboard reads beyond the store protocol (P2-06). Only the PostgreSQL and
+    in-memory stores implement it: it is served by the metadata service, like `EventReader`."""
+
+    def list_builds(self, domain: str, flt: BuildFilter) -> list[BuildView]:
+        """The builds of `domain` matching `flt`, newest (highest id) first."""
+        ...
+
+    def result_summaries(self, build: BuildId, *, step: str | None = None) -> list[ResultSummary]:
+        """The recorded results of `build`'s actions (of `step` only, if given), by action id,
+        without their inputs and outputs: the regression grid of one build."""
+        ...
+
+    def domain_stats(self, domain: str, *, since: datetime, until: datetime) -> DomainStats:
+        """Cache use and pending waits of the builds of `domain` created in `since..until`;
+        a still pending wait counts up to `until` or the store's clock, whichever is earlier."""
+        ...
+
+
+class ResultSummaryList(BaseModel):
+    """Response of `GET /builds/{build}/results`."""
+
+    model_config = _WIRE
+
+    results: list[ResultSummary]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
+
+
+class BuildViewList(BaseModel):
+    """Response of `GET /domains/{domain}/builds`."""
+
+    model_config = _WIRE
+
+    builds: list[BuildView]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)

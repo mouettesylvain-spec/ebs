@@ -71,6 +71,11 @@ Dev: `pytest`, `pytest-cov`, `hypothesis`, `jsonschema` (schema tests, P0-04), `
 (JUnit XSD validation, P2-07).
 The runner entry point must import only stdlib + `pydantic` + `httpx` + `core`/`cas`/`runner`.
 
+Dashboard (`web/`, P2-06; Node 24, exact versions in `web/package.json`): runtime `react`,
+`react-dom`, `react-router-dom`, `openapi-fetch`, `elkjs` (DAG layout); dev `vite`,
+`@vitejs/plugin-react`, `typescript`, `vitest`, `jsdom`, `openapi-typescript`,
+`@playwright/test`, `@axe-core/playwright`, `@types/*`. No Python dependency is added.
+
 ## Site configuration (`ebs.toml`)
 
 Looked up in order: `$EBS_CONFIG`, `./.ebs/config.toml`, `~/.config/ebs/config.toml`,
