@@ -28,6 +28,7 @@ from ebs.exec.slurm.executor import (
     SlurmExecutor,
     SlurmSettings,
 )
+from ebs.exec.slurm.models import ArrayTaskId
 from ebs.flow.model import Resources
 from ebs.meta.api import BuildId
 from ebs.meta.memory import InMemoryMetadataStore
@@ -370,6 +371,30 @@ def test_cancel_one_call(env: Env) -> None:
     calls = len(env.slurm.calls)
     ex.cancel([*arr, done])
     assert len(env.slurm.calls) == calls
+
+
+# P2-08 R2/R4: a resumed driver's executor adopts recorded jobs, array tasks included: it polls
+# them and cancels a whole array with one reference, like jobs it submitted itself.
+def test_adopt_recorded_jobs(env: Env) -> None:
+    ids = [f"t[{i}]" for i in range(3)]
+    old = env.executor()
+    arr = old.submit(batch(*ids))
+    solo = old.submit(batch("solo"))[0]
+    new = env.executor()  # another process: knows nothing of them
+    recorded = [JobHandle("slurm", h.job_id, h.action_id) for h in [*arr, solo]]
+    new.adopt(BuildId(1), recorded)
+    assert [str(new.job_ref(h)) for h in recorded] == ["100_0", "100_1", "100_2", "101"]
+    assert isinstance(new.job_ref(recorded[0]), ArrayTaskId)
+    assert new.in_flight() == 4
+    env.slurm.set_state("101", "COMPLETED")
+    assert new.poll([recorded[3]])[recorded[3]].state == "done"
+    new.cancel(recorded)
+    scancel = [c for c in env.slurm.calls if Path(c[0]).name == "scancel"][-1]
+    assert scancel[1:] == ["100"]  # the whole array, as one reference
+    with pytest.raises(ExecutorError, match="local"):
+        new.adopt(BuildId(1), [JobHandle("local", "7", "x")])
+    with pytest.raises(ExecutorError):
+        new.adopt(BuildId(1), [JobHandle("slurm", "12x", "x")])
 
 
 @pytest.mark.parametrize(

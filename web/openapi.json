@@ -955,6 +955,78 @@
         "title": "DomainStats",
         "type": "object"
       },
+      "DriverClaim": {
+        "additionalProperties": false,
+        "description": "Body of `claim_driver`.",
+        "properties": {
+          "owner": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\x00-\\x1f]+$",
+            "title": "Owner",
+            "type": "string"
+          },
+          "ttl_s": {
+            "maximum": 86400,
+            "minimum": 1,
+            "title": "Ttl S",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "owner",
+          "ttl_s"
+        ],
+        "title": "DriverClaim",
+        "type": "object"
+      },
+      "DriverLease": {
+        "additionalProperties": false,
+        "description": "Who drives a build, until when (P2-08 R3). `owner` is opaque to the store\n(`host:pid:token` by convention).",
+        "properties": {
+          "build": {
+            "title": "Build",
+            "type": "integer"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "owner": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\x00-\\x1f]+$",
+            "title": "Owner",
+            "type": "string"
+          }
+        },
+        "required": [
+          "build",
+          "owner",
+          "expires_at"
+        ],
+        "title": "DriverLease",
+        "type": "object"
+      },
+      "DriverRelease": {
+        "additionalProperties": false,
+        "description": "Body of `release_driver`.",
+        "properties": {
+          "owner": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\x00-\\x1f]+$",
+            "title": "Owner",
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner"
+        ],
+        "title": "DriverRelease",
+        "type": "object"
+      },
       "ErrorBody": {
         "additionalProperties": false,
         "description": "Every error response: an actionable message (`MetadataError` text on the client).",
@@ -1015,7 +1087,8 @@
               "infra_failed",
               "retrying",
               "build_finished",
-              "stat_audit_mismatch"
+              "stat_audit_mismatch",
+              "build_resumed"
             ],
             "title": "Type",
             "type": "string"
@@ -3805,6 +3878,243 @@
           }
         },
         "summary": "Set Action State",
+        "tags": [
+          "builds"
+        ]
+      }
+    },
+    "/api/v1/builds/{build}/driver": {
+      "post": {
+        "operationId": "claim_driver_api_v1_builds__build__driver_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "build",
+            "required": true,
+            "schema": {
+              "title": "Build",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DriverClaim"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DriverLease"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Claim Driver",
+        "tags": [
+          "builds"
+        ]
+      }
+    },
+    "/api/v1/builds/{build}/driver/release": {
+      "post": {
+        "operationId": "release_driver_api_v1_builds__build__driver_release_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "build",
+            "required": true,
+            "schema": {
+              "title": "Build",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DriverRelease"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Release Driver",
         "tags": [
           "builds"
         ]

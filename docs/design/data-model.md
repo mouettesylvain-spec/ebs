@@ -109,6 +109,8 @@ exports(id bigserial PK, release_id FK, exported_release_id FK releases, to_doma
 release_imports(build_id FK builds, alias text check ~ IMPORT_ALIAS_PATTERN,
                 release_id FK releases, PRIMARY KEY(build_id, alias))
                 index (release_id)   -- 0009, P2-03: used-by queries; append-only (trigger)
+driver_leases(build_id PK FK builds ON DELETE CASCADE, owner text check 1..256 chars,
+              expires_at, claimed_at)   -- 0011, P2-08: one live driver per build
 ```
 
 ## Phase 3

@@ -32,7 +32,8 @@ GC_TABLES = {"leases", "lease_objects", "pins", "gc_runs", "tombstones"}  # P1-0
 P1_TABLES |= GC_TABLES
 RELEASE_TABLES = {"releases", "channels", "channel_history", "exports"}  # P2-02 (revision 0007)
 IMPORT_TABLES = {"release_imports"}  # P2-03 (revision 0009)
-P2_TABLES = RELEASE_TABLES | IMPORT_TABLES
+DRIVER_TABLES = {"driver_leases"}  # P2-08 (revision 0011)
+P2_TABLES = RELEASE_TABLES | IMPORT_TABLES | DRIVER_TABLES
 GOOD = "sha256:" + "a" * 64
 
 
@@ -429,3 +430,15 @@ def _columns(url: URL, table: str) -> set[str]:
             return {c["name"] for c in sa.inspect(conn).get_columns(table, schema=SCHEMA)}
     finally:
         engine.dispose()
+
+
+# P2-08: revision 0011 adds the driver leases and downgrades back to 0010.
+def test_driver_lease_revision_round_trip(empty_db: URL) -> None:
+    url = url_string(empty_db)
+    migrations.upgrade(url, "0010_action_provenance")
+    assert not DRIVER_TABLES & _tables(empty_db)
+    migrations.upgrade(url, "0011_driver_leases")
+    assert _tables(empty_db) >= DRIVER_TABLES
+    migrations.downgrade(url, "0010_action_provenance")
+    assert not DRIVER_TABLES & _tables(empty_db)
+    assert _tables(empty_db) >= P0_TABLES | P1_TABLES | RELEASE_TABLES | IMPORT_TABLES

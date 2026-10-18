@@ -111,6 +111,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/builds/{build}/driver": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Claim Driver */
+        post: operations["claim_driver_api_v1_builds__build__driver_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/builds/{build}/driver/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Release Driver */
+        post: operations["release_driver_api_v1_builds__build__driver_release_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/builds/{build}/events": {
         parameters: {
             query?: never;
@@ -1005,6 +1039,40 @@ export interface components {
             waits: components["schemas"]["PendingWait"][];
         };
         /**
+         * DriverClaim
+         * @description Body of `claim_driver`.
+         */
+        DriverClaim: {
+            /** Owner */
+            owner: string;
+            /** Ttl S */
+            ttl_s: number;
+        };
+        /**
+         * DriverLease
+         * @description Who drives a build, until when (P2-08 R3). `owner` is opaque to the store
+         *     (`host:pid:token` by convention).
+         */
+        DriverLease: {
+            /** Build */
+            build: number;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Owner */
+            owner: string;
+        };
+        /**
+         * DriverRelease
+         * @description Body of `release_driver`.
+         */
+        DriverRelease: {
+            /** Owner */
+            owner: string;
+        };
+        /**
          * ErrorBody
          * @description Every error response: an actionable message (`MetadataError` text on the client).
          */
@@ -1037,7 +1105,7 @@ export interface components {
              * Type
              * @enum {string}
              */
-            type: "build_started" | "plan_ready" | "cache_hit" | "submitted" | "pending" | "running" | "finished" | "infra_failed" | "retrying" | "build_finished" | "stat_audit_mismatch";
+            type: "build_started" | "plan_ready" | "cache_hit" | "submitted" | "pending" | "running" | "finished" | "infra_failed" | "retrying" | "build_finished" | "stat_audit_mismatch" | "build_resumed";
             /**
              * V
              * @default 1
@@ -2371,6 +2439,200 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["StateChange"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Content Too Large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    claim_driver_api_v1_builds__build__driver_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                build: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DriverClaim"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DriverLease"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Content Too Large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    release_driver_api_v1_builds__build__driver_release_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                build: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DriverRelease"];
             };
         };
         responses: {

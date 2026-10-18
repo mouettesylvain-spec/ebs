@@ -373,6 +373,9 @@ class MetadataStore(Protocol):
     def renew_lease(self, build: BuildId, lease: LeaseId, ttl_s: int, *, add: Iterable[Digest] = ()) -> None: ...
     def pin_build(self, build: BuildId, *, by: str, reason: str = "") -> None: ...
     def unpin_build(self, build: BuildId) -> bool: ...
+    # driver lease (P2-08)
+    def claim_driver(self, build: BuildId, owner: str, ttl_s: int) -> DriverLease: ...
+    def release_driver(self, build: BuildId, owner: str) -> None: ...
     # events
     def emit(self, event: Event) -> None: ...
     # toolchain registry (P1-07)
@@ -462,6 +465,16 @@ re-validated on write (values must also pass `canonical_json`).
   `ebs.gc.leases.LeaseKeeper` leases the plan and every known input id at build start, adds
   cache-hit and produced outputs, logs and refined plans, and renews every `ttl / 3`
   (`LEASE_TTL_S = 900`); lease errors are logged, never fatal.
+- Driver lease (P2-08 R3), **CONTRACT CHANGE (P2-08):** one live driver per build.
+  `claim_driver(build, owner, ttl_s)` atomically takes the lease when the build has none, it
+  expired, or `owner` already holds it (a renewal), setting it to expire at `now + ttl_s`, and
+  returns `DriverLease{build, owner, expires_at}` as it now stands: an `owner` other than the
+  caller's means another driver holds it. The build must be running (else `MetadataError`);
+  `1 ≤ ttl_s ≤ MAX_LEASE_TTL_S`; `owner` is 1-256 printable characters (`host:pid:token`).
+  `release_driver(build, owner)` drops it if `owner` holds it, else does nothing. The driver's
+  `ebs.driver.build.DriverLeaseKeeper` claims it before driving and renews it every `ttl / 3`
+  (`DRIVER_LEASE_TTL_S = 300`); a lost lease stops the driver (`DriverBusyError`) without
+  cancelling the jobs, which belong to the new driver.
 - Pins: `pin_build(build, by=, reason=)` is idempotent (the first author and reason are kept)
   and sets `BuildView.pinned`; `unpin_build` returns whether it was pinned.
 - `GcStore` (P1-09; `PgMetadataStore` and `InMemoryMetadataStore` only: GC is a service account
@@ -599,6 +612,8 @@ in JSON mode (`model_validate_json`):
 | `POST /builds/{b}/finish` | `finish_build` | `BuildFinish` → 204 |
 | `POST /builds/{b}/leases` | `acquire_lease` | `LeaseRequest{domain, digests, ttl_s}` → `CreatedLease` (P1-09) |
 | `POST /builds/{b}/leases/{id}/renew` | `renew_lease` | `LeaseRequest{digests, ttl_s}` → 204 |
+| `POST /builds/{b}/driver` | `claim_driver` | `DriverClaim{owner, ttl_s}` → `DriverLease` (P2-08) |
+| `POST /builds/{b}/driver/release` | `release_driver` | `DriverRelease{owner}` → 204 |
 | `PUT /builds/{b}/pin` | `pin_build` (by = caller) | `PinRequest{reason}` → 204 |
 | `DELETE /builds/{b}/pin` | `unpin_build` | → `Changed` |
 | `POST /builds/{b}/events` | `emit` | `Event` → 204 |
@@ -961,6 +976,8 @@ SlurmExecutor(*, cli: SlurmCli, cas: CAS, settings: SlurmSettings, store: Metada
               project: str | None = None, build_kind: BuildKind = "dev")   # P1-03; ConfigError if unmapped
     .submit / .poll / .cancel                         # the Executor protocol; name = "slurm"
     .job_ref(handle) -> JobId | ArrayTaskId           # the SLURM job behind a handle
+    .adopt(build, handles) -> None                    # P2-08: track jobs a dead driver submitted
+                                                      # (handles from actions.slurm_job_id)
     .in_flight() -> int                               # unfinished jobs, array tasks counted one by one
 # ebs.exec.slurm.arrays
 plan_jobs(actions, *, max_array_size, throttle) -> list[JobPlan(actions, is_array, throttle)]
@@ -1126,7 +1143,7 @@ The `Event` model is defined in `ebs.meta.api` (§ 6) and re-exported here.
 
 `Event` = `{v, ts, build, type, action_id?, data}` with types: `build_started`, `plan_ready`,
 `cache_hit`, `submitted`, `pending`, `running`, `finished`, `infra_failed`, `retrying`,
-`build_finished`, `stat_audit_mismatch` (the runner also emits `running {host, job_id}` once per
+`build_finished`, `stat_audit_mismatch`, `build_resumed` (P2-08) (the runner also emits `running {host, job_id}` once per
 attempt, § 9). Emitted to MetadataStore and to a local JSONL file
 (`<workdir>/.ebs/builds/<uuid>/events.jsonl`, written before the store so an outage leaves a
 trace) used by `ebs status` / `ebs logs` when offline; `read_events(path)` parses it. Data (no
@@ -1135,7 +1152,9 @@ floats): `submitted {job_id, attempt, batch_size}`, `running {job_id}`,
 excluded_node?}`, `retrying {attempt, delay_ms}`, `finished {state ∈
 done|failed|infra_failed|skipped|cancelled, exit_code?, attempts?, reasons?, reason?, hint?}`,
 `build_finished {status, counts}`, `plan_ready {plan, actions, steps}` (P2-06: `steps` maps each step to the steps it consumes), `pending {reason, licenses?}` (P2-06: the action's license features), `build_started {uuid, user, cache_mode, ci?}` (`ci`: the
-`run_build(ci=…)` metadata, P2-07 R1). P1-05 R2: `attempt` numbers the submissions of an action
+`run_build(ci=…)` metadata, P2-07 R1), `build_resumed {attached, rerun, finished}` (P2-08: a new
+driver took over the build: jobs re-attached, actions run again, actions already final). P1-05
+R2: `attempt` numbers the submissions of an action
 (1, 2, …) in `submitted` and the driver's `infra_failed`; once any attempt failed for an
 infrastructure reason, the action's `finished` event has `attempts` (submissions) and
 `reasons` (one per failed attempt, in order). `attempt_history(events) -> {action_id:
@@ -1149,8 +1168,22 @@ def run_build(plan: Plan, *, refiner: Refiner, cas: CAS, store: MetadataStore, e
               workdir: Path, user: str, config: DriverConfig | None = None, ci_job: str | None = None,
               ci: Mapping[str, str] | None = None,   # P2-07: CI job metadata -> build_started.ci
               clock: Clock | None = None, retry: RetryPolicy | None = None,
-              handle_sigint: bool = False) -> BuildOutcome: ...
+              handle_sigint: bool = False, handle_sigterm: bool = False,
+              owner: str | None = None) -> BuildOutcome: ...   # = start_build + drive_build
 # BuildOutcome(build, uuid, status, exit_code, states: {action_id: final state}, plan (refined), events_path)
+# P2-08: start_build(plan, *, cas, store, workdir, user, cache_mode="read", ci_job=None, clock=None)
+#   -> StartedBuild(build, uuid, plan_digest): build record + queued actions + build_started/plan_ready.
+# drive_build(plan, started, *, refiner, cas, store, executor, workdir, config, clock, retry,
+#   handle_sigint, handle_sigterm, owner, restore=None) -> BuildOutcome: claims the driver lease
+#   (DriverBusyError if held), runs the scheduler; SIGINT/SIGTERM cancel the jobs (exit 130).
+# ebs.driver.resume.resume_build(build, *, cas, store, executor, workdir, config=None, clock=None,
+#   retry=None, owner=None, refiner=None, handle_sigint=False, handle_sigterm=False) -> BuildOutcome:
+#   plan from the CAS, the build's own cache mode; reconcile(rows, finished=, can_attach=) keeps
+#   final states, re-attaches pending/running jobs with a job id (`Reattaching.adopt`), reruns
+#   the others and infra_failed actions awaiting a retry (and refuses, DriverBusyError, when
+#   SLURM jobs run but the executor cannot adopt them). Scheduler.restore(states, results,
+#   attached) loads that state before `run` (restored outputs join the GC lease).
+# ebs.plan.planner.refine_plan(plan, produced) -> Plan: what Planner.refine does, without a planner.
 
 @dataclass(frozen=True)
 class DriverConfig:                 # ebs.driver.scheduler
@@ -1209,7 +1242,8 @@ cancels submitted work, keeps results of jobs that already finished, marks the r
 `EbsError` → `ConfigError`, `FlowError` (has `file`, `line`, `col`), `DigestError`, `CanonError`,
 `TreeError`, `PlanError`, `CasError`, `MetadataError`, `ExecutorError`, `RuleError`, `SandboxError`,
 `SourceError` (→ `SourceEscapeError`), `ToolchainError`, `ReleaseError` (P2-02: a broken release,
-channel or export rule; exit 2).
+channel or export rule; exit 2), `DriverBusyError` (P2-08: the build has another live driver, or
+is finished; exit 2).
 CLI exit codes: `0` ok, `1` build finished with failed actions, `2` usage/flow error,
 `3` infrastructure error (retries exhausted), `4` internal bug (with "please report" hint),
 `130` cancelled by the user (Ctrl-C; 128 + SIGINT, P0-15).
@@ -1472,6 +1506,20 @@ property `ebs.cached=true`; infra failures are `<error>`, never-run actions `<sk
 counts; up to 20 failed tests) and `ebs.env` (`EBS_BUILD_ID=<id>`, a GitLab dotenv report).
 The values of `EBS_META_TOKEN`, `CI_JOB_TOKEN`, `CI_REGISTRY_PASSWORD`, `CI_DEPLOY_PASSWORD`,
 `CI_JOB_JWT`, `CI_JOB_JWT_V2` are replaced by `[MASKED]` in those files.
+
+**`ebs build --detach`** (P2-08): plans and starts the build (record written with `host: ""`,
+`pid: 0`), then submits `ebs build --resume-into <uuid> --executor <x> [-k] [--rerun-failed]`
+as a SLURM job (`ebs:<uuid8>:driver`, 1 CPU, `[driver]` partition/QOS/time, else
+`[slurm].default_partition` and the build kind's QOS; output `.ebs/builds/<uuid>/driver.out`,
+script and 0600 env file next to it) and exits 0 after printing the build line and
+`driver job <id> submitted: …` (`--json`: `{"build", "uuid", "status": "running", "driver_job"}`).
+It needs `--executor slurm` and does not combine with `--ci` (usage errors otherwise). If the submission fails the build is
+finished `infra_failed`. A driver job cancelled before it started leaves the build `running`
+without a driver: `ebs build --resume BUILD` takes it over. **`ebs build --resume BUILD`**
+drives a running build whose driver died (`--resume-into` is the same, used by the driver job);
+it takes no steps, `--cache`, `--no-cache` or `--rehash` (the build's plan and cache mode
+apply), rewrites the record's `host`/`pid`, and prints `build <uuid> (id <n>): resuming`.
+`--executor slurm` (P2-08) runs actions as SLURM jobs (`[slurm]`, `[debug].root`).
 
 **`ebs status --json`**: `{"v": 1, "uuid", "build", "status", "flow", "created_at", "steps":
 [{"step", "actions", "states": {state: n}}], "totals": {state: n}, "retries": [{"action_id",
