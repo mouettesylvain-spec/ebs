@@ -1,0 +1,18 @@
+why sha256:fd079a58bf9cc59e71a0ae368af0a7fd70d2f3f6b2650663e0db82eed2f9f049 (domain test)
+└── output  sha256:fd079a58bf9c
+    └── sim[seed=1,test=t1]  questa.sim  passed  build 2 verif@def456
+        toolchain sha256:fc65a8b0cf8f
+        params seed=1 test=t1
+        └── model  sha256:ba85adce0491  [release verif/model 1.0 elab.model]
+            └── elab  questa.opt  passed  build 2 verif@def456
+                toolchain sha256:fc65a8b0cf8f
+                params top=tb_top
+                └── libs/core  sha256:f8a352594d79  [release rtl/cpu 1.0 compile[lib=core].worklib]
+                    └── compile[lib=core]  questa.compile  passed  build 1 rtl@abc123
+                        toolchain sha256:fc65a8b0cf8f
+                        params lib=core vlog_opts=-sv
+                        ├── filelist  sha256:a5c70daa521a
+                        │   └── gen  shell  passed  build 1 rtl@abc123
+                        │       └── src/a.sv  sha256:1f96dc3557d1  (source)
+                        ├── srcs/a.sv  sha256:1f96dc3557d1  (source)
+                        └── srcs/b.sv  sha256:3a9cace7bb95  (source)

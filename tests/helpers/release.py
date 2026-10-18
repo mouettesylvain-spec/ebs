@@ -37,6 +37,13 @@ class Action:
     outputs: Mapping[str, OutputResult] = field(default_factory=dict)
     passed: bool = True
     inputs: Mapping[str, Digest] = field(default_factory=dict)
+    # P2-04: what the planner records about the action (rule kind, params, toolchain), and a
+    # fixed key for actions that share one across builds (cache hits).
+    rule: str | None = None
+    params: Mapping[str, str | int | bool | list[str]] | None = None
+    toolchain: Digest | None = None
+    key: Digest | None = None
+    cached: bool = False
 
 
 def action_key(build: BuildId, action_id: str) -> Digest:
@@ -51,6 +58,8 @@ def finish(
     project: str = "demo",
     user: str = "alice",
     status: BuildStatus | None = "passed",
+    flow_repo: str = "",
+    flow_commit: str = "",
 ) -> BuildId:
     """A build of `project` with `actions` (id -> outputs); `status` None leaves it running."""
     build = store.create_build(
@@ -59,19 +68,30 @@ def finish(
             domain=domain,
             project=project,
             plan_digest=hash_bytes(b"plan"),
-            flow_repo="",
-            flow_commit="",
+            flow_repo=flow_repo,
+            flow_commit=flow_commit,
             flow_dirty=False,
             user_name=user,
             cache_mode="write",
         )
     )
     store.add_actions(
-        build, [ActionRow(action_id=a, step=a.split("[", 1)[0]) for a in sorted(actions)]
-    )
+        build,
+        [
+            ActionRow(
+                action_id=a, step=a.split("[", 1)[0], rule=spec.rule,
+                params=None if spec.params is None else dict(spec.params),
+                toolchain=spec.toolchain,
+            )
+            for a, spec in sorted(actions.items())
+        ],
+    )  # fmt: skip
     for action_id, spec in sorted(actions.items()):
-        key = action_key(build, action_id)
-        store.set_action_state(build, action_id, "running", key=key)
+        key = spec.key or action_key(build, action_id)
+        if spec.cached:
+            store.set_action_state(build, action_id, "cached", key=key)
+        else:
+            store.set_action_state(build, action_id, "running", key=key)
         store.record_result(
             build,
             action_id,
@@ -87,7 +107,8 @@ def finish(
                 runner=RunnerInfo(version="0", host="node-a"),
             ),
         )
-        store.set_action_state(build, action_id, "done" if spec.passed else "failed")
+        if not spec.cached:
+            store.set_action_state(build, action_id, "done" if spec.passed else "failed")
     if status is not None:
         store.finish_build(build, status)
     return build

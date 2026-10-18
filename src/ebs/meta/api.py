@@ -40,10 +40,14 @@ __all__ = [
     "CHANNEL_PATTERN",
     "DIGEST_SQL_PATTERN",
     "DOMAIN_PATTERN",
+    "EVENT_PAGE_MAX",
     "EVENT_TYPE_PATTERN",
     "FINAL_BUILD_STATUSES",
+    "IMPORT_ALIAS_PATTERN",
     "LEASE_TTL_S",
     "MAX_LEASE_TTL_S",
+    "PROVENANCE_DEPTH_MAX",
+    "PROVENANCE_START_MAX",
     "RELEASE_NAME_PATTERN",
     "TERMINAL_STATES",
     "TOUCH_INTERVAL_S",
@@ -78,6 +82,7 @@ __all__ = [
     "DomainPolicy",
     "ErrorBody",
     "Event",
+    "EventReader",
     "EventType",
     "ExportList",
     "ExportRecord",
@@ -98,11 +103,21 @@ __all__ = [
     "OptionalDigest",
     "OptionalResult",
     "OutputResult",
+    "ParamJson",
     "PendingReason",
     "PinRequest",
+    "ProvenanceAction",
+    "ProvenanceEdge",
+    "ProvenanceGraph",
+    "ProvenanceQuery",
+    "ProvenanceRelease",
+    "ProvenanceStore",
     "RegisterOutcome",
     "ReleaseCreate",
     "ReleaseId",
+    "ReleaseImport",
+    "ReleaseImportBatch",
+    "ReleaseImportList",
     "ReleaseList",
     "ReleaseOutput",
     "ReleaseStore",
@@ -111,6 +126,7 @@ __all__ = [
     "ResultManifest",
     "RunnerInfo",
     "StateChange",
+    "StoredEvent",
     "Tombstone",
     "ToolchainCreate",
     "ToolchainList",
@@ -363,8 +379,17 @@ class BuildView(BuildCreate):
     action_counts: dict[ActionState, _NonNegative]
 
 
+ParamJson = StrictBool | StrictInt | StrictStr | list[StrictStr]
+"""A plan param as stored with its action (`ebs.plan.types.ParamValue`, tuples as lists)."""
+
+
 class ActionRow(BaseModel):
-    """One action of a build. `add_actions` takes rows; missing `queued_at` means now."""
+    """One action of a build. `add_actions` takes rows; missing `queued_at` means now.
+
+    `rule`, `params` and `toolchain` are what the plan says the action is (P2-04: provenance
+    queries show them and `ebs tests` selects `*.sim` rules by them); they are set when the
+    action is added and never change. Rows written before P2-04 hold None.
+    """
 
     model_config = _FROZEN
 
@@ -381,6 +406,9 @@ class ActionRow(BaseModel):
     finished_at: AwareDatetime | None = None
     cached: StrictBool = False
     result_key: DigestField | None = None
+    rule: _Name | None = None  # the rule kind, e.g. "questa.sim"
+    params: dict[_Name, ParamJson] | None = None
+    toolchain: DigestField | None = None
 
 
 class ActionUpdate(BaseModel):
@@ -502,6 +530,16 @@ class MetadataStore(Protocol):
         ...
 
     def finish_build(self, build: BuildId, status: BuildStatus) -> None: ...
+
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        """Record which release each import alias of `build` used (P2-03 R5, for `used-by`),
+        all or nothing. Every release must be in the build's domain; recording the same row
+        again is a no-op, another release for a recorded alias is refused."""
+        ...
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        """The release imports of `build`, ordered by alias."""
+        ...
 
     def get_build(self, build: BuildId) -> BuildView: ...
 
@@ -663,6 +701,7 @@ class ActionList(BaseModel):
     model_config = _WIRE
 
     actions: list[ActionRow]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 class CacheHits(BaseModel):
@@ -736,6 +775,7 @@ class ToolchainList(BaseModel):
     model_config = _WIRE
 
     toolchains: list[ToolchainRecord]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 # --- garbage collection (P1-09) ------------------------------------------------------------------
@@ -883,6 +923,19 @@ ReleaseId = NewType("ReleaseId", int)
 _ReleaseName = Annotated[StrictStr, Field(pattern=RELEASE_NAME_PATTERN)]
 _Version = Annotated[StrictStr, Field(pattern=VERSION_PATTERN)]
 _Channel = Annotated[StrictStr, Field(pattern=CHANNEL_PATTERN)]
+
+
+IMPORT_ALIAS_PATTERN: Final = r"^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+"""Import aliases as flows name them (`imports: {rtl: …}` -> `${imports.rtl}`)."""
+
+
+class ReleaseImport(BaseModel):
+    """One `release_imports` row: a build consumed `release` through import `alias`."""
+
+    model_config = _FROZEN
+
+    alias: Annotated[StrictStr, Field(pattern=IMPORT_ALIAS_PATTERN)]
+    release: ReleaseId
 
 
 def release_output_name(action_id: str, output: str) -> str:
@@ -1036,7 +1089,105 @@ class ReleaseStore(Protocol):
     def list_exports(self, release: ReleaseId) -> list[ExportRecord]: ...
 
 
-class MetadataBackend(MetadataStore, ReleaseStore, Protocol):
+# --- provenance (P2-04) ---------------------------------------------------------------------------
+# The `provenance_edges` written since phase 0, walked within one domain: crossing domains is the
+# caller's job (`ebs.release.provenance`), through export audit rows only (R4).
+
+PROVENANCE_DEPTH_MAX: Final = 200
+"""Deepest walk a store performs, in action levels (data-model.md, "Query patterns")."""
+
+PROVENANCE_START_MAX: Final = 10_000
+"""Most ids plus keys one walk may start from over HTTP (a release with many outputs, e.g. a
+regression's results, is one walk: walks cannot be split into batches and merged exactly)."""
+
+
+class ProvenanceEdge(BaseModel):
+    """One `provenance_edges` row: `in` holds an input id at its logical path, `out` an output
+    (by name) with its passed-down id and its content digest."""
+
+    model_config = _FROZEN
+
+    action_key: DigestField
+    direction: Literal["in", "out"]
+    logical_path: Annotated[StrictStr, Field(min_length=1, max_length=4096)]
+    object_id: DigestField
+    content_digest: DigestField | None
+
+
+class ProvenanceAction(BaseModel):
+    """An action row whose key a walk reached, with its build. Several builds may hold the same
+    key (cache hits); each row is listed."""
+
+    model_config = _FROZEN
+
+    key: DigestField
+    build: BuildId
+    action_id: ActionId
+    step: _Name
+    rule: _Name | None
+    params: dict[_Name, ParamJson] | None
+    toolchain: DigestField | None
+    state: ActionState
+    cached: StrictBool
+    status: Literal["passed", "failed"] | None  # of the recorded result; None without one
+    finished_at: AwareDatetime | None
+    project: _Name
+    flow_repo: _Text
+    flow_commit: _Text
+    flow_dirty: StrictBool
+    user_name: _Name
+    build_created_at: AwareDatetime
+
+
+class ProvenanceRelease(BaseModel):
+    """A release output of the domain whose id is in the graph."""
+
+    model_config = _FROZEN
+
+    release: ReleaseId
+    name: _ReleaseName
+    version: _Version
+    output: _Name  # `release_output_name(action, output)`
+    object_id: DigestField
+    exported_from: ReleaseId | None
+    yanked: StrictBool
+
+
+class ProvenanceGraph(BaseModel):
+    """The result of a walk: every edge of the walked actions (sorted by key, direction, path),
+    their action rows (by build, action id), the releases holding an id of the graph (by id,
+    output) and whether `depth` stopped the walk before its end."""
+
+    model_config = _FROZEN
+
+    domain: _Domain
+    edges: list[ProvenanceEdge]
+    actions: list[ProvenanceAction]
+    releases: list[ProvenanceRelease]
+    truncated: StrictBool
+
+
+class ProvenanceStore(Protocol):
+    """Walks of the provenance graph within one domain (P2-04; PostgreSQL as a recursive CTE,
+    in-memory and HTTP stores). `depth` counts action levels, 1..PROVENANCE_DEPTH_MAX."""
+
+    def provenance_upstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        """Where `ids` came from: level 1 is the actions in `keys` plus those that produced an
+        id of `ids` (an `out` edge whose id or content digest it is); level n+1 the producers
+        of the inputs of level n."""
+        ...
+
+    def provenance_downstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        """What consumed `ids`: level 1 is the actions in `keys` plus those with an `in` edge
+        holding an id of `ids`; level n+1 the consumers of the outputs of level n."""
+        ...
+
+
+class MetadataBackend(MetadataStore, ReleaseStore, ProvenanceStore, Protocol):
     """What every store backend implements (PostgreSQL, in-memory, HTTP): `open_metadata_store`
     returns one."""
 
@@ -1076,10 +1227,26 @@ class GateQuery(BaseModel):
     ids: Annotated[list[DigestField], Field(max_length=BATCH_MAX)]
 
 
+class ReleaseImportBatch(BaseModel):
+    """Body of `POST /builds/{id}/release-imports`."""
+
+    model_config = _WIRE
+
+    imports: Annotated[list[ReleaseImport], Field(max_length=BATCH_MAX)]
+
+
+class ReleaseImportList(BaseModel):
+    model_config = _WIRE
+
+    imports: list[ReleaseImport]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
+
+
 class ReleaseList(BaseModel):
     model_config = _WIRE
 
     releases: list[ReleaseView]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 class ChannelList(BaseModel):
@@ -1094,6 +1261,7 @@ class ChannelHistory(BaseModel):
     model_config = _WIRE
 
     moves: list[ChannelMove]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 class BuildList(BaseModel):
@@ -1106,3 +1274,55 @@ class ExportList(BaseModel):
     model_config = _WIRE
 
     exports: list[ExportRecord]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
+
+
+class ProvenanceQuery(BaseModel):
+    """Body of `POST /domains/{domain}/provenance/{upstream,downstream}`."""
+
+    model_config = _WIRE
+
+    ids: Annotated[list[DigestField], Field(max_length=PROVENANCE_START_MAX)] = []
+    keys: Annotated[list[DigestField], Field(max_length=PROVENANCE_START_MAX)] = []
+    depth: Annotated[StrictInt, Field(ge=1, le=PROVENANCE_DEPTH_MAX)] = PROVENANCE_DEPTH_MAX
+
+
+# --- event stream (P2-05) ------------------------------------------------------------------------
+
+EVENT_PAGE_MAX: Final = 1000
+"""The most events one `events_after` call returns."""
+
+
+class StoredEvent(BaseModel):
+    """An event with its id in the `events` table. Ids grow in commit order within a domain
+    (the stores serialize the inserts of a domain), so `events_after(id)` resumes a stream
+    without gaps: the SSE `id:` field (`Last-Event-ID`)."""
+
+    model_config = _FROZEN
+
+    id: StrictInt
+    event: Event
+
+
+class EventReader(Protocol):
+    """What the service's event stream reads (P2-05 R2, R6). Only the PostgreSQL and in-memory
+    stores implement it: the stream is served by the metadata service, never read over HTTP as
+    a store."""
+
+    def events_after(
+        self,
+        after: int,
+        *,
+        build: BuildId | None = None,
+        domain: str | None = None,
+        limit: int = EVENT_PAGE_MAX,
+    ) -> list[StoredEvent]:
+        """The events with an id above `after` of `build`, or of every build of `domain`
+        (exactly one of the two), oldest first, at most `limit` (1..EVENT_PAGE_MAX)."""
+        ...
+
+    def prune_events(self, before: datetime, *, dry_run: bool = False) -> list[str]:
+        """Drop every month of events stored (by the store's clock, not the events' `ts`) that
+        ends at or before `before` (UTC months, the partitions of the `events` table); return
+        them as `YYYY-MM`, oldest first."""
+        ...

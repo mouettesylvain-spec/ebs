@@ -21,22 +21,33 @@ from ebs.meta._common import (
     check_blobs,
     check_by,
     check_digest,
+    check_event_query,
     check_exportable,
     check_final_status,
     check_lease_ttl,
     check_pin,
     check_release,
+    check_release_imports,
     check_result,
     check_run,
     check_set_channel,
     check_toolchain,
+    check_walk,
+    edge_models,
     edge_rows,
+    month_name,
+    month_start,
+    next_month,
+    provenance_graph,
+    release_matches,
     revalidate,
     stored_result,
     touch_cutoff,
     transition,
+    walk_levels,
 )
 from ebs.meta.api import (
+    EVENT_PAGE_MAX,
     ActionRow,
     ActionState,
     BlobRef,
@@ -56,11 +67,15 @@ from ebs.meta.api import (
     GcRoots,
     GcRun,
     LeaseId,
+    ProvenanceAction,
+    ProvenanceGraph,
     RegisterOutcome,
     ReleaseCreate,
     ReleaseId,
+    ReleaseImport,
     ReleaseView,
     ResultManifest,
+    StoredEvent,
     Tombstone,
     ToolchainCreate,
     ToolchainRecord,
@@ -115,7 +130,9 @@ class InMemoryMetadataStore:
         self._uuids: set[str] = set()
         self._edges: dict[_EdgeKey, tuple[str, str | None]] = {}  # -> object_id, content
         self._blobs: dict[tuple[str, str], _Blob] = {}
-        self._events: list[Event] = []
+        self._events: list[StoredEvent] = []
+        self._stored_at: dict[int, datetime] = {}  # id -> store clock (the PG partition key)
+        self._last_event = 0
         self._toolchains: dict[str, ToolchainRecord] = {}
         self._toolchain_manifests: dict[str, bytes] = {}
         self._leases: dict[int, _Lease] = {}
@@ -128,6 +145,7 @@ class InMemoryMetadataStore:
         self._channels: dict[tuple[str, str, str], int] = {}  # -> last history entry
         self._history: list[ChannelMove] = []
         self._exports: list[ExportRecord] = []
+        self._release_imports: dict[int, dict[str, ReleaseImport]] = {}  # build -> alias -> row
 
     # --- action cache ---------------------------------------------------------------------------
 
@@ -288,6 +306,23 @@ class InMemoryMetadataStore:
             # A finished build holds no lease; a pin is a separate root.
             for lease in [i for i, x in self._leases.items() if x.build == build]:
                 del self._leases[lease]
+
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        with self._lock:
+            b = self._build(build)
+            recorded = self._release_imports.get(build, {})
+            ids = {int(r.release) for r in imports}
+            new = check_release_imports(
+                build, b.view.domain, imports, {i: self._release(i) for i in ids},
+                {alias: int(r.release) for alias, r in recorded.items()},
+            )  # fmt: skip
+            self._release_imports.setdefault(build, {}).update((r.alias, r) for r in new)
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        with self._lock:
+            self._build(build)
+            rows = self._release_imports.get(build, {})
+            return [rows[alias] for alias in sorted(rows)]
 
     def get_build(self, build: BuildId) -> BuildView:
         with self._lock:
@@ -551,6 +586,85 @@ class InMemoryMetadataStore:
             ]
         return sorted(found, reverse=True)
 
+    # --- provenance (ProvenanceStore, P2-04) -----------------------------------------------------
+
+    def provenance_upstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        return self._walk("upstream", domain, ids, keys, depth)
+
+    def provenance_downstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        return self._walk("downstream", domain, ids, keys, depth)
+
+    def _walk(
+        self, way: str, domain: str, ids: Iterable[Digest], keys: Iterable[Digest], depth: object
+    ) -> ProvenanceGraph:
+        domain, id_list, key_list, levels = check_walk(
+            domain, ids, keys, depth, f"provenance_{way}"
+        )
+        with self._lock:
+            edges = edge_models(
+                (
+                    (key, direction, path, oid, content)
+                    for (d, key, direction, path), (oid, content) in self._edges.items()
+                    if d == domain
+                ),
+                f"provenance_{way} {domain}",
+            )
+            # follow: the direction whose ids lead to the next level (the other one leads back).
+            follow = "in" if way == "upstream" else "out"
+            ahead: dict[str, set[str]] = {}  # key -> ids on its `follow` edges
+            behind: dict[str, set[str]] = {}  # id -> keys holding it on a `back` edge
+            by_content: dict[str, set[str]] = {}  # upstream only: content digest -> producers
+            for e in edges:
+                k, oid = str(e.action_key), str(e.object_id)
+                if e.direction == follow:
+                    ahead.setdefault(k, set()).add(oid)
+                    continue
+                behind.setdefault(oid, set()).add(k)
+                if e.content_digest is not None and way == "upstream":
+                    by_content.setdefault(str(e.content_digest), set()).add(k)
+
+            def step(level: set[str]) -> set[str]:
+                return {n for k in level for i in ahead.get(k, ()) for n in behind.get(i, ())}
+
+            first = set(key_list) | {
+                k for i in id_list for k in behind.get(i, set()) | by_content.get(i, set())
+            }
+            walked, truncated = walk_levels(first, step, levels)
+            kept = [e for e in edges if str(e.action_key) in walked]
+            objects = set(id_list) | {str(e.object_id) for e in kept}
+            rows = [
+                self._provenance_action(b, row)
+                for b in self._builds.values()
+                if b.view.domain == domain
+                for row in b.actions.values()
+                if row.key is not None and str(row.key) in walked
+            ]
+            found = [
+                match
+                for rid in sorted(self._releases)
+                if (rel := self._release(rid)) is not None and rel.domain == domain
+                for match in release_matches(rel, objects)
+            ]
+        return provenance_graph(domain, kept, rows, found, truncated)
+
+    @staticmethod
+    def _provenance_action(b: _Build, row: ActionRow) -> ProvenanceAction:
+        assert row.key is not None
+        result = b.results.get(row.action_id)
+        status = None if result is None else result.get("status")
+        return ProvenanceAction(
+            key=row.key, build=b.view.id, action_id=row.action_id, step=row.step, rule=row.rule,
+            params=row.params, toolchain=row.toolchain, state=row.state, cached=row.cached,
+            status=status, finished_at=row.finished_at,  # type: ignore[arg-type]
+            project=b.view.project, flow_repo=b.view.flow_repo, flow_commit=b.view.flow_commit,
+            flow_dirty=b.view.flow_dirty, user_name=b.view.user_name,
+            build_created_at=b.view.created_at,
+        )  # fmt: skip
+
     def record_export(self, release: ReleaseId, to_domain: str, *, by: str) -> ReleaseView:
         check_domain(to_domain)
         by = check_by(by, "record_export")
@@ -723,7 +837,58 @@ class InMemoryMetadataStore:
         checked = revalidate(event, Event, "emit")
         with self._lock:
             self._build(checked.build)
-            self._events.append(checked)
+            self._last_event += 1
+            self._events.append(StoredEvent(id=self._last_event, event=checked))
+            self._stored_at[self._last_event] = self._clock.now()
+
+    def events_after(
+        self,
+        after: int,
+        *,
+        build: BuildId | None = None,
+        domain: str | None = None,
+        limit: int = EVENT_PAGE_MAX,
+    ) -> list[StoredEvent]:
+        check_event_query(build, domain, limit)
+        with self._lock:
+            found = [
+                e
+                for e in self._events
+                if e.id > after
+                and (
+                    e.event.build == build
+                    if build is not None
+                    else self._builds[e.event.build].view.domain == domain
+                )
+            ]
+        return found[:limit]
+
+    def ensure_event_partitions(self, at: datetime, *, months_ahead: int = 1) -> list[str]:
+        """Nothing to create in memory: the months `PgMetadataStore` would partition."""
+        month, names = month_start(at), []
+        for _ in range(months_ahead + 1):
+            names.append(f"events_y{month.year:04}m{month.month:02}")
+            month = next_month(month)
+        return names
+
+    def prune_events(self, before: datetime, *, dry_run: bool = False) -> list[str]:
+        with self._lock:
+            months = sorted(
+                {
+                    start
+                    for e in self._events
+                    if next_month(start := month_start(self._stored_at[e.id])) <= before
+                }
+            )
+            if not dry_run:
+                gone = set(months)
+                # Ids are kept: the list stays in id order, and new ids continue after the last.
+                kept = [e for e in self._events if month_start(self._stored_at[e.id]) not in gone]
+                for e in self._events:
+                    if month_start(self._stored_at[e.id]) in gone:
+                        del self._stored_at[e.id]
+                self._events = kept
+        return [month_name(m) for m in months]
 
     # --- toolchain registry ---------------------------------------------------------------------
 

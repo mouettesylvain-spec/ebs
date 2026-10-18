@@ -206,6 +206,7 @@ DIGEST_COLUMNS = {
     ("builds", "plan_digest"),
     ("actions", "key"),
     ("actions", "result_key"),
+    ("actions", "toolchain"),  # P2-04
     ("action_cache", "key"),
     ("blobs", "digest"),
     ("provenance_edges", "action_key"),

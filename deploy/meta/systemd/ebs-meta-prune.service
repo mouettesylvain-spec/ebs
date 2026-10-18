@@ -1,0 +1,23 @@
+# Retention of the metadata service's events table (P2-05 R6): drops the monthly partitions older
+# than [meta_service.events].retention_days (default 180) and creates next month's partition.
+#   install -m 644 ebs-meta-prune.service ebs-meta-prune.timer /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now ebs-meta-prune.timer
+
+[Unit]
+Description=EBS metadata service: event retention
+Documentation=https://github.com/mouettesylvain-spec/ebs/blob/main/deploy/meta/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ebs-meta
+Group=ebs-meta
+Environment=EBS_CONFIG=/etc/ebs/config.toml
+ExecStart=/opt/ebs/bin/python -m ebs.meta.service events prune
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

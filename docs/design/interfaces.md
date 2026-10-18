@@ -212,7 +212,10 @@ def with_key(spec: ActionSpec) -> ActionSpec: ...             # key set, or None
 
 Supporting types (P0-08, `ebs.plan.types`): `RuleRef(kind, version)`, `ToolchainRef(name, module,
 id)`, `SourceInput(input, pattern)`, `ActionOutputInput(action_id, output)`, `ImportInput(name,
-path)` (P2-03), `OutputSpec(name, path, type: "file"|"dir", deterministic, optional)`,
+path, content)` (P2-03; **CONTRACT CHANGE:** `content` added: the digest of the bytes to stage,
+the id except for a whole `deterministic: false` release output; not in the key), `ImportPin(domain,
+name, version, channel, release, outputs: {name: ImportedOutput(id, digest, type)})` and
+`PlanLock(digest, imports: {alias: ImportPin})` (P2-03, what `ebs.release.lock.plan_lock` builds), `OutputSpec(name, path, type: "file"|"dir", deterministic, optional)`,
 `DebugSpec(collect, max_size: bytes | None, on_success)`, `FlowInfo(path, git: GitInfo | None)`,
 `GitInfo(repo, commit, dirty)`, `PlanToolchain(module, id, env)`, `Plan(ebs_version, domain, project,
 flow, toolchains, actions, edges, lock, key_schema, v)` with `Plan.action(id)`,
@@ -285,7 +288,24 @@ class Snapshotter(Protocol):        # implemented by ebs.sources.SourceSnapshott
 
 - `base` is the flow directory (tables and source globs resolve against it); `info` is recorded
   as plan.json `flow` (default `{"path": "flow.yaml", "git": null}`). `rehash=True` requires a
-  snapshotter with `rehash` set. `${imports.*}` raises `PlanError` until P2-03.
+  snapshotter with `rehash` set.
+- Imports (P2-03; **CONTRACT CHANGE:** `plan(…, lock: PlanLock | None = None)`): every flow
+  import needs a pin whose `name` equals `from`, whose `domain` is the flow's, and whose
+  `channel` (or `version`) is the one the flow asks for; else `PlanError` naming
+  `ebs lock update <alias>`. The planner never resolves channels. `${imports.A}` renders
+  `imports/A` (`${imports.A/x}`: `imports/A/x`). As an input value it must come first:
+  `${imports.A}` stages every release output whole at `imports/A/<output>` (kind `tree`/`file`,
+  id = the release's id), `${imports.A}/<output>` one of them, any other `${imports.A}/<glob>`
+  matches the release's files (`ebs.sources.globs.match_paths`, the `resolve_glob` semantics)
+  read from the tree manifests in the consumer domain's CAS (missing: `PlanError` suggesting
+  `ebs release export`); each match is a `file` input at `imports/A/<output>/<path>` with the
+  manifest's digest as id: nothing is re-hashed (a file output keeps the release's id). A
+  pattern starting with an exact output name and `/` globs inside that output only, so output
+  names with `[k=v]` are literal there; a glob matching a symlink is a `PlanError` (import the
+  whole output). Whole outputs keep keys stable across re-releases of the same producer key;
+  globbed files follow their bytes. plan.json `lock` is the lock digest when the
+  flow has imports, else null. Import source JSON: `{"type": "import", "name", "path",
+  "content"}`.
 - `refine` is idempotent and processes actions in plan order, so one call propagates through
   chains of nondeterministic outputs; ids of nondeterministic outputs always come from the
   producer's key, never from `produced`.
@@ -376,6 +396,10 @@ re-validated on write (values must also pass `canonical_json`).
 - `cache_put` is insert-if-absent and requires `result.action_key == key`. `cache_get` counts a
   hit on every call and rewrites `last_access` at most once per hour (`TOUCH_INTERVAL_S`); `touch`
   applies the same throttle to known `blobs` rows and ignores unknown digests.
+- `ActionRow.rule` (rule kind), `params` (`ParamJson` values: str, int, bool, list of str) and
+  `toolchain` (toolchain id) are what the plan says the action is (**CONTRACT CHANGE (P2-04)**:
+  new optional fields, None on rows written before; migration 0010). The driver sets them in
+  `add_actions` (`ebs.driver.build.action_row`); they never change afterwards.
 - Domains are registered implicitly by the first `create_build`/`cache_put` naming them
   (`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`, as the fs CAS); P2-01 adds the admin side.
 - `InfraReason = oom | timeout | node_fail | preempted | license | runner_crash |
@@ -478,6 +502,47 @@ re-validated on write (values must also pass `canonical_json`).
   exported, to_domain, exported_at, exported_by}` audit row, atomically), `list_exports(release)`
   (rows naming it as source or copy). Release outputs (content digests, also of yanked releases)
   are `GcRoots.released`.
+- `ProvenanceStore` (P2-04; PostgreSQL as one recursive CTE, in-memory, HTTP; part of
+  `MetadataBackend`). **CONTRACT CHANGE (P2-04):** new protocol and models. `provenance_upstream(
+  domain, *, ids, keys, depth)` / `provenance_downstream(...)` -> `ProvenanceGraph{domain, edges:
+  [ProvenanceEdge{action_key, direction, logical_path, object_id, content_digest}] (by key,
+  direction, path), actions: [ProvenanceAction{key, build, action_id, step, rule, params,
+  toolchain, state, cached, status (of the recorded result), finished_at, project, flow_repo,
+  flow_commit, flow_dirty, user_name, build_created_at}] (by build, action id; every row holding
+  a walked key, cache hits included), releases: [ProvenanceRelease{release, name, version, output,
+  object_id, exported_from, yanked}] (outputs whose id is in the graph), truncated}`. Walks stay
+  in one domain and count action levels, `1..PROVENANCE_DEPTH_MAX` (200): upstream level 1 is
+  `keys` plus the producers of `ids` (as passed-down id or content digest), level n+1 the
+  producers of level n's inputs; downstream level 1 is `keys` plus the consumers of `ids`, level
+  n+1 the consumers of level n's outputs. `truncated`: a level past `depth` has unwalked keys.
+- `ebs.release.provenance` (L3, P2-04): `why(store, domain, *, ids, keys, depth) -> Lineage{graphs,
+  links: [ExportLink{domain, release, source_domain, source, export}], hidden: [Hidden{domain |
+  None, release, reason}]}` (an id with no producer that is an output of an exported release
+  continues in the source domain, found only through the export's audit row, `list_exports`);
+  `downstream(store, release)` (the release's domain, then through the exports of it and of every
+  release found downstream); `used_by(store, release) -> UsedBy{builds, releases (via "outputs" |
+  "export"), hidden, truncated}` (not the release's own build); `sim_runs(store, release) ->
+  [TestRun{domain, build, action_id, step, rule, test, seed, status, state, cached, toolchain,
+  finished_at, project}]` (rules `*.sim`); `latest(runs)` (newest per (test, seed));
+  `sources(lineage)`, `lineage_doc`, `to_dot`, `junit_xml(runs, *, suite)`. Over HTTP each walk
+  is a domain-scoped route call, so what the caller cannot read is in `hidden`, never data (R4).
+- Release imports (P2-03, `MetadataStore`; **CONTRACT CHANGE:** new methods):
+  `record_release_imports(build, [ReleaseImport{alias, release}])` (all or nothing; every
+  release in the build's domain; the same row again is a no-op, another release for a recorded
+  alias is refused) and `list_release_imports(build)` (by alias). `run_build(…,
+  release_imports=)` records them right after `create_build`. Aliases match
+  `IMPORT_ALIAS_PATTERN`. PostgreSQL: table `release_imports` (revision 0009, append-only).
+- `ebs.release.lock` (L3, P2-03): `flow.lock` models `LockFile{version: 1, imports: {alias:
+  LockEntry{domain, name, version, channel | None, release, outputs: {name: LockedOutput{digest,
+  id, size, type}}}}}`; `parse_lock(text)` / `load_lock(path) -> LockFile | None` (`ReleaseError`
+  when invalid), `dump_lock(lock) -> str` (header comment + YAML with keys sorted at every
+  level; `dump(parse(t)) == t`), `lock_digest(lock)` (canonical JSON of the content),
+  `release_digest(view)` (`{"v": 1, name, version, outputs}`: no domain, so an exported copy
+  pins the same), `plan_lock(lock) -> PlanLock`, `resolve_lock(store, flow, old, aliases=())`
+  (channels and versions resolved in the flow's domain; yanked releases refused; with aliases
+  the others keep their pins), `diff_locks(old, new) -> [LockChange]` (`describe()`,
+  `to_json()`), `import_rows(store, flow, lock) -> [ReleaseImport]` (checks each pinned release
+  still has its digest).
 - `ebs.release` (L3, P2-02): `releases.create_release(store, *, name, version, build, outputs:
   ["step.output", "step.output[*]", "step.output[col=value,…]"], by, notes, allow_failed)`
   (selectors as in flow references; a matrix step needs one; `ReleaseError` for a broken rule),
@@ -527,7 +592,7 @@ in JSON mode (`model_validate_json`):
 | `POST /builds` | `create_build` | `BuildCreate` → `CreatedBuild` |
 | `GET /builds/{b}` | `get_build` | → `BuildView` |
 | `POST /builds/{b}/actions` | `add_actions` | `ActionBatch` → 204 |
-| `GET /builds/{b}/actions[?state=]` | `list_actions` | → `ActionList` |
+| `GET /builds/{b}/actions[?state=]` | `list_actions` | → `ActionList` (paged) |
 | `POST /builds/{b}/actions/{a}/state` | `set_action_state` | `StateChange` → 204 |
 | `PUT /builds/{b}/actions/{a}/result` | `record_result` | `ResultManifest` → 204 |
 | `GET /builds/{b}/actions/{a}/result` | `get_result` | → `OptionalResult` |
@@ -537,28 +602,35 @@ in JSON mode (`model_validate_json`):
 | `PUT /builds/{b}/pin` | `pin_build` (by = caller) | `PinRequest{reason}` → 204 |
 | `DELETE /builds/{b}/pin` | `unpin_build` | → `Changed` |
 | `POST /builds/{b}/events` | `emit` | `Event` → 204 |
+| `POST /builds/{b}/release-imports` | `record_release_imports` | `ReleaseImportBatch{imports}` → 204 (P2-03, `build_write`) |
+| `GET /builds/{b}/release-imports` | `list_release_imports` | → `ReleaseImportList` (paged) |
+| `GET /builds/{b}/events` | `events_after(build=)` | → `text/event-stream` (P2-05, § 6.2) |
+| `GET /domains/{d}/events` | `events_after(domain=)` | → `text/event-stream` (P2-05) |
 | `POST /toolchains` | `register_toolchain` | `ToolchainRegistration` (manifest base64) → `RegisterOutcome` |
-| `GET /toolchains[?module=&current_only=]` | `list_toolchains` | → `ToolchainList` |
+| `GET /toolchains[?module=&current_only=]` | `list_toolchains` | → `ToolchainList` (paged) |
 | `GET /toolchains/current?module=` | `current_toolchain` | → `ToolchainList` (0 or 1) |
 | `GET /toolchains/{id}` | `get_toolchain` | → `ToolchainList` (0 or 1) |
 | `GET /toolchains/{id}/manifest` | `toolchain_manifest` | → `ToolchainManifest` |
 | `POST /toolchains/{id}/touch` | `touch_toolchain` | → 204 |
 | `POST /releases` | `create_release` (by = caller) | `ReleaseCreate` → `ReleaseView` (P2-02, `release_write`) |
-| `GET /releases?domain=[&name=][&version=]` | `list_releases` / `get_release` | → `ReleaseList` |
+| `GET /releases?domain=[&name=][&version=]` | `list_releases` / `get_release` | → `ReleaseList` (paged) |
 | `GET /releases/{id}` | `get_release_by_id` | → `ReleaseList` (0 or 1) |
 | `POST /releases/{id}/yank` | `yank_release` (by = caller) | `YankRequest{reason}` → `ReleaseView` |
 | `POST /releases/{id}/exports` | `record_export` (by = caller) | `ExportRequest{to_domain}` → `ReleaseView` (`release_export`) |
-| `GET /releases/{id}/exports` | `list_exports` | → `ExportList` |
+| `GET /releases/{id}/exports` | `list_exports` | → `ExportList` (paged) |
 | `PUT /channels` | `move_channel` with the service's `[release.gates]` | `ChannelSet{domain, name, channel, release, gate_build}` → `ChannelMove` |
 | `GET /channels?domain=&name=&channel=` | `get_channel` | → `ChannelList` (0 or 1) |
-| `GET /channels/history?domain=&name=&channel=` | `channel_history` | → `ChannelHistory` |
+| `GET /channels/history?domain=&name=&channel=` | `channel_history` | → `ChannelHistory` (paged) |
 | `POST /domains/{d}/gate-builds` | `gate_builds` | `GateQuery{flow, ids}` → `BuildList` |
+| `POST /domains/{d}/provenance/upstream` | `provenance_upstream` (P2-04) | `ProvenanceQuery{ids, keys, depth}` → `ProvenanceGraph` (`read` of `d`) |
+| `POST /domains/{d}/provenance/downstream` | `provenance_downstream` (P2-04) | `ProvenanceQuery{ids, keys, depth}` → `ProvenanceGraph` (`read` of `d`) |
 | `GET /whoami` | — | → caller's principal |
 
 `/healthz` (process) and `/readyz` (database reachable, schema at the migrations' head, else 503)
 need no credentials. Errors are `ErrorBody {detail}`: 401 missing or invalid credentials, 403
-not allowed, 422 invalid request, 409 any other `MetadataError` (the store's message), 503 a
-database outage, 500 a bug. The client raises `MetadataError` with the detail.
+not allowed, 404 no such object, 413 body too large, 422 invalid request, 429 rate limited
+(P2-05), 409 any other `MetadataError` (the store's message), 503 a database outage, 500 a bug.
+The client raises `MetadataError` with the detail.
 
 - **Batches:** `ActionBatch` and `DigestBatch` carry at most `BATCH_MAX = 500` items (422
   otherwise). `HttpMetadataStore.add_actions` refuses duplicate ids over the whole sequence before
@@ -608,6 +680,65 @@ database outage, 500 a bug. The client raises `MetadataError` with the detail.
   build id is now 404, not 409), cache reads (`cache_get`, `lookup`, `resolve_output`,
   `GET /releases/{id}`) answer a miss; a release export also checks the source domain. Only
   `/whoami` and the toolchain registry are domain-free.
+
+### 6.2 Service hardening (P2-05)
+
+- **Dashboard login (R1, `ebs.meta.service.oidc`):** with `[meta_service.oidc]` (`issuer`,
+  `client_id`, `client_secret_file`, `redirect_uri`, `session_secret_file`, `username_claim =
+  "preferred_username"`, `scopes`, `session_ttl_s = 28800`, `login_ttl_s = 600`,
+  `cookie_secure = true`) the service mounts `GET /auth/login?next=`, `GET /auth/callback` and
+  `POST /auth/logout` (outside the API and the OpenAPI document). Authorization code + PKCE
+  (S256) against GitLab; the login state is a signed cookie on `/auth`; the ID token is taken
+  from the token endpoint over TLS (OIDC Core § 3.1.3.7) and its `iss`, `aud`/`azp`, `exp` and
+  `nonce` are checked (so `issuer`, `redirect_uri` and every discovered endpoint must be https
+  unless `allow_insecure_http`, for tests); the user name is `username_claim` (ID token, else userinfo with the same
+  `sub`) and must match `[a-z_][a-z0-9_.-]{0,31}`. The session cookie `ebs_session` (HMAC-SHA256
+  over JSON `{user, csrf, exp}`; keys one per line, the first signs) authenticates as
+  **`Principal(via="session")`** (**CONTRACT CHANGE:** `via` gains `"session"`; `whoami` too),
+  authorized like a MUNGE user of that name (NSS groups). Requests other than GET/HEAD/OPTIONS
+  with a session must send the `ebs_csrf` cookie's value in `X-CSRF-Token`, else 403.
+- **Event stream (R2, `ebs.meta.service.events_stream`):** `GET /builds/{b}/events` (404 outside
+  the caller's domains) and `GET /domains/{d}/events` (403) answer `text/event-stream`: first
+  `retry: <retry_ms>`, then one frame per event, `id: <row id>`, `event: <type>`, `data:
+  <StoredEvent JSON {id, event}>`, and `: keepalive` comments when idle. The stream resumes
+  after the later of `Last-Event-ID` and `?after=` (EventSource reconnects to the same URL). The source is the new store protocol
+  **`EventReader.events_after(after, *, build | domain, limit ≤ EVENT_PAGE_MAX = 1000) ->
+  list[StoredEvent]`** (PostgreSQL and memory stores; not over HTTP). Ids commit in order within a
+  domain: `PgMetadataStore.emit` takes a per-domain advisory lock until commit, so resuming never
+  skips a row. Waiting streams are woken by `Wakeup` (in-process, from the `emit` and `finish`
+  routes) and by `PgEventListener` (LISTEN `ebs_events`; every PostgreSQL `emit` and
+  `finish_build` sends NOTIFY `"<domain> <build>"`), with a slow poll (`poll_s`) as a fallback.
+  A build's stream ends when the build is finished and drained; any stream ends after
+  `max_stream_s` and the client reconnects (`[meta_service.events]`: `poll_s = 15`,
+  `keepalive_s = 15`, `max_stream_s = 300`, `retry_ms = 3000`).
+- **Pagination (R3, `ebs.meta.service.pagination`):** the list routes marked "paged" take
+  `limit` (1..`max_page_size`, the default) and `cursor`, and answer **`next`** (**CONTRACT
+  CHANGE:** `ActionList`, `ReleaseList`, `ToolchainList`, `ChannelHistory`, `ExportList` gain
+  `next: str | None`). A cursor is opaque (the last item's sort key and a query fingerprint):
+  a page resumes after that key, and a cursor of another query is a 422. Order: actions by id,
+  releases by (name, created_at, id), toolchains by (module, registered_at, id), channel moves and
+  exports by id. `HttpMetadataStore` follows `next`, so its list methods still return everything.
+- **Limits (R4, `ebs.meta.service.limits`):** a token bucket per principal (`user:<name>` for
+  MUNGE and session callers, `token:<name>`) checked
+  after authentication: 429 with `Retry-After` (whole seconds). Bodies over `max_body_bytes`
+  answer 413 before any route runs. `[meta_service.limits]`: `rate_per_s = 100`, `burst = 2000`,
+  `max_body_bytes = 16 MiB`, `max_page_size = 1000`. Buckets are per process. **CONTRACT
+  CHANGE:** the client retries a 429 for every call (nothing ran), waiting `Retry-After` (at most
+  60 s) within `[metadata].retries`.
+- **Observability (R5, `ebs.meta.service.metrics`):** `GET /metrics` (no credentials) in the
+  Prometheus text format: `ebs_http_request_duration_seconds{method,route,status}` (histogram per
+  route template; methods outside HTTP's own count as `other`), `ebs_cache_lookups_total{result}`
+  (hit ratio) and `ebs_db_pool_size`,
+  `_checked_out`, `_overflow`; no ids or domain names in labels. Every response carries
+  `X-Request-ID` (the caller's if it matches `[A-Za-z0-9._-]{1,64}`, else a new one), bound into
+  every log line of the request, plus one `request` access line; `serve` logs JSON lines.
+- **Event retention (R6):** revision `0008_events_partitioned` adds `stored_at` (the store's
+  clock at insert) and partitions `events` by its UTC month (`events_yYYYYmMM`, primary key
+  `(id, stored_at)`, ids from `event_id_seq`, partitions created by
+  `ebs.ensure_events_partition(ts)` on first use). The client's `ts` never picks a partition. **`EventReader.prune_events(before, *,
+  dry_run) -> list["YYYY-MM"]`** drops every month of stored events that ends at or before `before`;
+  `python -m ebs.meta.service events prune [--dry-run]` uses `[meta_service.events].
+  retention_days = 180` and creates next month's partition (daily timer in `deploy/meta`).
 
 ## 7. Rules — `ebs.rules.api`
 
@@ -1441,6 +1572,27 @@ be in the release's domain and have `passed` (checked by the CLI), else exit 2 w
 is checked against the channel's gate policy, and without one is recorded as the move's gate
 (`{flow: <its project>, build}`) on a direct database. Through the HTTP service only `gate_build`
 is sent; the stored gate is whatever the service's own policy decides.
+
+**`ebs why TARGET [--domain D] [--build B] [--depth N] [--json | --dot]`**, **`ebs used-by NAME
+VERSION`**, **`ebs tests NAME VERSION [--latest] [--junit FILE]`** (P2-04; `ebs.release.provenance`,
+all with `--domain D`, `--depth N`, `--json`). TARGET: a digest (object id, content digest or
+action key), `NAME@VERSION[:OUTPUT]`, or an action id of `--build` (default the latest build
+here). `why` prints the upstream tree (action, rule, result, build, project@commit, toolchain,
+params, inputs down to `(source)`), `--json` `lineage_doc` (v1: `truncated, graphs, links,
+hidden, sources, target, domain`), `--dot` a Graphviz digraph; `used-by` lists builds and
+releases; `tests` lists the runs (domain, build, test, seed, status, toolchain, finished, action),
+`--json` `{v: 1, release, tests}`; `--junit` writes one JUnit testsuite (failed result: failure,
+no result: skipped). An unknown release or action exits 2.
+**`ebs lock update [ALIAS…] [-f FLOW] [--json]`**, **`ebs lock check [-f FLOW] [--json]`**
+(P2-03; `ebs.release.lock`): `update` resolves the flow's imports with the metadata store,
+prints one line per changed alias (`rtl: rtl-team/cpu 1 → 2 (channel stable); changed
+pack.srcs`, `rtl: added …`, `rtl: removed (was …)`) and rewrites `flow.lock` next to the flow
+when its text changes; with aliases only those move. `check` exits 1 when `update` would change
+the file (content or layout, or no file), printing the same lines, and writes nothing. `--json`:
+`{"changes": [{"alias", "change": "added|removed|changed", "name", "old_version", "new_version",
+"outputs_changed", "outputs_added", "outputs_removed"}], "written"}`. `ebs plan`/`build` of a
+flow with imports read `flow.lock` (missing or stale: exit 2); `build` records the
+`release_imports` rows.
 
 **`ebs gc [--dry-run] [--domain D] [--json]`** (P1-09; `ebs.gc`): collects one domain (default
 `[gc].domain`) as the GC service account; needs `[metadata].url` = a `postgresql` URL (direct

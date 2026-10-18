@@ -52,6 +52,7 @@ from ebs.gc.access import put_registered
 from ebs.meta.api import BuildStatus, CacheMode, Event, MetadataStore
 from ebs.plan.planfile import encode, plan_digest
 from ebs.plan.types import Plan
+from ebs.release.lock import import_rows
 
 __all__ = ["build_command"]
 
@@ -284,6 +285,7 @@ def build_command(
         raise ConfigError("no metadata store")
     retry = ReasonRetry(RetrySettings.from_config(services.config()))  # bad [retry]: fail early
     planned = make_plan(services, out, flow_file, targets=steps or (), rehash=rehash)
+    imports = import_rows(store, planned.flow, planned.lock) if planned.lock is not None else []
     view = _View(out, planned.plan, services, planned.path)
     tapped = cast(MetadataStore, _Tap(store, view.on_event))
     log_dir = services.cwd / ".ebs" / "logs"
@@ -315,6 +317,7 @@ def build_command(
                 clock=services.clock,
                 retry=retry,
                 handle_sigint=True,
+                release_imports=imports,
             )
     except BaseException as exc:
         view.finish(

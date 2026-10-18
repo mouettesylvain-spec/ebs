@@ -45,6 +45,7 @@ REVIEWED: Final[dict[str, str]] = {
     "actions.action_id": NAME, "actions.step": NAME, "actions.key": DIGEST,
     "actions.state": ENUM, "actions.slurm_job_id": NAME, "actions.pending_reason": ENUM,
     "actions.infra_reason": ENUM, "actions.result_key": DIGEST, "actions.result": META,
+    "actions.rule": NAME, "actions.params": META, "actions.toolchain": DIGEST,  # P2-04
     "events.type": ENUM, "events.action_id": NAME, "events.data": META,
     "leases.domain": NAME, "lease_objects.digest": DIGEST,
     "pins.domain": NAME, "pins.pinned_by": NAME, "pins.reason": TEXT,
@@ -58,6 +59,7 @@ REVIEWED: Final[dict[str, str]] = {
     "channels.domain": NAME, "channels.name": NAME, "channels.channel": NAME,
     "channels.updated_by": NAME,
     "exports.to_domain": NAME, "exports.exported_by": NAME,
+    "release_imports.alias": NAME,
 }  # fmt: skip
 
 _SCALARS = (sa.Integer, sa.BigInteger, sa.Boolean, sa.DateTime, sa.Numeric)
