@@ -10,11 +10,14 @@ name: ci
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    # keep in sync with push below; docs/user is re-included: tests/e2e/test_docs.py runs it
-    paths: ["**", "!docs/**", "!**/*.md", "!.claude/**", "docs/user/**"]
+    # keep in sync with push below. The site has its own workflow (site.yml); its start/ and
+    # tutorials/ pages are re-included because tests/e2e/test_docs.py runs them.
+    paths: ["**", "!docs/**", "!**/*.md", "!.claude/**", "!site/**",
+            "site/src/content/docs/start/**", "site/src/content/docs/tutorials/**"]
   push:
     branches: [main]
-    paths: ["**", "!docs/**", "!**/*.md", "!.claude/**", "docs/user/**"]
+    paths: ["**", "!docs/**", "!**/*.md", "!.claude/**", "!site/**",
+            "site/src/content/docs/start/**", "site/src/content/docs/tutorials/**"]
 
 permissions:
   contents: read
