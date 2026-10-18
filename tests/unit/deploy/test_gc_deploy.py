@@ -39,4 +39,6 @@ def test_timer_is_nightly() -> None:
 def test_example_config_is_valid() -> None:
     config = tomllib.loads((GC / "gc.toml.example").read_text())
     assert MetadataConfig.from_mapping(config["metadata"]).url.startswith("postgresql")
-    assert GcConfig.from_mapping(config["gc"]) == GcConfig()
+    section = dict(config["gc"])
+    assert section.pop("domains") == ["cpu-nda"]  # P2-01 R5: explicitly listed
+    assert GcConfig.from_mapping(section) == GcConfig()

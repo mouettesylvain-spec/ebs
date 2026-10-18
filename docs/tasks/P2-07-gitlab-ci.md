@@ -1,6 +1,6 @@
 # P2-07 — GitLab CI integration
 
-Status: todo · Phase: 2 · Depends on: P2-02 · Size: M
+Status: review · Phase: 2 · Depends on: P2-02 · Size: M
 
 ## Goal
 CI pipelines run `ebs build --ci --cache=write`, show test results in merge requests and can gate channel
@@ -32,3 +32,24 @@ promotion.
 | `test_gitlab.py::test_summary_files` | R3 | unit |
 | `tests/e2e/test_ci_mode.py::test_gate` | R4 | e2e |
 | `test_gitlab.py::test_token_redacted` | R5 | unit |
+
+## Notes
+- Dependency added (dev only): `xmlschema`, to validate the JUnit report against an XSD (R2); no
+  XSD validator was available (`lxml` is not a dependency). The schema,
+  `tests/fixtures/ci/junit.xsd`, follows the Jenkins `junit-10.xsd` structure GitLab's parser
+  reads, plus testcase `properties` (for `ebs.cached`).
+- P2-02 was `review` (merged to main), treated as done.
+- R1 CI QOS: `ebs build` still only offers the local executor, so `--ci` passes
+  `build_kind="ci"` and `project` to `SiteServices.open_executor`; whoever wires the SLURM
+  executor into `ebs build` (P1-12/P2-08) must forward them to `SlurmExecutor`.
+- R1 metadata: stored in the `build_started` event (`ci`), `build.json` (`ci`) and the existing
+  `ci_job` column (job URL); no schema migration. CONTRACT CHANGE: `run_build(ci=…)`.
+- "Sim action" = any action with a `test` param (classname = step, name = `test[seed]`).
+- R4: `--if-passing` reads `--gate-build`, else `$EBS_BUILD_ID`. A failed gate exits 2 like the
+  existing P2-02 gate errors (`ReleaseError`). Through the HTTP metadata service the stored gate
+  record is the service's (its own policy); the "build passed" check runs in the CLI.
+- R5: masked are the values of `EBS_META_TOKEN`, `CI_JOB_TOKEN`, `CI_REGISTRY_PASSWORD`,
+  `CI_DEPLOY_PASSWORD`, `CI_JOB_JWT(_V2)`; the content of `[metadata].token_file` is not (it
+  is never printed). Follow-up: mask it too if a tool could print it.
+- Follow-up: the summary's build link needs `[ci].build_url` until the dashboard (P2-06) defines
+  build URLs.

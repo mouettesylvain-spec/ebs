@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from datetime import datetime, timedelta
+import re
+from collections.abc import Callable, Iterable, Mapping
+from datetime import UTC, datetime, timedelta
 from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -12,16 +13,29 @@ from ebs.core.canon import canonical_json
 from ebs.core.digest import Digest
 from ebs.core.errors import CanonError, DigestError, MetadataError
 from ebs.meta.api import (
+    CHANNEL_PATTERN,
+    EVENT_PAGE_MAX,
     FINAL_BUILD_STATUSES,
     MAX_LEASE_TTL_S,
+    PROVENANCE_DEPTH_MAX,
     TOUCH_INTERVAL_S,
     ActionRow,
     ActionUpdate,
     BlobRef,
+    BuildView,
     GcRun,
+    ProvenanceAction,
+    ProvenanceEdge,
+    ProvenanceGraph,
+    ProvenanceRelease,
+    ReleaseCreate,
+    ReleaseImport,
+    ReleaseView,
     ResultManifest,
     ToolchainCreate,
+    check_domain,
     check_transition,
+    release_output_name,
 )
 
 _M = TypeVar("_M", bound=BaseModel)
@@ -242,3 +256,264 @@ def _parse(value: str) -> Digest | None:
         return Digest.parse(value)
     except DigestError:
         return None
+
+
+# --- releases (P2-02) ----------------------------------------------------------------------------
+
+PASSED_STATES: frozenset[str] = frozenset({"done", "cached"})
+"""Action states whose recorded result may be released without `allow_failed`."""
+
+
+def check_by(by: object, what: str) -> str:
+    if not isinstance(by, str) or not by or len(by) > 256:
+        raise MetadataError(f"{what}: the author must be a non-empty name, got {by!r}")
+    return by
+
+
+def check_release(
+    spec: ReleaseCreate,
+    build: BuildView,
+    rows: Mapping[str, ActionRow],
+    results: Mapping[str, ResultManifest],
+) -> None:
+    """Raise MetadataError unless `spec` may be created from `build` (P2-02 R1): the build is
+    in the release's domain and finished, and every output is exactly what its action recorded,
+    from an action that passed (or `allow_failed` says why not)."""
+    what = f"release {spec.name} {spec.version}"
+    if build.domain != spec.domain:
+        raise MetadataError(
+            f"{what}: build {build.id} is in domain {build.domain!r}, not {spec.domain!r}; a "
+            "release is created in its build's domain (`ebs release export` copies it to another)"
+        )
+    if build.status == "running":
+        raise MetadataError(
+            f"{what}: build {build.id} is still running; release it once it has finished"
+        )
+    failed: list[str] = []
+    for name, out in sorted(spec.outputs.items()):
+        if name != release_output_name(out.action_id, out.output):
+            raise MetadataError(
+                f"{what}: output {name!r} must be named "
+                f"{release_output_name(out.action_id, out.output)!r}"
+            )
+        row, result = rows.get(out.action_id), results.get(out.action_id)
+        if row is None:
+            raise MetadataError(f"{what}: build {build.id} has no action {out.action_id!r}")
+        recorded = None if result is None else result.outputs.get(out.output)
+        if recorded is None:
+            raise MetadataError(
+                f"{what}: action {out.action_id!r} of build {build.id} recorded no output "
+                f"{out.output!r}"
+            )
+        if (recorded.digest, recorded.id, recorded.type, recorded.size) != (
+            out.digest, out.id, out.type, out.size,
+        ):  # fmt: skip
+            raise MetadataError(
+                f"{what}: output {name!r} does not match what build {build.id} recorded "
+                f"({recorded.type} {recorded.digest}, id {recorded.id})"
+            )
+        assert result is not None
+        if row.state not in PASSED_STATES or result.status != "passed":
+            failed.append(f"{out.action_id} ({row.state}, {result.status})")
+    if failed and spec.allow_failed is None:
+        raise MetadataError(
+            f"{what}: these actions did not pass: {', '.join(failed)}; release only passed "
+            "outputs, or give --allow-failed REASON (the reason is stored with the release)"
+        )
+
+
+def check_set_channel(release: ReleaseView | None, domain: str, name: str, channel: str) -> None:
+    check_domain(domain)
+    where = f"channel {name}:{channel} in domain {domain!r}"
+    if not isinstance(channel, str) or re.fullmatch(CHANNEL_PATTERN, channel) is None:
+        raise MetadataError(
+            f"{where}: invalid channel name; use lower-case letters, digits, '_' or '-', "
+            "starting with a letter"
+        )
+    if release is None:
+        raise MetadataError(f"{where}: no such release")
+    if (release.domain, release.name) != (domain, name):
+        raise MetadataError(
+            f"{where}: release {release.id} is {release.name} {release.version} in domain "
+            f"{release.domain!r}; a channel points at releases of its own name and domain"
+        )
+    if release.yanked_at is not None:
+        raise MetadataError(
+            f"{where}: release {release.name} {release.version} is yanked "
+            f"({release.yank_reason}); point the channel at another release"
+        )
+
+
+def check_exportable(release: ReleaseView) -> None:
+    if release.yanked_at is not None:
+        raise MetadataError(
+            f"release {release.name} {release.version} is yanked ({release.yank_reason}); a "
+            "yanked release is not exported"
+        )
+
+
+# --- provenance walks (P2-04) ---------------------------------------------------------------------
+
+
+def check_walk(
+    domain: object, ids: Iterable[Digest], keys: Iterable[Digest], depth: object, what: str
+) -> tuple[str, list[str], list[str], int]:
+    """(domain, sorted ids, sorted keys, depth) of a walk, or MetadataError."""
+    check_domain(domain)
+    assert isinstance(domain, str)
+    if (
+        isinstance(depth, bool)
+        or not isinstance(depth, int)
+        or not 1 <= depth <= (PROVENANCE_DEPTH_MAX)
+    ):
+        raise MetadataError(
+            f"{what}: depth must be an integer from 1 to {PROVENANCE_DEPTH_MAX}, got {depth!r}"
+        )
+    id_list = sorted({str(check_digest(d, f"{what} id")) for d in ids})
+    key_list = sorted({str(check_digest(k, f"{what} key")) for k in keys})
+    return domain, id_list, key_list, depth
+
+
+def edge_models(
+    rows: Iterable[tuple[str, str, str, str, str | None]], what: str
+) -> list[ProvenanceEdge]:
+    """`ProvenanceEdge`s of stored rows (action_key, direction, logical_path, object_id,
+    content_digest), validated like any database row. Each distinct digest string is parsed
+    once: a large walk repeats every object id on several edges (P2-04 R5)."""
+    parsed: dict[str, Digest] = {}
+
+    def digest(text: str) -> Digest:
+        found = parsed.get(text)
+        if found is None:
+            found = parsed[text] = Digest.parse(text)
+        return found
+
+    try:
+        return [
+            ProvenanceEdge(
+                action_key=digest(key), direction=direction,  # type: ignore[arg-type]
+                logical_path=path, object_id=digest(oid),
+                content_digest=None if content is None else digest(content),
+            )
+            for key, direction, path, oid, content in rows
+        ]  # fmt: skip
+    except (DigestError, ValidationError) as exc:
+        raise MetadataError(f"{what}: a stored provenance edge is invalid: {exc}") from None
+
+
+def walk_levels(
+    first: set[str], step: Callable[[set[str]], set[str]], depth: int
+) -> tuple[set[str], bool]:
+    """Breadth-first: `first` is level 1, `step(level)` the keys next to it. Returns the keys
+    of levels 1..depth and whether a level beyond `depth` has keys not walked (truncated)."""
+    seen, level = set(first), set(first)
+    for _ in range(depth - 1):
+        if not level:
+            break
+        level = step(level) - seen
+        seen |= level
+    return seen, bool(level) and bool(step(level) - seen)
+
+
+def _edge_order(e: ProvenanceEdge) -> tuple[str, str, str, str]:
+    # Plain strings compare much faster than Digest dataclasses; the order is the same.
+    return (e.action_key.algo, e.action_key.hex, e.direction, e.logical_path)
+
+
+def provenance_graph(
+    domain: str,
+    edges: Iterable[ProvenanceEdge],
+    actions: Iterable[ProvenanceAction],
+    releases: Iterable[ProvenanceRelease],
+    truncated: bool,
+    *,
+    presorted: bool = False,
+) -> ProvenanceGraph:
+    """The graph with its lists in the documented order (the same from every store).
+    `presorted`: edges and actions already are (PostgreSQL sorts them in byte order, which is
+    Python's string order); re-sorting 50k edges was a large part of a big walk (R5)."""
+    return ProvenanceGraph(
+        domain=domain,
+        edges=list(edges) if presorted else sorted(edges, key=_edge_order),
+        actions=list(actions)
+        if presorted
+        else sorted(actions, key=lambda a: (a.build, a.action_id)),
+        releases=sorted(releases, key=lambda r: (r.release, r.output)),
+        truncated=truncated,
+    )
+
+
+def release_matches(release: ReleaseView, objects: set[str]) -> list[ProvenanceRelease]:
+    """The outputs of `release` whose id is in `objects`."""
+    return [
+        ProvenanceRelease(
+            release=release.id, name=release.name, version=release.version, output=name,
+            object_id=o.id, exported_from=release.exported_from,
+            yanked=release.yanked_at is not None,
+        )
+        for name, o in sorted(release.outputs.items())
+        if str(o.id) in objects
+    ]  # fmt: skip
+
+
+def check_release_imports(
+    build: int,
+    domain: str,
+    rows: Iterable[ReleaseImport],
+    releases: Mapping[int, ReleaseView | None],
+    recorded: Mapping[str, int],
+) -> list[ReleaseImport]:
+    """The rows of `rows` not recorded yet (P2-03 R5); MetadataError if one breaks a rule.
+
+    `releases` maps each row's release id to the stored release (None: unknown); `recorded`
+    maps the build's recorded aliases to their release ids.
+    """
+    what = f"record_release_imports for build {build}"
+    new: dict[str, ReleaseImport] = {}
+    for row in rows:
+        row = revalidate(row, ReleaseImport, what)
+        release = releases.get(int(row.release))
+        if release is None or release.domain != domain:
+            # The same answer for another domain's release: ids reveal nothing across domains.
+            raise MetadataError(
+                f"{what}: import {row.alias!r}: no release with id {row.release} in the "
+                f"build's domain {domain!r}; a build imports releases of its own domain (export "
+                "one into it and pin that copy)"
+            )
+        before = recorded.get(row.alias, new[row.alias].release if row.alias in new else None)
+        if before is not None and int(before) != int(row.release):
+            raise MetadataError(
+                f"{what}: the build already imports release {before} as {row.alias!r}; an "
+                "import alias names one release per build"
+            )
+        if row.alias not in recorded:
+            new[row.alias] = row
+    return list(new.values())
+
+
+def check_event_query(build: object, domain: object, limit: object) -> None:
+    """The arguments of `EventReader.events_after`: exactly one of build and domain."""
+    if (build is None) == (domain is None):
+        raise MetadataError("events_after: give exactly one of build and domain")
+    if domain is not None:
+        check_domain(domain)
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= EVENT_PAGE_MAX:
+        raise MetadataError(f"events_after: limit must be 1..{EVENT_PAGE_MAX}, not {limit!r}")
+
+
+def month_start(ts: datetime) -> datetime:
+    """The first instant of the UTC month of `ts` (the partition of an event, P2-05 R6)."""
+    utc = ts.astimezone(UTC)
+    return utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def next_month(start: datetime) -> datetime:
+    return (
+        start.replace(year=start.year + 1, month=1)
+        if start.month == 12
+        else start.replace(month=start.month + 1)
+    )
+
+
+def month_name(start: datetime) -> str:
+    return f"{start.year:04}-{start.month:02}"

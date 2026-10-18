@@ -42,11 +42,13 @@ from ebs.meta._common import (
     check_lease_ttl,
     check_pin,
     check_toolchain,
+    check_walk,
     revalidate,
 )
 from ebs.meta.api import (
     API_PREFIX,
     BATCH_MAX,
+    PROVENANCE_START_MAX,
     ActionBatch,
     ActionList,
     ActionRow,
@@ -56,10 +58,16 @@ from ebs.meta.api import (
     BuildCreate,
     BuildFinish,
     BuildId,
+    BuildList,
     BuildStatus,
     BuildView,
     CacheHits,
     Changed,
+    ChannelHistory,
+    ChannelList,
+    ChannelMove,
+    ChannelSet,
+    ChannelView,
     CreatedBuild,
     CreatedLease,
     DigestBatch,
@@ -67,12 +75,26 @@ from ebs.meta.api import (
     DriverLease,
     DriverRelease,
     Event,
+    ExportList,
+    ExportRecord,
+    ExportRequest,
+    GateCheck,
+    GateQuery,
     LeaseId,
     LeaseRequest,
     OptionalDigest,
     OptionalResult,
     PinRequest,
+    ProvenanceGraph,
+    ProvenanceQuery,
     RegisterOutcome,
+    ReleaseCreate,
+    ReleaseId,
+    ReleaseImport,
+    ReleaseImportBatch,
+    ReleaseImportList,
+    ReleaseList,
+    ReleaseView,
     ResultManifest,
     StateChange,
     ToolchainCreate,
@@ -80,6 +102,7 @@ from ebs.meta.api import (
     ToolchainManifest,
     ToolchainRecord,
     ToolchainRegistration,
+    YankRequest,
     check_domain,
 )
 
@@ -92,6 +115,7 @@ __all__ = [
     "CredentialSource",
     "HttpMetadataConfig",
     "HttpMetadataStore",
+    "MetadataHttpError",
     "MungeCredential",
     "munge_payload",
 ]
@@ -106,9 +130,30 @@ way to give one."""
 
 _RETRY_STATUS: Final = frozenset({500, 502, 503, 504})
 _BACKOFF_CAP_S: Final = 8.0
+_RETRY_AFTER_CAP_S: Final = 60.0
 
 _M = TypeVar("_M", bound=BaseModel)
+_P = TypeVar(
+    "_P", ActionList, ToolchainList, ReleaseList, ChannelHistory, ExportList, ReleaseImportList
+)
 _T = TypeVar("_T")
+
+
+def _retry_after(response: httpx.Response) -> float | None:
+    """A 429's `Retry-After` in seconds (capped), or None if it gives none we can use."""
+    value = response.headers.get("Retry-After", "").strip()
+    if not value.isdigit():
+        return None
+    return min(float(value), _RETRY_AFTER_CAP_S)
+
+
+class MetadataHttpError(MetadataError):
+    """The service refused a request (4xx); `status` is the HTTP status (P2-01: 403 not a
+    member, 404 no such object, 409 a store rule)."""
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class CredentialSource(Protocol):
@@ -362,6 +407,7 @@ class HttpMetadataStore:
             if self._credentials is not None:
                 headers |= self._credentials.headers(method, unquote(path))
             problem: str
+            wait: float | None = None  # the service's Retry-After of a 429
             try:
                 response = self._client.request(
                     method,
@@ -380,16 +426,23 @@ class HttpMetadataStore:
                 if response.status_code < 400:
                     return response
                 detail = self._detail(response)
-                if response.status_code not in _RETRY_STATUS:
-                    raise MetadataError(self._client_error(what, response.status_code, detail))
+                limited = response.status_code == 429
+                if response.status_code not in _RETRY_STATUS and not limited:
+                    raise MetadataHttpError(
+                        self._client_error(what, response.status_code, detail),
+                        response.status_code,
+                    )
                 problem = f"HTTP {response.status_code}: {detail}"
-                retry = idempotent
+                # A rate-limited request was refused before anything ran: always retry it.
+                retry = idempotent or limited
+                if limited:
+                    wait = _retry_after(response)
             if not retry or attempt >= self._retries:
                 raise MetadataError(
                     f"{what}: metadata service at {self.base_url} failed: {problem}. Check "
                     "[metadata].url and that the service is up (GET /readyz)"
                 )
-            delay = min(self._backoff_s * 2**attempt, _BACKOFF_CAP_S)
+            delay = min(self._backoff_s * 2**attempt, _BACKOFF_CAP_S) if wait is None else wait
             _log.warning("metadata service call failed, retrying", call=what, problem=problem)
             attempt += 1
             self._sleep(delay)
@@ -411,6 +464,31 @@ class HttpMetadataStore:
         if status == 403:
             return f"{what}: {detail}"
         return f"{what}: {detail}" if status in (409, 422) else f"{what}: HTTP {status}: {detail}"
+
+    def _pages(
+        self,
+        path: str,
+        what: str,
+        model: type[_P],
+        params: Mapping[str, str] | None = None,
+    ) -> list[_P]:
+        """Every page of a list route (P2-05 R3): follow `next` until the last page."""
+        pages: list[_P] = []
+        cursor: str | None = None
+        while True:
+            query = dict(params or {}) | ({} if cursor is None else {"cursor": cursor})
+            r = self._call("GET", path, what, params=query, idempotent=True)
+            page = self._parse(r, model, what)
+            pages.append(page)
+            following = getattr(page, "next", None)
+            if following is None:
+                return pages
+            if following == cursor:
+                raise MetadataError(
+                    f"{what}: the metadata service at {self.base_url} returned the same page "
+                    "cursor twice; is the service the same version as this client?"
+                )
+            cursor = following
 
     def _parse(self, response: httpx.Response, model: type[_M], what: str) -> _M:
         try:
@@ -530,6 +608,22 @@ class HttpMetadataStore:
             raise MetadataError(f"{what}: invalid status {status!r}: {exc}") from None
         self._call("POST", f"/builds/{int(build)}/finish", what, body=body, idempotent=False)
 
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        what = f"record_release_imports {build}"
+        try:
+            body = ReleaseImportBatch(imports=list(imports))
+        except ValidationError as exc:
+            raise MetadataError(f"{what}: invalid request: {exc}") from None
+        # Recording the same rows again is a no-op in the store, so a retry is safe.
+        self._call(
+            "POST", f"/builds/{int(build)}/release-imports", what, body=body, idempotent=True
+        )
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        what = f"list_release_imports {build}"
+        pages = self._pages(f"/builds/{int(build)}/release-imports", what, ReleaseImportList)
+        return [x for page in pages for x in page.imports]
+
     def get_build(self, build: BuildId) -> BuildView:
         what = f"get_build {build}"
         r = self._call("GET", f"/builds/{int(build)}", what, idempotent=True)
@@ -538,8 +632,8 @@ class HttpMetadataStore:
     def list_actions(self, build: BuildId, *, state: ActionState | None = None) -> list[ActionRow]:
         what = f"list_actions {build}"
         params = None if state is None else {"state": state}
-        r = self._call("GET", f"/builds/{int(build)}/actions", what, params=params, idempotent=True)
-        return self._parse(r, ActionList, what).actions
+        pages = self._pages(f"/builds/{int(build)}/actions", what, ActionList, params)
+        return [a for page in pages for a in page.actions]
 
     def resolve_output(self, domain: str, object_id: Digest) -> Digest | None:
         check_domain(domain)
@@ -565,8 +659,9 @@ class HttpMetadataStore:
     def _toolchains(
         self, path: str, what: str, params: Mapping[str, str] | None = None
     ) -> list[ToolchainRecord]:
-        r = self._call("GET", path, what, params=params, idempotent=True)
-        return self._parse(r, ToolchainList, what).toolchains
+        return [
+            t for page in self._pages(path, what, ToolchainList, params) for t in page.toolchains
+        ]
 
     def get_toolchain(self, toolchain_id: Digest) -> ToolchainRecord | None:
         check_digest(toolchain_id, "get_toolchain id")
@@ -711,3 +806,133 @@ class HttpMetadataStore:
             body=checked,
             idempotent=False,
         )
+
+    # --- releases and channels (P2-02) -----------------------------------------------------------
+
+    def create_release(self, spec: ReleaseCreate, *, by: str) -> ReleaseView:
+        # The service records the authenticated caller as the author, not `by`.
+        checked = revalidate(spec, ReleaseCreate, "create_release")
+        what = f"create_release {checked.name} {checked.version}"
+        r = self._call("POST", "/releases", what, body=checked, idempotent=False)
+        return self._parse(r, ReleaseView, what)
+
+    def _releases(self, path: str, what: str, params: Mapping[str, str]) -> list[ReleaseView]:
+        return [r for page in self._pages(path, what, ReleaseList, params) for r in page.releases]
+
+    def get_release(self, domain: str, name: str, version: str) -> ReleaseView | None:
+        check_domain(domain)
+        params = {"domain": domain, "name": name, "version": version}
+        found = self._releases("/releases", f"get_release {name} {version}", params)
+        return found[0] if found else None
+
+    def get_release_by_id(self, release: ReleaseId) -> ReleaseView | None:
+        found = self._releases(f"/releases/{int(release)}", f"get_release {release}", {})
+        return found[0] if found else None
+
+    def list_releases(self, domain: str, *, name: str | None = None) -> list[ReleaseView]:
+        check_domain(domain)
+        params = {"domain": domain} | ({} if name is None else {"name": name})
+        return self._releases("/releases", f"list_releases {domain}", params)
+
+    def yank_release(self, release: ReleaseId, *, by: str, reason: str) -> ReleaseView:
+        what = f"yank_release {release}"
+        try:
+            req = YankRequest(reason=reason)
+        except ValidationError:
+            raise MetadataError(f"{what}: give a reason (1-4096 characters)") from None
+        r = self._call("POST", f"/releases/{int(release)}/yank", what, body=req, idempotent=True)
+        return self._parse(r, ReleaseView, what)
+
+    def set_channel(
+        self,
+        domain: str,
+        name: str,
+        channel: str,
+        release: ReleaseId,
+        *,
+        by: str,
+        gate: GateCheck | None = None,
+    ) -> ChannelMove:
+        """The service checks its own gate policy; `gate` only names the gate build to check."""
+        what = f"set_channel {name}:{channel}"
+        try:
+            req = ChannelSet(
+                domain=domain, name=name, channel=channel, release=int(release),
+                gate_build=None if gate is None else int(gate.build),
+            )  # fmt: skip
+        except ValidationError as exc:
+            raise MetadataError(f"{what}: invalid request: {exc}") from None
+        r = self._call("PUT", "/channels", what, body=req, idempotent=False)
+        return self._parse(r, ChannelMove, what)
+
+    def get_channel(self, domain: str, name: str, channel: str) -> ChannelView | None:
+        check_domain(domain)
+        what = f"get_channel {name}:{channel}"
+        params = {"domain": domain, "name": name, "channel": channel}
+        r = self._call("GET", "/channels", what, params=params, idempotent=True)
+        found = self._parse(r, ChannelList, what).channels
+        return found[0] if found else None
+
+    def channel_history(self, domain: str, name: str, channel: str) -> list[ChannelMove]:
+        check_domain(domain)
+        what = f"channel_history {name}:{channel}"
+        params = {"domain": domain, "name": name, "channel": channel}
+        pages = self._pages("/channels/history", what, ChannelHistory, params)
+        return [m for page in pages for m in page.moves]
+
+    def gate_builds(self, domain: str, flow: str, ids: Iterable[Digest]) -> list[BuildId]:
+        check_domain(domain)
+        keys = sorted({check_digest(d, "gate_builds id") for d in ids}, key=str)
+        what = f"gate_builds {domain}/{flow}"
+        found: set[int] = set()
+        for chunk in _chunks(keys, BATCH_MAX):
+            r = self._call(
+                "POST", f"/domains/{_q(domain)}/gate-builds", what,
+                body=GateQuery(flow=flow, ids=chunk), idempotent=True,
+            )  # fmt: skip
+            found.update(self._parse(r, BuildList, what).builds)
+        return [BuildId(b) for b in sorted(found, reverse=True)]
+
+    def record_export(self, release: ReleaseId, to_domain: str, *, by: str) -> ReleaseView:
+        check_domain(to_domain)
+        what = f"record_export {release} to {to_domain}"
+        r = self._call(
+            "POST", f"/releases/{int(release)}/exports", what,
+            body=ExportRequest(to_domain=to_domain), idempotent=False,
+        )  # fmt: skip
+        return self._parse(r, ReleaseView, what)
+
+    # --- provenance (P2-04) ----------------------------------------------------------------------
+
+    def provenance_upstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        return self._walk("upstream", domain, ids, keys, depth)
+
+    def provenance_downstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        return self._walk("downstream", domain, ids, keys, depth)
+
+    def _walk(
+        self, way: str, domain: str, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        domain, id_list, key_list, levels = check_walk(
+            domain, ids, keys, depth, f"provenance_{way}"
+        )
+        what = f"provenance_{way} {domain}"
+        if len(id_list) + len(key_list) > PROVENANCE_START_MAX:
+            raise MetadataError(
+                f"{what}: a walk starts from at most {PROVENANCE_START_MAX} ids and keys, got "
+                f"{len(id_list) + len(key_list)}; query fewer outputs at a time"
+            )
+        query = ProvenanceQuery.model_validate({"ids": id_list, "keys": key_list, "depth": levels})
+        r = self._call(
+            "POST", f"/domains/{_q(domain)}/provenance/{way}", what, body=query, idempotent=True
+        )
+        return self._parse(r, ProvenanceGraph, what)
+
+    def list_exports(self, release: ReleaseId) -> list[ExportRecord]:
+        what = f"list_exports {release}"
+        pages = self._pages(f"/releases/{int(release)}/exports", what, ExportList)
+        return [x for page in pages for x in page.exports]

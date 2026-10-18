@@ -32,7 +32,7 @@ can re-attach to a build after a crash.
 ## Notes
 - CONTRACT CHANGE: `MetadataStore.claim_driver` / `release_driver` (+ `DriverLease`,
   `DriverClaim`, `DRIVER_LEASE_TTL_S = 300`), table `driver_leases` (revision
-  `0007_driver_leases`), routes `POST /builds/{b}/driver[/release]`, event type `build_resumed`,
+  `0011_driver_leases`, after main's 0007-0010), routes `POST /builds/{b}/driver[/release]`, event type `build_resumed`,
   error `DriverBusyError` (exit 2). Fresh builds claim the lease too, so `--resume` is refused
   while the original `ebs build` lives. Extra tests: contract `test_driver_lease` (memory, pg,
   http, http-pg), `test_resume.py::test_running_build_holds_lease`,

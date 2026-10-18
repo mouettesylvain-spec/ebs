@@ -8,8 +8,12 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from ebs.config import load_config
+from ebs.domains import Domains
 from ebs.meta.pg import MetadataConfig
 from ebs.meta.service.app import ServiceConfig
+from ebs.meta.service.auth import Policy
+from ebs.meta.service.authz import DomainPolicy, NssGroups
 
 REPO = Path(__file__).resolve().parents[3]
 META = REPO / "deploy" / "meta"
@@ -40,8 +44,29 @@ def test_systemd_unit() -> None:
     assert "NoNewPrivileges=yes" in unit
 
 
+# P2-05 R6: the daily retention job runs the prune command as the service account.
+def test_prune_timer() -> None:
+    unit = (META / "systemd" / "ebs-meta-prune.service").read_text()
+    assert "ExecStart=/opt/ebs/bin/python -m ebs.meta.service events prune" in unit
+    assert "User=ebs-meta" in unit
+    assert "Type=oneshot" in unit
+    timer = (META / "systemd" / "ebs-meta-prune.timer").read_text()
+    assert "OnCalendar=daily" in timer
+    assert "Persistent=true" in timer
+
+
 def test_example_config_is_valid() -> None:
     config = tomllib.loads((META / "config.toml.example").read_text())
     MetadataConfig.from_mapping(config["metadata"])
-    ServiceConfig.from_mapping(config["meta_service"])
+    service = ServiceConfig.from_mapping(config["meta_service"])
+    # P2-01: the served domains are configured, so the deployed policy builds.
+    policy = DomainPolicy(
+        Policy(), Domains.from_config(load_config([META / "config.toml.example"])),
+        service.domains, NssGroups(), service.token_domains,
+    )  # fmt: skip
+    assert policy.served == {"cpu-nda"}
+    # P2-05: limits and the event retention are set; the OIDC section is a commented template.
+    assert service.events.retention_days == 180
+    assert service.limits.max_page_size == 1000
+    assert service.oidc is None
     assert "deploy/meta/config.toml" in (REPO / ".gitignore").read_text().splitlines()

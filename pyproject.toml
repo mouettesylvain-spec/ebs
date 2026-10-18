@@ -45,6 +45,7 @@ dev = [
     "jsonschema>=4.22",
     "testcontainers[postgres]>=4.8",
     "respx>=0.21",
+    "xmlschema>=3.3",
 ]
 
 [project.scripts]

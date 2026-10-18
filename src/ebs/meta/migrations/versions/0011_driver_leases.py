@@ -1,8 +1,8 @@
 """Driver leases: one live driver per build (P2-08).
 
-Revision ID: 0007_driver_leases
-Revises: 0006_gc
-Create Date: 2026-10-17
+Revision ID: 0011_driver_leases
+Revises: 0010_action_provenance
+Create Date: 2026-10-18
 
 Frozen: later schema changes go into new revisions, never into this file.
 """
@@ -12,8 +12,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0007_driver_leases"
-down_revision: str | None = "0006_gc"
+revision = "0011_driver_leases"
+down_revision: str | None = "0010_action_provenance"
 branch_labels: str | None = None
 depends_on: str | None = None
 

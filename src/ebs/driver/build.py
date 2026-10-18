@@ -1,9 +1,10 @@
 """One build from plan to final status: the build record, events and the scheduler (P0-15 R10).
 
 `run_build` = `start_build` (stores the plan in the CAS, creates the build record with the git
-info of the flow repo, user, CI job and cache mode, adds the actions) + `drive_build` (claims the
-build's driver lease, runs the `Scheduler` and finishes the build with its status and per-state
-counts). `ebs build --detach` starts a build here and drives it in a SLURM job; a resumed driver
+info of the flow repo, user, CI job and its metadata, cache mode, with the releases it imports
+(`release_imports`, P2-03), adds the actions) + `drive_build` (claims the build's driver lease,
+runs the `Scheduler` and finishes the build with its status and per-state counts).
+`ebs build --detach` starts a build here and drives it in a SLURM job; a resumed driver
 (`ebs.driver.resume`, P2-08) drives a build whose driver died. With `handle_sigint` /
 `handle_sigterm`, Ctrl-C / SIGTERM (`scancel` of a driver job) cancels submitted work and records
 the build as `cancelled` (R8; P2-08 R4). The usage of the actions that ran and passed is appended
@@ -18,7 +19,7 @@ import signal
 import socket
 import threading
 from collections import Counter
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,9 +47,10 @@ from ebs.meta.api import (
     BuildStatus,
     CacheMode,
     MetadataStore,
+    ReleaseImport,
 )
 from ebs.plan.planfile import encode
-from ebs.plan.types import Plan
+from ebs.plan.types import ActionSpec, Plan
 
 _log = get_logger(__name__)
 
@@ -150,6 +152,16 @@ class DriverLeaseKeeper:
             _log.warning("driver.lease_release_failed", build=self._build, error=str(exc))
 
 
+def action_row(spec: ActionSpec) -> ActionRow:
+    """The store row of a planned action: with its rule kind, params and toolchain, which
+    provenance queries show and select on (P2-04)."""
+    params = {k: list(v) if isinstance(v, tuple) else v for k, v in spec.params.items()}
+    return ActionRow(
+        action_id=spec.action_id, step=spec.step, key=spec.key, rule=spec.rule.kind,
+        params=params, toolchain=spec.toolchain.id if spec.toolchain else None,
+    )  # fmt: skip
+
+
 def start_build(
     plan: Plan,
     *,
@@ -159,7 +171,9 @@ def start_build(
     user: str,
     cache_mode: CacheMode = "read",
     ci_job: str | None = None,
+    ci: Mapping[str, str] | None = None,
     clock: Clock | None = None,
+    release_imports: Sequence[ReleaseImport] = (),
 ) -> StartedBuild:
     """Store the plan, create the build record and its (queued) actions, and emit
     `build_started` and `plan_ready`. No driver runs it yet: `drive_build` does, or a driver
@@ -182,11 +196,14 @@ def start_build(
             cache_mode=cache_mode,
         )
     )
-    store.add_actions(
-        build, [ActionRow(action_id=a.action_id, step=a.step, key=a.key) for a in plan.actions]
-    )
+    if release_imports:  # for `ebs used-by` (P2-03 R5)
+        store.record_release_imports(build, release_imports)
+    store.add_actions(build, [action_row(a) for a in plan.actions])
     events = EventLog(store, build, events_path(workdir, uuid), clock)
-    events.emit("build_started", uuid=str(uuid), user=user, cache_mode=cache_mode)
+    started: dict[str, object] = {"uuid": str(uuid), "user": user, "cache_mode": cache_mode}
+    if ci:  # P2-07 R1: the CI job's project, pipeline, job URL and commit
+        started["ci"] = dict(sorted(ci.items()))
+    events.emit("build_started", None, **started)
     events.emit("plan_ready", plan=str(plan_digest), actions=len(plan.actions))
     return StartedBuild(build, uuid, plan_digest)
 
@@ -202,11 +219,13 @@ def run_build(
     user: str,
     config: DriverConfig | None = None,
     ci_job: str | None = None,
+    ci: Mapping[str, str] | None = None,
     clock: Clock | None = None,
     retry: RetryPolicy | None = None,
     handle_sigint: bool = False,
     handle_sigterm: bool = False,
     owner: str | None = None,
+    release_imports: Sequence[ReleaseImport] = (),
 ) -> BuildOutcome:
     config = config or DriverConfig()
     clock = clock or SystemClock()
@@ -218,7 +237,9 @@ def run_build(
         user=user,
         cache_mode=config.cache_mode,
         ci_job=ci_job,
+        ci=ci,
         clock=clock,
+        release_imports=release_imports,
     )
     return drive_build(
         plan,

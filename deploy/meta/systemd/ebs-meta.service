@@ -16,7 +16,7 @@ User=ebs-meta
 Group=ebs-meta
 Environment=EBS_CONFIG=/etc/ebs/config.toml
 ExecStart=/opt/ebs/bin/uvicorn --factory ebs.meta.service.app:app_from_config \
-    --host 127.0.0.1 --port 8080 --proxy-headers --workers 4
+    --host 127.0.0.1 --port 8080 --proxy-headers --workers 4 --no-access-log
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes

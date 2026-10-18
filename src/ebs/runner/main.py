@@ -366,7 +366,7 @@ class Runner:
 
     def _open_debug(self, spec: ActionSpec, build_dir: str) -> _Debug | None:
         """The action's debug dir with its live log; None without `[debug].root` or on error."""
-        root = self._settings.debug_root
+        root = self._settings.debug_root_for(spec.domain)
         if root is None:
             return None
         try:
@@ -633,7 +633,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise UsageError("--build needs the metadata store: configure [metadata].url")
             store = _open_store(metadata)
         domain = _domain(args.domain, store, args.build)
-        cas = FsCAS(settings.cas_root, domain)
+        cas = FsCAS(settings.cas_root_for(domain), domain)
         rules = RuleRegistry.from_entry_points(
             settings=RuleSettings(license_error_patterns=settings.license_error_patterns)
         )

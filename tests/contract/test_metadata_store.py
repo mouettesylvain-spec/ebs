@@ -34,7 +34,7 @@ from ebs.meta.api import (
     BuildId,
     Event,
     InfraReason,
-    MetadataStore,
+    MetadataBackend,
     OutputResult,
     ResourceUsage,
     ResultManifest,
@@ -65,7 +65,7 @@ class Inspector(Protocol):
 
 @dataclass
 class Harness:
-    store: MetadataStore
+    store: MetadataBackend
     clock: FakeClock
     inspect: Inspector
 
@@ -96,7 +96,7 @@ class MemoryInspector:
         return None if blob is None else blob.last_access
 
     def event_types(self, build: BuildId) -> list[tuple[str, str | None]]:
-        return [(e.type, e.action_id) for e in self._s._events if e.build == build]
+        return [(e.event.type, e.event.action_id) for e in self._s.events_after(0, build=build)]
 
     def leased(self, domain: str, now: datetime) -> set[Digest]:
         return set(self._s.gc_roots(domain, now).leased)
@@ -259,7 +259,9 @@ def h(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterat
 def _over_http(backing: Harness) -> Harness:
     """The same harness with the store replaced by an HTTP client of a service over it."""
     # alice registers the toolchains of the P1-07 tests: make her a toolchain admin.
-    service = make_service(backing.store, toolchain_admins=("alice",))
+    store = backing.store
+    assert isinstance(store, InMemoryMetadataStore | PgMetadataStore)  # the service's backends
+    service = make_service(store, toolchain_admins=("alice",))
     return Harness(service.store(), backing.clock, backing.inspect)
 
 

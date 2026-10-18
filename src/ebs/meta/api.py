@@ -37,16 +37,23 @@ from ebs.flow.model import NAME_PATTERN
 __all__ = [
     "API_PREFIX",
     "BATCH_MAX",
+    "CHANNEL_PATTERN",
     "DIGEST_SQL_PATTERN",
     "DOMAIN_PATTERN",
     "DRIVER_LEASE_TTL_S",
+    "EVENT_PAGE_MAX",
     "EVENT_TYPE_PATTERN",
     "FINAL_BUILD_STATUSES",
+    "IMPORT_ALIAS_PATTERN",
     "LEASE_TTL_S",
     "MAX_LEASE_TTL_S",
+    "PROVENANCE_DEPTH_MAX",
+    "PROVENANCE_START_MAX",
+    "RELEASE_NAME_PATTERN",
     "TERMINAL_STATES",
     "TOUCH_INTERVAL_S",
     "TRANSITIONS",
+    "VERSION_PATTERN",
     "ActionBatch",
     "ActionId",
     "ActionList",
@@ -58,11 +65,17 @@ __all__ = [
     "BuildCreate",
     "BuildFinish",
     "BuildId",
+    "BuildList",
     "BuildStatus",
     "BuildView",
     "CacheHits",
     "CacheMode",
     "Changed",
+    "ChannelHistory",
+    "ChannelList",
+    "ChannelMove",
+    "ChannelSet",
+    "ChannelView",
     "CreatedBuild",
     "CreatedLease",
     "DigestBatch",
@@ -73,7 +86,13 @@ __all__ = [
     "DriverRelease",
     "ErrorBody",
     "Event",
+    "EventReader",
     "EventType",
+    "ExportList",
+    "ExportRecord",
+    "ExportRequest",
+    "GateCheck",
+    "GateQuery",
     "GcAttribution",
     "GcBlob",
     "GcCacheEntry",
@@ -83,25 +102,45 @@ __all__ = [
     "InfraReason",
     "LeaseId",
     "LeaseRequest",
+    "MetadataBackend",
     "MetadataStore",
     "OptionalDigest",
     "OptionalResult",
     "OutputResult",
+    "ParamJson",
     "PendingReason",
     "PinRequest",
+    "ProvenanceAction",
+    "ProvenanceEdge",
+    "ProvenanceGraph",
+    "ProvenanceQuery",
+    "ProvenanceRelease",
+    "ProvenanceStore",
     "RegisterOutcome",
+    "ReleaseCreate",
+    "ReleaseId",
+    "ReleaseImport",
+    "ReleaseImportBatch",
+    "ReleaseImportList",
+    "ReleaseList",
+    "ReleaseOutput",
+    "ReleaseStore",
+    "ReleaseView",
     "ResourceUsage",
     "ResultManifest",
     "RunnerInfo",
     "StateChange",
+    "StoredEvent",
     "Tombstone",
     "ToolchainCreate",
     "ToolchainList",
     "ToolchainManifest",
     "ToolchainRecord",
     "ToolchainRegistration",
+    "YankRequest",
     "check_domain",
     "check_transition",
+    "release_output_name",
 ]
 
 DIGEST_SQL_PATTERN: Final = "^(sha256|blake3):[0-9a-f]{64}$"
@@ -349,8 +388,17 @@ class BuildView(BuildCreate):
     action_counts: dict[ActionState, _NonNegative]
 
 
+ParamJson = StrictBool | StrictInt | StrictStr | list[StrictStr]
+"""A plan param as stored with its action (`ebs.plan.types.ParamValue`, tuples as lists)."""
+
+
 class ActionRow(BaseModel):
-    """One action of a build. `add_actions` takes rows; missing `queued_at` means now."""
+    """One action of a build. `add_actions` takes rows; missing `queued_at` means now.
+
+    `rule`, `params` and `toolchain` are what the plan says the action is (P2-04: provenance
+    queries show them and `ebs tests` selects `*.sim` rules by them); they are set when the
+    action is added and never change. Rows written before P2-04 hold None.
+    """
 
     model_config = _FROZEN
 
@@ -367,6 +415,9 @@ class ActionRow(BaseModel):
     finished_at: AwareDatetime | None = None
     cached: StrictBool = False
     result_key: DigestField | None = None
+    rule: _Name | None = None  # the rule kind, e.g. "questa.sim"
+    params: dict[_Name, ParamJson] | None = None
+    toolchain: DigestField | None = None
 
 
 class DriverLease(BaseModel):
@@ -499,6 +550,16 @@ class MetadataStore(Protocol):
         ...
 
     def finish_build(self, build: BuildId, status: BuildStatus) -> None: ...
+
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        """Record which release each import alias of `build` used (P2-03 R5, for `used-by`),
+        all or nothing. Every release must be in the build's domain; recording the same row
+        again is a no-op, another release for a recorded alias is refused."""
+        ...
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        """The release imports of `build`, ordered by alias."""
+        ...
 
     def get_build(self, build: BuildId) -> BuildView: ...
 
@@ -672,6 +733,7 @@ class ActionList(BaseModel):
     model_config = _WIRE
 
     actions: list[ActionRow]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 class CacheHits(BaseModel):
@@ -762,6 +824,7 @@ class ToolchainList(BaseModel):
     model_config = _WIRE
 
     toolchains: list[ToolchainRecord]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 # --- garbage collection (P1-09) ------------------------------------------------------------------
@@ -806,7 +869,7 @@ class GcRoots:
 
     pinned: frozenset[Digest]  # plan, outputs and logs of pinned builds
     leased: frozenset[Digest]  # objects of live leases
-    released: frozenset[Digest]  # release outputs (P2-02; empty until the table exists)
+    released: frozenset[Digest]  # content digests of release outputs, yanked ones too (P2-02)
 
 
 @dataclass(frozen=True, slots=True)
@@ -889,3 +952,426 @@ class GcStore(Protocol):
         ...
 
     def gc_record_run(self, run: GcRun) -> None: ...
+
+
+# --- releases and channels (P2-02) ---------------------------------------------------------------
+# A release is a named, versioned selection of a finished build's outputs; a channel is a movable
+# pointer to a release of the same name, with its full history (data-model.md, Phase 2).
+
+RELEASE_NAME_PATTERN: Final = r"^[a-z0-9][a-z0-9._-]{0,63}(/[a-z0-9][a-z0-9._-]{0,63})?$"
+"""`team/product` or `product`, e.g. `rtl-team/cpu`."""
+
+VERSION_PATTERN: Final = r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$"
+"""Release versions (decision D4): free-form; CalVer `YYYY.MM.N` is recommended."""
+
+CHANNEL_PATTERN: Final = r"^[a-z][a-z0-9_-]{0,63}$"
+"""Channel names, e.g. `stable`, `nightly`."""
+
+ReleaseId = NewType("ReleaseId", int)
+
+_ReleaseName = Annotated[StrictStr, Field(pattern=RELEASE_NAME_PATTERN)]
+_Version = Annotated[StrictStr, Field(pattern=VERSION_PATTERN)]
+_Channel = Annotated[StrictStr, Field(pattern=CHANNEL_PATTERN)]
+
+
+IMPORT_ALIAS_PATTERN: Final = r"^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+"""Import aliases as flows name them (`imports: {rtl: …}` -> `${imports.rtl}`)."""
+
+
+class ReleaseImport(BaseModel):
+    """One `release_imports` row: a build consumed `release` through import `alias`."""
+
+    model_config = _FROZEN
+
+    alias: Annotated[StrictStr, Field(pattern=IMPORT_ALIAS_PATTERN)]
+    release: ReleaseId
+
+
+def release_output_name(action_id: str, output: str) -> str:
+    """The name of an action's output in a release: `<action id>.<output>`."""
+    return f"{action_id}.{output}"
+
+
+class ReleaseOutput(BaseModel):
+    """One released output: where it comes from and the result it had in the build."""
+
+    model_config = _FROZEN
+
+    action_id: ActionId
+    output: _Name
+    digest: DigestField  # content
+    id: DigestField  # the id passed downstream (= digest if deterministic)
+    type: Literal["file", "tree"]
+    size: _NonNegative
+
+
+class ReleaseCreate(BaseModel):
+    """A release to create. `outputs` maps `release_output_name(action, output)` to the result
+    the action recorded; the store checks every entry against the build (P2-02 R1).
+    `allow_failed` is the reason given for releasing outputs of actions that did not pass."""
+
+    model_config = _FROZEN
+
+    domain: _Domain
+    name: _ReleaseName
+    version: _Version
+    build: BuildId
+    outputs: Annotated[dict[_Name, ReleaseOutput], Field(min_length=1)]
+    notes: _Text = ""
+    allow_failed: Annotated[StrictStr, Field(min_length=1, max_length=4096)] | None = None
+
+
+class ReleaseView(ReleaseCreate):
+    """A stored release. Immutable: only the yank fields are ever set, once (I19)."""
+
+    id: ReleaseId
+    created_at: AwareDatetime
+    created_by: _Name
+    exported_from: ReleaseId | None
+    yanked_at: AwareDatetime | None
+    yanked_by: _Name | None
+    yank_reason: _Text | None
+
+
+class GateCheck(BaseModel):
+    """A passed channel gate: `build` is a passing build of project `flow` that consumed the
+    release (provenance edges), checked when the channel moved."""
+
+    model_config = _FROZEN
+
+    flow: _Name
+    build: BuildId
+
+
+class ChannelMove(BaseModel):
+    """One entry of a channel's history."""
+
+    model_config = _FROZEN
+
+    id: StrictInt
+    domain: _Domain
+    name: _ReleaseName
+    channel: _Channel
+    release: ReleaseId
+    version: _Version
+    moved_at: AwareDatetime
+    moved_by: _Name
+    gate: GateCheck | None
+
+
+class ChannelView(BaseModel):
+    model_config = _FROZEN
+
+    domain: _Domain
+    name: _ReleaseName
+    channel: _Channel
+    release: ReleaseView
+    updated_at: AwareDatetime
+    updated_by: _Name
+
+
+class ExportRecord(BaseModel):
+    """The audit row of a cross-domain export (`exports` table)."""
+
+    model_config = _FROZEN
+
+    id: StrictInt
+    release: ReleaseId  # the exported release, in its own domain
+    exported: ReleaseId  # the release created in `to_domain`
+    to_domain: _Domain
+    exported_at: AwareDatetime
+    exported_by: _Name
+
+
+class ReleaseStore(Protocol):
+    """Releases, channels and exports (P2-02). Implemented by the PostgreSQL, in-memory and HTTP
+    stores; there is no method to change or delete a release other than `yank_release` (I19)."""
+
+    def create_release(self, spec: ReleaseCreate, *, by: str) -> ReleaseView:
+        """Insert a release. The build must be in `spec.domain` and finished; every output must
+        be one its action recorded (same digest, id, type, size), from an action that passed
+        unless `allow_failed` gives a reason. `(domain, name, version)` is unique."""
+        ...
+
+    def get_release(self, domain: str, name: str, version: str) -> ReleaseView | None: ...
+
+    def get_release_by_id(self, release: ReleaseId) -> ReleaseView | None: ...
+
+    def list_releases(self, domain: str, *, name: str | None = None) -> list[ReleaseView]:
+        """Ordered by (name, created_at, id)."""
+        ...
+
+    def yank_release(self, release: ReleaseId, *, by: str, reason: str) -> ReleaseView:
+        """Mark the release yanked (idempotent: the first yank is kept). Never deletes it."""
+        ...
+
+    def set_channel(
+        self,
+        domain: str,
+        name: str,
+        channel: str,
+        release: ReleaseId,
+        *,
+        by: str,
+        gate: GateCheck | None = None,
+    ) -> ChannelMove:
+        """Point the channel at `release` (of this domain and name, not yanked) and append the
+        move, with its gate check, to the channel's history."""
+        ...
+
+    def get_channel(self, domain: str, name: str, channel: str) -> ChannelView | None: ...
+
+    def channel_history(self, domain: str, name: str, channel: str) -> list[ChannelMove]:
+        """Oldest first."""
+        ...
+
+    def gate_builds(self, domain: str, flow: str, ids: Iterable[Digest]) -> list[BuildId]:
+        """Passed builds of project `flow` in `domain` with an action that consumed one of
+        `ids` (an `in` provenance edge), newest first."""
+        ...
+
+    def record_export(self, release: ReleaseId, to_domain: str, *, by: str) -> ReleaseView:
+        """Create the release in `to_domain` (same name, version, outputs; `exported_from`) and
+        its audit row, atomically. The caller has copied the bytes into that domain's CAS."""
+        ...
+
+    def list_exports(self, release: ReleaseId) -> list[ExportRecord]: ...
+
+
+# --- provenance (P2-04) ---------------------------------------------------------------------------
+# The `provenance_edges` written since phase 0, walked within one domain: crossing domains is the
+# caller's job (`ebs.release.provenance`), through export audit rows only (R4).
+
+PROVENANCE_DEPTH_MAX: Final = 200
+"""Deepest walk a store performs, in action levels (data-model.md, "Query patterns")."""
+
+PROVENANCE_START_MAX: Final = 10_000
+"""Most ids plus keys one walk may start from over HTTP (a release with many outputs, e.g. a
+regression's results, is one walk: walks cannot be split into batches and merged exactly)."""
+
+
+class ProvenanceEdge(BaseModel):
+    """One `provenance_edges` row: `in` holds an input id at its logical path, `out` an output
+    (by name) with its passed-down id and its content digest."""
+
+    model_config = _FROZEN
+
+    action_key: DigestField
+    direction: Literal["in", "out"]
+    logical_path: Annotated[StrictStr, Field(min_length=1, max_length=4096)]
+    object_id: DigestField
+    content_digest: DigestField | None
+
+
+class ProvenanceAction(BaseModel):
+    """An action row whose key a walk reached, with its build. Several builds may hold the same
+    key (cache hits); each row is listed."""
+
+    model_config = _FROZEN
+
+    key: DigestField
+    build: BuildId
+    action_id: ActionId
+    step: _Name
+    rule: _Name | None
+    params: dict[_Name, ParamJson] | None
+    toolchain: DigestField | None
+    state: ActionState
+    cached: StrictBool
+    status: Literal["passed", "failed"] | None  # of the recorded result; None without one
+    finished_at: AwareDatetime | None
+    project: _Name
+    flow_repo: _Text
+    flow_commit: _Text
+    flow_dirty: StrictBool
+    user_name: _Name
+    build_created_at: AwareDatetime
+
+
+class ProvenanceRelease(BaseModel):
+    """A release output of the domain whose id is in the graph."""
+
+    model_config = _FROZEN
+
+    release: ReleaseId
+    name: _ReleaseName
+    version: _Version
+    output: _Name  # `release_output_name(action, output)`
+    object_id: DigestField
+    exported_from: ReleaseId | None
+    yanked: StrictBool
+
+
+class ProvenanceGraph(BaseModel):
+    """The result of a walk: every edge of the walked actions (sorted by key, direction, path),
+    their action rows (by build, action id), the releases holding an id of the graph (by id,
+    output) and whether `depth` stopped the walk before its end."""
+
+    model_config = _FROZEN
+
+    domain: _Domain
+    edges: list[ProvenanceEdge]
+    actions: list[ProvenanceAction]
+    releases: list[ProvenanceRelease]
+    truncated: StrictBool
+
+
+class ProvenanceStore(Protocol):
+    """Walks of the provenance graph within one domain (P2-04; PostgreSQL as a recursive CTE,
+    in-memory and HTTP stores). `depth` counts action levels, 1..PROVENANCE_DEPTH_MAX."""
+
+    def provenance_upstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        """Where `ids` came from: level 1 is the actions in `keys` plus those that produced an
+        id of `ids` (an `out` edge whose id or content digest it is); level n+1 the producers
+        of the inputs of level n."""
+        ...
+
+    def provenance_downstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        """What consumed `ids`: level 1 is the actions in `keys` plus those with an `in` edge
+        holding an id of `ids`; level n+1 the consumers of the outputs of level n."""
+        ...
+
+
+class MetadataBackend(MetadataStore, ReleaseStore, ProvenanceStore, Protocol):
+    """What every store backend implements (PostgreSQL, in-memory, HTTP): `open_metadata_store`
+    returns one."""
+
+
+class YankRequest(BaseModel):
+    """Body of `POST /releases/{id}/yank`; the author is the authenticated caller."""
+
+    model_config = _WIRE
+
+    reason: Annotated[StrictStr, Field(min_length=1, max_length=4096)]
+
+
+class ChannelSet(BaseModel):
+    """Body of `PUT /channels`: the service checks the channel's gate itself."""
+
+    model_config = _WIRE
+
+    domain: _Domain
+    name: _ReleaseName
+    channel: _Channel
+    release: StrictInt
+    gate_build: StrictInt | None = None  # the gate build to check; default: any
+
+
+class ExportRequest(BaseModel):
+    model_config = _WIRE
+
+    to_domain: _Domain
+
+
+class GateQuery(BaseModel):
+    """Body of `POST /domains/{domain}/gate-builds`."""
+
+    model_config = _WIRE
+
+    flow: _Name
+    ids: Annotated[list[DigestField], Field(max_length=BATCH_MAX)]
+
+
+class ReleaseImportBatch(BaseModel):
+    """Body of `POST /builds/{id}/release-imports`."""
+
+    model_config = _WIRE
+
+    imports: Annotated[list[ReleaseImport], Field(max_length=BATCH_MAX)]
+
+
+class ReleaseImportList(BaseModel):
+    model_config = _WIRE
+
+    imports: list[ReleaseImport]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
+
+
+class ReleaseList(BaseModel):
+    model_config = _WIRE
+
+    releases: list[ReleaseView]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
+
+
+class ChannelList(BaseModel):
+    """Response of the channel reads; `GET /channels` holds zero or one channel."""
+
+    model_config = _WIRE
+
+    channels: list[ChannelView]
+
+
+class ChannelHistory(BaseModel):
+    model_config = _WIRE
+
+    moves: list[ChannelMove]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
+
+
+class BuildList(BaseModel):
+    model_config = _WIRE
+
+    builds: list[StrictInt]
+
+
+class ExportList(BaseModel):
+    model_config = _WIRE
+
+    exports: list[ExportRecord]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
+
+
+class ProvenanceQuery(BaseModel):
+    """Body of `POST /domains/{domain}/provenance/{upstream,downstream}`."""
+
+    model_config = _WIRE
+
+    ids: Annotated[list[DigestField], Field(max_length=PROVENANCE_START_MAX)] = []
+    keys: Annotated[list[DigestField], Field(max_length=PROVENANCE_START_MAX)] = []
+    depth: Annotated[StrictInt, Field(ge=1, le=PROVENANCE_DEPTH_MAX)] = PROVENANCE_DEPTH_MAX
+
+
+# --- event stream (P2-05) ------------------------------------------------------------------------
+
+EVENT_PAGE_MAX: Final = 1000
+"""The most events one `events_after` call returns."""
+
+
+class StoredEvent(BaseModel):
+    """An event with its id in the `events` table. Ids grow in commit order within a domain
+    (the stores serialize the inserts of a domain), so `events_after(id)` resumes a stream
+    without gaps: the SSE `id:` field (`Last-Event-ID`)."""
+
+    model_config = _FROZEN
+
+    id: StrictInt
+    event: Event
+
+
+class EventReader(Protocol):
+    """What the service's event stream reads (P2-05 R2, R6). Only the PostgreSQL and in-memory
+    stores implement it: the stream is served by the metadata service, never read over HTTP as
+    a store."""
+
+    def events_after(
+        self,
+        after: int,
+        *,
+        build: BuildId | None = None,
+        domain: str | None = None,
+        limit: int = EVENT_PAGE_MAX,
+    ) -> list[StoredEvent]:
+        """The events with an id above `after` of `build`, or of every build of `domain`
+        (exactly one of the two), oldest first, at most `limit` (1..EVENT_PAGE_MAX)."""
+        ...
+
+    def prune_events(self, before: datetime, *, dry_run: bool = False) -> list[str]:
+        """Drop every month of events stored (by the store's clock, not the events' `ts`) that
+        ends at or before `before` (UTC months, the partitions of the `events` table); return
+        them as `YYYY-MM`, oldest first."""
+        ...

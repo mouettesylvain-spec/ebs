@@ -2,7 +2,8 @@
 
 `ebs gc [--dry-run] [--domain D]` collects one domain: it runs as the GC service account (member
 of the domain's group, with direct access to the metadata database), usually from the systemd
-timer in deploy/gc/. `ebs pin BUILD` makes a build's plan, outputs and logs GC roots;
+timer in deploy/gc/. The domain must be listed in `[gc].domains` or be `[gc].domain` (P2-01 R5).
+`ebs pin BUILD` makes a build's plan, outputs and logs GC roots;
 `ebs unpin BUILD` removes the pin.
 """
 
@@ -43,9 +44,19 @@ def gc_command(
     out = make_output(services.environ, json_mode=json_mode, tty=services.is_tty())
     section = dict(services.config().get("gc", {}))
     configured = section.pop("domain", None)
+    listed = section.pop("domains", [])
+    if not isinstance(listed, list) or not all(isinstance(d, str) for d in listed):
+        raise ConfigError(f"[gc].domains must be a list of domain names, got {listed!r}")
     target = domain or configured
     if not isinstance(target, str) or not target:
         raise ConfigError("ebs gc collects one domain per run: give --domain D or set [gc].domain")
+    allowed = set(listed) | ({configured} if isinstance(configured, str) else set())
+    if target not in allowed:
+        # P2-01 R5: the GC service account works only in the domains it is listed for.
+        raise ConfigError(
+            f"ebs gc: domain {target!r} is not listed for this GC account; add it to "
+            "[gc].domains (or [gc].domain) once the account is a member of its group"
+        )
     config = GcConfig.from_mapping(section)
     report = collect(
         services.gc_store(), services.cas(target), clock=services.clock, config=config,

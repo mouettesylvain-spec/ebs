@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  JUnit XML as GitLab reads it (P2-07 R2): the Jenkins `junit-10.xsd` structure (testsuites >
+  testsuite > testcase with failure / error / skipped / system-out), which GitLab's JUnit parser
+  follows, plus `properties` inside a testcase (as Ant, pytest xunit1 and Jenkins accept; GitLab
+  ignores unknown elements). Written for this repository, not copied from a vendor.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
+
+  <xs:simpleType name="SUREFIRE_TIME">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="(([0-9]{0,3},)*[0-9]{3}|[0-9]{0,3})*(\.[0-9]{0,3})?"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:complexType name="property">
+    <xs:attribute name="name" type="xs:string" use="required"/>
+    <xs:attribute name="value" type="xs:string" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="properties">
+    <xs:sequence>
+      <xs:element name="property" type="property" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="problem" mixed="true">
+    <xs:attribute name="message" type="xs:string"/>
+    <xs:attribute name="type" type="xs:string"/>
+  </xs:complexType>
+
+  <xs:complexType name="testcase">
+    <xs:sequence>
+      <xs:element name="properties" type="properties" minOccurs="0"/>
+      <xs:choice minOccurs="0">
+        <xs:element name="skipped" type="problem"/>
+        <xs:element name="error" type="problem"/>
+        <xs:element name="failure" type="problem"/>
+      </xs:choice>
+      <xs:element name="system-out" type="xs:string" minOccurs="0"/>
+      <xs:element name="system-err" type="xs:string" minOccurs="0"/>
+    </xs:sequence>
+    <xs:attribute name="name" type="xs:string" use="required"/>
+    <xs:attribute name="classname" type="xs:string" use="required"/>
+    <xs:attribute name="time" type="SUREFIRE_TIME"/>
+    <xs:attribute name="file" type="xs:string"/>
+  </xs:complexType>
+
+  <xs:complexType name="testsuite">
+    <xs:sequence>
+      <xs:element name="properties" type="properties" minOccurs="0"/>
+      <xs:element name="testcase" type="testcase" minOccurs="0" maxOccurs="unbounded"/>
+      <xs:element name="system-out" type="xs:string" minOccurs="0"/>
+      <xs:element name="system-err" type="xs:string" minOccurs="0"/>
+    </xs:sequence>
+    <xs:attribute name="name" type="xs:string" use="required"/>
+    <xs:attribute name="tests" type="xs:nonNegativeInteger" use="required"/>
+    <xs:attribute name="failures" type="xs:nonNegativeInteger"/>
+    <xs:attribute name="errors" type="xs:nonNegativeInteger"/>
+    <xs:attribute name="skipped" type="xs:nonNegativeInteger"/>
+    <xs:attribute name="time" type="SUREFIRE_TIME"/>
+    <xs:attribute name="timestamp" type="xs:string"/>
+    <xs:attribute name="hostname" type="xs:string"/>
+    <xs:attribute name="id" type="xs:string"/>
+  </xs:complexType>
+
+  <xs:element name="testsuites">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="testsuite" type="testsuite" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="name" type="xs:string"/>
+      <xs:attribute name="tests" type="xs:nonNegativeInteger"/>
+      <xs:attribute name="failures" type="xs:nonNegativeInteger"/>
+      <xs:attribute name="errors" type="xs:nonNegativeInteger"/>
+      <xs:attribute name="skipped" type="xs:nonNegativeInteger"/>
+      <xs:attribute name="time" type="SUREFIRE_TIME"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

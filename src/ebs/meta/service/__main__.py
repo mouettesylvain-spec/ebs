@@ -3,9 +3,12 @@
     serve [--host H] [--port P]                         run the service (uvicorn, from ebs.toml)
     token create NAME --kind ci|service|user [--team T] [--expires-days N]
     token revoke NAME                                   revoke every token of NAME
+    events prune [--dry-run]                            event retention (P2-05 R6)
 
-`token create` prints the new token once; only its hash is stored. Commands that need the
-database read `[metadata].url` (postgresql) from ebs.toml like the service does.
+`token create` prints the new token once; only its hash is stored. `events prune` drops the
+months of events older than `[meta_service.events].retention_days` (default 180) and creates
+next month's partition; run it daily (deploy/meta/systemd/ebs-meta-prune.timer). Commands that
+need the database read `[metadata].url` (postgresql) from ebs.toml like the service does.
 """
 
 from __future__ import annotations
@@ -39,14 +42,34 @@ class _Tokens(Protocol):
     def revoke(self, principal: str) -> int: ...
 
 
+class _Events(Protocol):
+    def prune_events(self, before: datetime, *, dry_run: bool = False) -> list[str]: ...
+
+    def ensure_event_partitions(self, at: datetime, *, months_ahead: int = 1) -> list[str]: ...
+
+
+def _config(environ: Mapping[str, str]) -> Mapping[str, object]:
+    home = Path(environ.get("HOME") or Path.home())
+    return load_config(config_paths(environ, cwd=Path.cwd(), home=home))
+
+
 def _pg_tokens(environ: Mapping[str, str]) -> _Tokens:
     from ebs.meta.pg import PgMetadataStore
     from ebs.meta.service.tokens import PgTokenStore
 
-    home = Path(environ.get("HOME") or Path.home())
-    config = load_config(config_paths(environ, cwd=Path.cwd(), home=home))
-    store = PgMetadataStore.from_config(config.get("metadata", {}))
+    store = PgMetadataStore.from_config(_config(environ).get("metadata", {}))  # type: ignore[arg-type]
     return PgTokenStore(store.engine)
+
+
+def _pg_events(environ: Mapping[str, str]) -> tuple[_Events, int]:
+    """The store and `[meta_service.events].retention_days`."""
+    from ebs.meta.pg import PgMetadataStore
+    from ebs.meta.service.app import ServiceConfig
+
+    config = _config(environ)
+    service = ServiceConfig.from_mapping(config.get("meta_service", {}))  # type: ignore[arg-type]
+    store = PgMetadataStore.from_config(config.get("metadata", {}))  # type: ignore[arg-type]
+    return store, service.events.retention_days
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -64,6 +87,10 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--expires-days", type=int, default=None)
     revoke = tsub.add_parser("revoke", help="revoke every token of NAME")
     revoke.add_argument("name")
+    events = sub.add_parser("events", help="the events table")
+    esub = events.add_subparsers(dest="events_command", required=True)
+    prune = esub.add_parser("prune", help="drop months of events older than the retention")
+    prune.add_argument("--dry-run", action="store_true", help="list them, drop nothing")
     return p
 
 
@@ -72,6 +99,7 @@ def main(
     *,
     environ: Mapping[str, str] | None = None,
     tokens: Callable[[Mapping[str, str]], _Tokens] = _pg_tokens,
+    events: Callable[[Mapping[str, str]], tuple[_Events, int]] = _pg_events,
     clock: Clock | None = None,
     out: TextIO | None = None,
 ) -> int:
@@ -86,6 +114,15 @@ def main(
                 "ebs.meta.service.app:app_from_config", factory=True, host=args.host,
                 port=args.port, proxy_headers=True,
             )  # fmt: skip
+            return 0
+        if args.command == "events":
+            log, retention_days = events(env)
+            now = (clock or SystemClock()).now()
+            months = log.prune_events(now - timedelta(days=retention_days), dry_run=args.dry_run)
+            verb = "would drop" if args.dry_run else "dropped"
+            stdout.write(f"{verb} {', '.join(months) if months else 'nothing'}\n")
+            if not args.dry_run:
+                log.ensure_event_partitions(now)
             return 0
         if args.token_command == "create" and args.kind == "ci" and not args.team:
             raise ConfigError("a ci token needs --team: the project whose builds it writes")

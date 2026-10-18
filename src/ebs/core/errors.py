@@ -104,5 +104,10 @@ class SourceEscapeError(SourceError):
     """A source pattern or symlink resolves outside its base directory (sandbox v1 rule)."""
 
 
+class ReleaseError(EbsError):
+    """A release, channel or export request that breaks a rule (P2-02): bad selector or
+    version, failed gate, missing domain membership."""
+
+
 class ToolchainError(EbsError):
     """A toolchain could not be fingerprinted, captured or resolved."""

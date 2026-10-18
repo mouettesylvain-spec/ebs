@@ -171,7 +171,7 @@ def describe(services: SiteServices, target: ActionTarget) -> dict[str, Any]:
         infra = _last_event(target, "infra_failed")
         raw = None if infra is None else infra.data.get("log")
         log = raw if isinstance(raw, str) else None
-    debug_root = services.runner_settings().debug_root
+    debug_root = services.runner_settings().debug_root_for(record.domain)
     debug_dir = (
         None
         if debug_root is None

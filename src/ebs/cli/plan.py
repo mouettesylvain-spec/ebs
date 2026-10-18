@@ -33,9 +33,10 @@ from ebs.plan.diff import diff_plans
 from ebs.plan.planfile import decode, plan_digest
 from ebs.plan.planner import Planner
 from ebs.plan.types import ActionDiff, ActionOutputInput, FlowInfo, GitInfo, Plan
+from ebs.release.lock import LOCK_FILE, LockFile, load_lock, plan_lock
 from ebs.sources.gitids import run_git
 
-__all__ = ["PlanResult", "make_plan", "plan_command", "predict"]
+__all__ = ["PlanResult", "flow_path", "make_plan", "plan_command", "predict"]
 
 MAX_REASONS: Final = 50
 """Rerun reasons printed as text; `--json` has all of them."""
@@ -57,9 +58,10 @@ class PlanResult:
     cas: FsCAS
     plan: Plan
     warnings: list[str] = field(default_factory=list)
+    lock: LockFile | None = None  # the flow.lock planned with (a flow with imports)
 
 
-def _flow_path(services: SiteServices, flow_file: Path) -> Path:
+def flow_path(services: SiteServices, flow_file: Path) -> Path:
     path = Path(os.path.normpath(services.cwd / flow_file))
     if not path.is_file():
         raise FlowError(
@@ -99,9 +101,12 @@ def make_plan(
     targets: Sequence[str] = (),
     rehash: bool = False,
 ) -> PlanResult:
-    """Load the flow and expand it into a plan (sources snapshotted into the CAS)."""
-    path = _flow_path(services, flow_file)
+    """Load the flow and expand it into a plan (sources snapshotted into the CAS); a flow
+    with imports is planned with the pins of the `flow.lock` next to it (P2-03)."""
+    path = flow_path(services, flow_file)
     flow = load_flow(path)
+    services.check_domain_access(flow.domain)  # before anything is hashed (P2-01 R3)
+    lock = load_lock(path.parent / LOCK_FILE) if flow.imports else None
     cas = services.cas(flow.domain)
     warnings: list[str] = []
 
@@ -113,14 +118,19 @@ def make_plan(
         sources = services.snapshotter(cas, statcache, rehash=rehash)
         planner = Planner(cas, sources, services.toolchains(path.parent), services.rules())
         plan = planner.plan(
-            flow, base=path.parent, info=flow_info(path), targets=targets, rehash=rehash
+            flow,
+            base=path.parent,
+            info=flow_info(path),
+            targets=targets,
+            rehash=rehash,
+            lock=None if lock is None else plan_lock(lock),
         )
         for mismatch in sources.audit_mismatches:
             warn(
                 f"stat cache audit: {mismatch} changed without a visible stat change; it was "
                 "rehashed. If this repeats, add its mount to [stat_cache].untrusted_mounts"
             )
-    return PlanResult(path, flow, planner, cas, plan, warnings)
+    return PlanResult(path, flow, planner, cas, plan, warnings, lock)
 
 
 @dataclass(frozen=True)

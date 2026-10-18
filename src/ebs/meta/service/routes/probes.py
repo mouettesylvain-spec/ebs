@@ -36,14 +36,18 @@ class Whoami(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
-    via: Literal["munge", "token"]
+    via: Literal["munge", "token", "session"]
     token_kind: TokenKind | None
     team: str | None
 
 
 @api.get("/whoami", response_model=Whoami)
-def whoami(caller: Annotated[Principal, Depends(current_principal)]) -> Response:
+def whoami(
+    caller: Annotated[Principal, Depends(current_principal)],
+    deps: Annotated[ServiceDeps, Depends(get_deps)],
+) -> Response:
     """The authenticated caller, to check credentials (`curl -H "X-EBS-Munge: $(munge -n)"`)."""
+    deps.check(caller, "read", domain=None, owner=None)
     return ok(
         Whoami(name=caller.name, via=caller.via, token_kind=caller.token_kind, team=caller.team)
     )

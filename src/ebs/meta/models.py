@@ -13,15 +13,19 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 
 from ebs.meta.api import (
+    CHANNEL_PATTERN,
     DIGEST_SQL_PATTERN,
     DOMAIN_PATTERN,
     EVENT_TYPE_PATTERN,
+    IMPORT_ALIAS_PATTERN,
     ActionState,
     BuildStatus,
     CacheMode,
     InfraReason,
     PendingReason,
 )
+from ebs.meta.api import RELEASE_NAME_PATTERN as _RELEASE_NAME
+from ebs.meta.api import VERSION_PATTERN as _VERSION
 
 __all__ = [
     "SCHEMA",
@@ -30,15 +34,21 @@ __all__ = [
     "api_tokens",
     "blobs",
     "builds",
+    "channel_history",
+    "channels",
     "domains",
     "driver_leases",
+    "event_id_seq",
     "events",
+    "exports",
     "gc_runs",
     "lease_objects",
     "leases",
     "metadata",
     "pins",
     "provenance_edges",
+    "release_imports",
+    "releases",
     "tombstones",
     "toolchain_manifests",
     "toolchains",
@@ -134,8 +144,13 @@ actions = sa.Table(
     sa.Column("cached", sa.Boolean, nullable=False, server_default=sa.false()),
     sa.Column("result_key", sa.Text, nullable=True),
     sa.Column("result", JSONB, nullable=True),  # last recorded ResultManifest (0003, P0-15)
+    sa.Column("rule", sa.Text, nullable=True),  # rule kind, params, toolchain (0010, P2-04)
+    sa.Column("params", JSONB(none_as_null=True), nullable=True),  # None is SQL NULL
+    sa.Column("toolchain", sa.Text, nullable=True),
     _digest_check("key"),
     _digest_check("result_key"),
+    _digest_check("toolchain"),
+    sa.CheckConstraint("params IS NULL OR jsonb_typeof(params) = 'object'", name="params_object"),
     sa.CheckConstraint(
         "result IS NULL OR (jsonb_typeof(result) = 'object' AND result->'v' = '1'::jsonb)",
         name="result_manifest",
@@ -227,10 +242,18 @@ toolchain_manifests = sa.Table(  # P1-07: fingerprint entries, for drift reports
     sa.Column("entries", sa.LargeBinary, nullable=False),  # zlib-compressed JSON lines
 )
 
+# Partitioned by UTC month of `stored_at`, the store's clock at insert (revision 0008, P2-05
+# R6): partitions `events_yYYYYmMM` are created on demand by `ebs.ensure_events_partition(ts)`
+# and dropped whole by retention. A partitioned table's primary key must include the partition
+# key, hence (id, stored_at); ids come from a sequence shared by every partition. `ts` is the
+# event's own (client) time and never picks a partition.
+event_id_seq = sa.Sequence("event_id_seq", metadata=metadata)
+
 events = sa.Table(
     "events",
     metadata,
-    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    # The database default is nextval('ebs.event_id_seq') too; autogenerate does not compare it.
+    sa.Column("id", sa.BigInteger, event_id_seq, nullable=False),
     sa.Column(
         "build_id", sa.BigInteger, sa.ForeignKey("builds.id", ondelete="CASCADE"), nullable=False
     ),
@@ -238,9 +261,12 @@ events = sa.Table(
     sa.Column("type", sa.Text, nullable=False),
     sa.Column("action_id", sa.Text, nullable=True),
     sa.Column("data", JSONB, nullable=False),
+    sa.Column("stored_at", _TS, nullable=False),
     sa.CheckConstraint(f"type ~ '{EVENT_TYPE_PATTERN}'", name="type_valid"),
     sa.CheckConstraint("jsonb_typeof(data) = 'object'", name="data_object"),
+    sa.PrimaryKeyConstraint("id", "stored_at"),
     sa.Index(None, "build_id", "id"),
+    postgresql_partition_by="RANGE (stored_at)",
 )
 
 api_tokens = sa.Table(  # bearer tokens of the metadata service (P1-06); only the hash is stored
@@ -323,7 +349,94 @@ tombstones = sa.Table(  # the grace period between deleting cache rows and their
 )
 
 
-# --- Phase 2: detached and resumed drivers (P2-08, revision 0007) ---------------------------------
+# --- Phase 2: releases and channels (P2-02, revision 0007) ---------------------------------------
+# Revision 0007 also installs triggers (not modelled here): `releases` refuses DELETE and any
+# UPDATE but setting the yank fields once (I19); `channel_history` and `exports` are append-only.
+
+releases = sa.Table(
+    "releases",
+    metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    _domain_fk(),
+    sa.Column("name", sa.Text, nullable=False),
+    sa.Column("version", sa.Text, nullable=False),
+    sa.Column("build_id", sa.BigInteger, sa.ForeignKey("builds.id"), nullable=False),
+    sa.Column("outputs", JSONB, nullable=False),  # {name: ReleaseOutput}
+    sa.Column("notes", sa.Text, nullable=False, server_default=sa.text("''")),
+    sa.Column("allow_failed", sa.Text, nullable=True),
+    sa.Column("attestation", sa.Text, nullable=True),  # P3-03
+    sa.Column("signature", sa.Text, nullable=True),  # P3-03
+    sa.Column("exported_from", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=True),
+    sa.Column("created_at", _TS, nullable=False),
+    sa.Column("created_by", sa.Text, nullable=False),
+    sa.Column("yanked_at", _TS, nullable=True),
+    sa.Column("yanked_by", sa.Text, nullable=True),
+    sa.Column("yank_reason", sa.Text, nullable=True),
+    sa.UniqueConstraint("domain", "name", "version"),
+    sa.CheckConstraint(f"name ~ '{_RELEASE_NAME}'", name="name_valid"),
+    sa.CheckConstraint(f"version ~ '{_VERSION}'", name="version_valid"),
+    sa.CheckConstraint("jsonb_typeof(outputs) = 'object'", name="outputs_object"),
+    sa.CheckConstraint(
+        "(yanked_at IS NULL) = (yanked_by IS NULL) AND (yanked_at IS NULL) = (yank_reason IS NULL)",
+        name="yank_fields",
+    ),
+)
+
+channel_history = sa.Table(  # every move of a channel, append-only
+    "channel_history",
+    metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    _domain_fk(),
+    sa.Column("name", sa.Text, nullable=False),
+    sa.Column("channel", sa.Text, nullable=False),
+    sa.Column("release_id", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=False),
+    sa.Column("moved_at", _TS, nullable=False),
+    sa.Column("moved_by", sa.Text, nullable=False),
+    sa.Column("gate_flow", sa.Text, nullable=True),
+    sa.Column("gate_build_id", sa.BigInteger, sa.ForeignKey("builds.id"), nullable=True),
+    sa.CheckConstraint(f"channel ~ '{CHANNEL_PATTERN}'", name="channel_valid"),
+    sa.CheckConstraint("(gate_flow IS NULL) = (gate_build_id IS NULL)", name="gate_fields"),
+    sa.Index(None, "domain", "name", "channel", "id"),
+)
+
+channels = sa.Table(  # the current pointer: the last move of each channel
+    "channels",
+    metadata,
+    sa.Column("domain", sa.Text, sa.ForeignKey("domains.name"), primary_key=True),
+    sa.Column("name", sa.Text, primary_key=True),
+    sa.Column("channel", sa.Text, primary_key=True),
+    sa.Column("release_id", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=False),
+    sa.Column("move_id", sa.BigInteger, sa.ForeignKey("channel_history.id"), nullable=False),
+    sa.Column("updated_at", _TS, nullable=False),
+    sa.Column("updated_by", sa.Text, nullable=False),
+)
+
+exports = sa.Table(  # audited cross-domain copies, append-only
+    "exports",
+    metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("release_id", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=False),
+    sa.Column("exported_release_id", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=False),
+    sa.Column("to_domain", sa.Text, sa.ForeignKey("domains.name"), nullable=False),
+    sa.Column("exported_at", _TS, nullable=False),
+    sa.Column("exported_by", sa.Text, nullable=False),
+    sa.Index(None, "release_id"),
+)
+
+# --- Phase 2: imports (P2-03, revision 0009; append-only like the tables above) ----------------
+
+release_imports = sa.Table(  # which release each import alias of a build used (`used-by`)
+    "release_imports",
+    metadata,
+    sa.Column("build_id", sa.BigInteger, sa.ForeignKey("builds.id"), primary_key=True),
+    sa.Column("alias", sa.Text, primary_key=True),
+    sa.Column("release_id", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=False),
+    sa.Index(None, "release_id"),
+    sa.CheckConstraint(f"alias ~ '{IMPORT_ALIAS_PATTERN}'", name="alias_valid"),
+)
+
+
+# --- Phase 2: detached and resumed drivers (P2-08, revision 0011) ---------------------------------
 
 driver_leases = sa.Table(  # one live driver per build; renewed by the driver's heartbeat
     "driver_leases",

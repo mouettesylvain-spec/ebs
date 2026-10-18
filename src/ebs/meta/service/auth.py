@@ -20,7 +20,7 @@ import pwd
 import re
 import subprocess
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final, Literal, Protocol
 
 from ebs.core.errors import MetadataError
@@ -39,6 +39,7 @@ __all__ = [
     "MungeAuthenticator",
     "MungeIdentity",
     "MungeVerifier",
+    "NotFoundError",
     "Operation",
     "PermissionDeniedError",
     "Policy",
@@ -51,9 +52,12 @@ __all__ = [
 
 _log = get_logger(__name__)
 
-Operation = Literal["read", "cache_write", "build_write", "toolchain_write"]
+Operation = Literal[
+    "read", "cache_write", "build_write", "toolchain_write", "release_write", "release_export"
+]
 """What a route does: read shared state, write the action cache or access times, change a
-build (create it, its actions, results, events or status), or register a toolchain."""
+build (create it, its actions, results, events or status), register a toolchain, create, yank
+or move the channel of a release of a build (P2-02), or export a release to another domain."""
 
 
 class AuthenticationError(MetadataError):
@@ -64,14 +68,23 @@ class PermissionDeniedError(MetadataError):
     """An authenticated principal may not do this (HTTP 403)."""
 
 
+class NotFoundError(MetadataError):
+    """No such object, or one the caller may not know about (HTTP 404, P2-01 R2)."""
+
+
 @dataclass(frozen=True)
 class Principal:
-    """Who is calling: a Unix user proven by MUNGE, or the holder of a bearer token."""
+    """Who is calling: a Unix user proven by MUNGE, the holder of a bearer token, or a
+    dashboard user logged in through OIDC (`session`, P2-05), named by their Unix user name.
+
+    `authorized` records the operations authorized during the request (`ServiceDeps.check`); the
+    service refuses to send a success that none was (fail closed, P2-01 R1)."""
 
     name: str
-    via: Literal["munge", "token"]
+    via: Literal["munge", "token", "session"]
     token_kind: TokenKind | None = None
     team: str | None = None
+    authorized: list[str] = field(default_factory=list, compare=False, repr=False, hash=False)
 
 
 @dataclass(frozen=True)
@@ -119,6 +132,9 @@ class Policy:
     - `toolchain_write` (P1-07 registry): `service` tokens and the user names in
       `toolchain_admins` (`[meta_service].toolchain_admins`). A new current toolchain changes
       the toolchain of every later build, so ordinary users may not register one.
+    - `release_write`, `release_export` (P2-02): like `build_write` on the release's build (its
+      owner, or a CI token of its project). P2-01 adds team and domain membership (an export
+      needs both domains; `domain` is the target).
     - `read`, `cache_write`: any authenticated principal. P2-01 adds domain membership here.
     """
 
@@ -142,7 +158,7 @@ class Policy:
                 f"{principal.name!r} is not allowed to register toolchains: only service tokens "
                 "and the users in [meta_service].toolchain_admins may"
             )
-        if op != "build_write":
+        if op not in ("build_write", "release_write", "release_export"):
             return
         if owner is None:  # pragma: no cover - routes always pass the owner of a build write
             raise PermissionDeniedError("build write without a build owner; this is a bug")
@@ -151,11 +167,16 @@ class Policy:
             or (principal.token_kind == "ci" and principal.team == owner.project)
         ):
             return
+        of_build = f"build {owner.build} (owned by {owner.user_name!r}, project {owner.project!r})"
+        if op != "build_write":
+            raise PermissionDeniedError(
+                f"{principal.name!r} is not allowed to release, yank or export outputs of "
+                f"{of_build}: only the build's owner, or a CI token of its project, may"
+            )
         target = (
             f"create a build for user {owner.user_name!r}"
             if owner.build is None
-            else f"change build {owner.build} (owned by {owner.user_name!r}, "
-            f"project {owner.project!r})"
+            else f"change {of_build}"
         )
         raise PermissionDeniedError(
             f"{principal.name!r} is not allowed to {target}: only the owner, or a CI token of "

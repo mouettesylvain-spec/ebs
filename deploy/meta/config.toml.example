@@ -16,3 +16,39 @@ audience = "ebs-meta.example"
 bearer = true         # Authorization: Bearer tokens (python -m ebs.meta.service token create)
 # Users who may register toolchains (`ebs toolchain register`); service tokens may too.
 toolchain_admins = []
+# P2-01: the domains this service serves. The service account must be a member of exactly these
+# (R5); each one is configured below. Users see a domain only if they are in its unix_group.
+domains = ["cpu-nda"]
+# Bearer tokens are scoped by principal; without an entry, the NSS groups of a user of that name.
+# token_domains = { "ci-cpu" = ["cpu-nda"] }
+group_ttl_s = 60      # NSS group lookups are cached this long
+log_level = "INFO"    # JSON log lines on stderr, each with the request's X-Request-ID
+
+# P2-05: request limits, per principal and per worker process.
+[meta_service.limits]
+rate_per_s = 100.0       # sustained requests per second; 429 + Retry-After beyond the burst
+burst = 2000
+max_body_bytes = 16777216
+max_page_size = 1000     # list routes: items per page (and the default)
+
+# P2-05: the event stream (GET /api/v1/builds/{id}/events) and the events table's retention.
+[meta_service.events]
+retention_days = 180     # `python -m ebs.meta.service events prune` (ebs-meta-prune.timer)
+max_stream_s = 300       # streams close after this; EventSource reconnects with Last-Event-ID
+poll_s = 15
+keepalive_s = 15
+
+# P2-05: GitLab login for the dashboard. Register an application in GitLab (scopes: openid,
+# profile; redirect URI below), then put its secret and a session key in files only the
+# service account reads (`openssl rand -hex 32 > session_keys`; add a new first line to rotate).
+# [meta_service.oidc]
+# issuer = "https://gitlab.example"
+# client_id = "<application id>"
+# client_secret_file = "/etc/ebs/oidc_client_secret"
+# redirect_uri = "https://ebs-meta.example/auth/callback"
+# session_secret_file = "/etc/ebs/session_keys"
+# username_claim = "preferred_username"   # must be the Unix user name
+
+[[domains]]
+name = "cpu-nda"
+unix_group = "cpu-nda"

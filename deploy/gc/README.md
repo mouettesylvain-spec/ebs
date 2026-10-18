@@ -10,7 +10,8 @@ run is recorded in the `gc_runs` table.
 
 ## Install (one timer per domain)
 
-1. Create the `ebs-gc` account, a member of each domain's Unix group, and a database role that
+1. Create the `ebs-gc` account, a member of each domain's Unix group (and list those domains in
+   `[gc].domains`: GC refuses any other), and a database role that
    can read and write the `ebs` schema.
 2. `install -m 644 ebs-gc@.service ebs-gc@.timer /etc/systemd/system/`
 3. `install -m 640 -g ebs-gc gc.toml.example /etc/ebs/gc.toml` and set the database URL and the

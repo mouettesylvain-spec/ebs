@@ -18,6 +18,7 @@ from ebs.meta.api import (
 )
 from ebs.meta.service.auth import Principal
 from ebs.meta.service.deps import ServiceDeps, body, current_principal, get_deps, json_body
+from ebs.meta.service.pagination import Cursor, Limit, paginate, sort_ts
 from ebs.meta.service.routes import no_content, ok
 
 # Authenticate before any body is read or validated (401, never 422, without credentials).
@@ -42,7 +43,7 @@ def register_toolchain(
     deps: Deps,
     caller: Caller,
 ) -> Response:
-    deps.authorize(caller, "toolchain_write", domain=None, owner=None)
+    deps.check(caller, "toolchain_write", domain=None, owner=None)
     try:
         manifest = base64.b64decode(reg.manifest_b64, validate=True)
     except binascii.Error as exc:
@@ -52,30 +53,42 @@ def register_toolchain(
 
 @router.get("", response_model=ToolchainList)
 def list_toolchains(
-    deps: Deps, caller: Caller, module: str | None = None, current_only: bool = False
+    deps: Deps,
+    caller: Caller,
+    module: str | None = None,
+    current_only: bool = False,
+    limit: Limit = None,
+    cursor: Cursor = None,
 ) -> Response:
-    deps.authorize(caller, "read", domain=None, owner=None)
-    found = deps.store.list_toolchains(module=module, current_only=current_only)
-    return ok(ToolchainList(toolchains=found))
+    deps.check(caller, "read", domain=None, owner=None)
+    page, after = paginate(
+        deps.store.list_toolchains(module=module, current_only=current_only),
+        lambda t: (t.module, sort_ts(t.registered_at), str(t.id)),
+        cursor=cursor,
+        limit=limit,
+        max_page_size=deps.limits.max_page_size,
+        query={"list": "toolchains", "module": module, "current_only": current_only},
+    )
+    return ok(ToolchainList(toolchains=page, next=after))
 
 
 @router.get("/current", response_model=ToolchainList)
 def current_toolchain(module: str, deps: Deps, caller: Caller) -> Response:
-    deps.authorize(caller, "read", domain=None, owner=None)
+    deps.check(caller, "read", domain=None, owner=None)
     found = deps.store.current_toolchain(module)
     return ok(ToolchainList(toolchains=[] if found is None else [found]))
 
 
 @router.get("/{toolchain_id}", response_model=ToolchainList)
 def get_toolchain(toolchain_id: str, deps: Deps, caller: Caller) -> Response:
-    deps.authorize(caller, "read", domain=None, owner=None)
+    deps.check(caller, "read", domain=None, owner=None)
     found = deps.store.get_toolchain(_id(toolchain_id))
     return ok(ToolchainList(toolchains=[] if found is None else [found]))
 
 
 @router.get("/{toolchain_id}/manifest", response_model=ToolchainManifest)
 def toolchain_manifest(toolchain_id: str, deps: Deps, caller: Caller) -> Response:
-    deps.authorize(caller, "read", domain=None, owner=None)
+    deps.check(caller, "read", domain=None, owner=None)
     found = deps.store.toolchain_manifest(_id(toolchain_id))
     encoded = None if found is None else base64.b64encode(found).decode("ascii")
     return ok(ToolchainManifest(manifest_b64=encoded))
@@ -83,6 +96,6 @@ def toolchain_manifest(toolchain_id: str, deps: Deps, caller: Caller) -> Respons
 
 @router.post("/{toolchain_id}/touch", status_code=204)
 def touch_toolchain(toolchain_id: str, deps: Deps, caller: Caller) -> Response:
-    deps.authorize(caller, "cache_write", domain=None, owner=None)
+    deps.check(caller, "cache_write", domain=None, owner=None)
     deps.store.touch_toolchain(_id(toolchain_id))
     return no_content()

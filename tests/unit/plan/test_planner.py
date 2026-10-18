@@ -325,11 +325,13 @@ def test_system_and_toolchain_paths_allowed(cas: FsCAS, tmp_path: Path, argv: li
     assert plan.actions[0].argv == tuple(argv)
 
 
-def test_imports_are_not_supported_yet(cas: FsCAS, tmp_path: Path) -> None:
+def test_imports_need_flow_lock(cas: FsCAS, tmp_path: Path) -> None:
+    # Before P2-03 imports were refused outright; now they need flow.lock pins
+    # (tests/unit/plan/test_imports.py covers the rest).
     step = {"kind": "shell", "command": ["x"], "inputs": {"rtl": "${imports.rtl}/**"}}
     imports = {"rtl": {"from": "rtl-team/cpu", "channel": "stable"}}
     p, _ = planner(cas, RTL)
-    with pytest.raises(PlanError, match=r"imports require flow.lock support"):
+    with pytest.raises(PlanError, match=r"no flow.lock .*ebs lock update rtl"):
         p.plan(flow({"s": step}, imports=imports), base=tmp_path)
 
 

@@ -7,11 +7,11 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from ebs.core.errors import SourceError, SourceEscapeError
-from ebs.sources.globs import resolve_glob
+from ebs.sources.globs import match_paths, resolve_glob
 from tests.helpers.sources import write
 
 
@@ -201,3 +201,31 @@ def test_double_star_matches_reference(paths: list[list[str]]) -> None:
             for p in everything
             if any(part.endswith(".sv") for part in p.split("/"))
         ]
+
+
+_SEGMENTS = st.sampled_from(["*", "**", "a.sv", "*.sv", "?", ".h.sv", ".*", "[ab]*", "c", "e f.sv"])
+
+
+# P2-03 R3 (property): `match_paths` (globs over a release's file list, no filesystem) agrees
+# with `resolve_glob` on the same files, so an import glob means what a source glob means.
+@given(
+    st.lists(st.lists(_NAMES, min_size=1, max_size=4), min_size=1, max_size=12),
+    st.lists(_SEGMENTS, min_size=1, max_size=4),
+)
+@settings(deadline=None)  # one temporary directory tree per example: I/O bound
+def test_match_paths_agrees_with_resolve_glob(paths: list[list[str]], segments: list[str]) -> None:
+    pattern = "/".join(segments)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for parts in paths:
+            target = root.joinpath(*parts)
+            if any(p.is_file() for p in [*target.parents, target] if root in p.parents):
+                continue
+            if target.is_dir():
+                continue
+            write(target, "x")
+        files = []
+        for dirpath, _, filenames in os.walk(root):
+            rel = Path(dirpath).relative_to(root)
+            files += [(rel / f).as_posix() for f in filenames]
+        assert match_paths(sorted(files), pattern) == resolve_glob(root, pattern, optional=True)

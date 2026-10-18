@@ -13,7 +13,9 @@ from tests.helpers.outputs import U1, write_outputs_build
 
 
 # R6: `ebs gc --dry-run --json` prints the report and records the run; nothing is deleted.
-def test_gc_dry_run_json(site: Site) -> None:
+def test_gc_dry_run_json(tmp_path: Path) -> None:
+    write_site(tmp_path, config_extra=GC_DOMAINS)
+    site = Site(tmp_path, TestServices(tmp_path))
     cas = site.services.cas("test")
     blob = cas.put_bytes(b"old object")
     store = site.services.memory_store
@@ -37,6 +39,9 @@ def test_gc_dry_run_json(site: Site) -> None:
     assert [t.digest for t in store.gc_tombstones("test")] == [blob]
 
 
+GC_DOMAINS = '[gc]\ndomains = ["test"]\n'  # P2-01 R5: the GC account's domains
+
+
 # One domain per run: from --domain or [gc].domain; [gc] settings are validated.
 def test_gc_domain_and_config(tmp_path: Path) -> None:
     write_site(tmp_path, config_extra='[gc]\ndomain = "test"\ngrace_hours = 2\n')
@@ -49,7 +54,7 @@ def test_gc_domain_and_config(tmp_path: Path) -> None:
     assert missing.exit_code == ExitCode.USAGE
     assert "--domain" in missing.output
     bad = tmp_path / "bad"
-    write_site(bad, config_extra="[gc]\ngrace_hours = 0\n")
+    write_site(bad, config_extra='[gc]\ndomains = ["test"]\ngrace_hours = 0\n')
     wrong = Site(bad, TestServices(bad)).invoke(["gc", "--domain", "test"])
     assert wrong.exit_code == ExitCode.USAGE
     assert "grace_hours" in wrong.output
@@ -57,11 +62,34 @@ def test_gc_domain_and_config(tmp_path: Path) -> None:
 
 # R7: GC needs direct database access as the service account, never the HTTP service.
 def test_gc_needs_postgres(tmp_path: Path) -> None:
-    write_site(tmp_path, config_extra='[metadata]\nurl = "https://meta.example.invalid"\n')
+    write_site(
+        tmp_path,
+        config_extra='[metadata]\nurl = "https://meta.example.invalid"\n' + GC_DOMAINS,
+    )
     site = Site(tmp_path, TestServices(tmp_path, with_store=False))
     result = site.invoke(["gc", "--domain", "test"])
     assert result.exit_code == ExitCode.USAGE
     assert "service account" in result.output
+
+
+# P2-01 R5: GC refuses a domain its service account is not explicitly listed for.
+def test_gc_listed_domains_only(tmp_path: Path) -> None:
+    write_site(tmp_path, config_extra='[gc]\ndomains = ["test", "cpu-nda"]\n')
+    site = Site(tmp_path, TestServices(tmp_path))
+    assert site.invoke(["gc", "--domain", "test", "--dry-run"]).exit_code == ExitCode.OK
+    refused = site.invoke(["gc", "--domain", "partner", "--dry-run"])
+    assert refused.exit_code == ExitCode.USAGE
+    assert "not listed for this GC account" in refused.output
+    bare = tmp_path / "bare"
+    write_site(bare)
+    unlisted = Site(bare, TestServices(bare)).invoke(["gc", "--domain", "test", "--dry-run"])
+    assert unlisted.exit_code == ExitCode.USAGE
+    assert "[gc].domains" in unlisted.output
+    bad = tmp_path / "bad"
+    write_site(bad, config_extra='[gc]\ndomains = "test"\n')
+    wrong = Site(bad, TestServices(bad)).invoke(["gc", "--domain", "test"])
+    assert wrong.exit_code == ExitCode.USAGE
+    assert "must be a list" in wrong.output
 
 
 # R2: pinning a build makes its outputs GC roots; unpinning removes them.

@@ -21,7 +21,8 @@ from ebs.cli._records import BuildRecord, build_dir
 from ebs.cli.main import app
 from ebs.core.digest import hash_bytes
 from ebs.exec.api import Executor
-from ebs.meta.api import BuildId, Event, GcStore, MetadataStore
+from ebs.exec.slurm.accounts import BuildKind
+from ebs.meta.api import BuildId, Event, GcStore, MetadataBackend
 from ebs.meta.memory import InMemoryMetadataStore
 from ebs.sources.statcache import StatCache
 from tests.helpers.driver import ScriptedExecutor, SleepRecorder
@@ -68,8 +69,9 @@ class TestServices(SiteServices):
         self.scripts: dict[str, tuple[Any, ...]] = {}
         self.on_poll: Callable[[int], None] | None = None
         self.executors: list[ScriptedExecutor] = []
+        self.executor_args: list[dict[str, str | None]] = []  # project, build_kind per build
 
-    def store(self, *, required: bool) -> MetadataStore | None:
+    def store(self, *, required: bool) -> MetadataBackend | None:
         if not self.with_store:
             return super().store(required=required)
         return self.memory_store
@@ -81,8 +83,15 @@ class TestServices(SiteServices):
 
     @contextmanager
     def open_executor(
-        self, name: str, *, domain: str, log_dir: Path, project: str | None = None
+        self,
+        name: str,
+        *,
+        domain: str,
+        log_dir: Path,
+        project: str | None = None,
+        build_kind: BuildKind = "dev",
     ) -> Iterator[Executor]:
+        self.executor_args.append({"project": project, "build_kind": build_kind})
         executor = ScriptedExecutor(
             self.memory_store, self.cas(domain), on_poll=self.on_poll, record_jobs=True
         )

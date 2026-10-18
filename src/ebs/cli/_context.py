@@ -25,11 +25,13 @@ from ebs.cas.fs import FsCAS
 from ebs.config import Config, config_paths, load_config
 from ebs.core.clock import Clock, SystemClock
 from ebs.core.errors import ConfigError, ExecutorError, MetadataError, SourceError, ToolchainError
+from ebs.domains import Domains, current_groups, group_id
 from ebs.exec.api import Executor
 from ebs.exec.local import LocalExecutor
+from ebs.exec.slurm.accounts import BuildKind
 from ebs.exec.slurm.cli import SlurmCli
 from ebs.exec.slurm.executor import SlurmExecutor, SlurmSettings
-from ebs.meta.api import GcStore, MetadataStore
+from ebs.meta.api import GcStore, MetadataBackend
 from ebs.meta.client import TOKEN_ENV
 from ebs.rules.api import DEFAULT_LICENSE_ERROR_PATTERNS, RuleSettings
 from ebs.rules.registry import RuleRegistry
@@ -141,7 +143,7 @@ class SiteServices:
         self.clock: Clock = clock or SystemClock()
         self._statcache_default = statcache_default or default_statcache_path(os.getuid())
         self._config: Config | None = None
-        self._store: MetadataStore | None = None
+        self._store: MetadataBackend | None = None
 
     @classmethod
     def from_process(cls) -> SiteServices:
@@ -170,10 +172,41 @@ class SiteServices:
 
     # --- storage --------------------------------------------------------------------------------
 
-    def cas(self, domain: str) -> FsCAS:
-        return FsCAS(self.runner_settings().cas_root, domain, clock=self.clock)
+    def domains(self) -> Domains:
+        """`[[domains]]` (P2-01); empty on a site that configures none."""
+        return Domains.from_config(self.config())
 
-    def store(self, *, required: bool) -> MetadataStore | None:
+    def user_groups(self) -> frozenset[str]:
+        """The names of the calling user's groups (tests replace this)."""
+        return current_groups()
+
+    def group_id(self, name: str) -> int | None:
+        """The gid of Unix group `name` (NSS), or None (tests replace this)."""
+        return group_id(name)
+
+    def disk_usage(self, path: Path) -> tuple[int, int]:
+        """(free, total) bytes of the filesystem holding `path` (tests replace this)."""
+        usage = shutil.disk_usage(path)
+        return usage.free, usage.total
+
+    def check_domain_access(self, domain: str) -> None:
+        """ConfigError unless the user may work in `domain` (P2-01 R3); a site without
+        `[[domains]]` is unrestricted. This guard is advisory (user config files can change
+        `[[domains]]`): the CAS and debug modes and the metadata service enforce membership."""
+        domains = self.domains()
+        if not domains.configured:
+            return
+        found = domains.require(domain)
+        if found.unix_group not in self.user_groups():
+            raise ConfigError(
+                f"you are not a member of domain {domain!r} (Unix group {found.unix_group!r}); "
+                "ask the domain admins for access. Nothing was hashed or stored"
+            )
+
+    def cas(self, domain: str) -> FsCAS:
+        return FsCAS(self.runner_settings().cas_root_for(domain), domain, clock=self.clock)
+
+    def store(self, *, required: bool) -> MetadataBackend | None:
         """The metadata store of `[metadata].url`; None (or ConfigError if required) without it."""
         if self._store is not None:
             return self._store
@@ -312,10 +345,17 @@ class SiteServices:
 
     @contextmanager
     def open_executor(
-        self, name: str, *, domain: str, log_dir: Path, project: str | None = None
+        self,
+        name: str,
+        *,
+        domain: str,
+        log_dir: Path,
+        project: str | None = None,
+        build_kind: BuildKind = "dev",
     ) -> Iterator[Executor]:
-        """`local` (processes on this host) or `slurm` (jobs; needs the metadata store, and
-        `project` picks the SLURM account, P1-03)."""
+        """`local` (processes on this host) or `slurm` (jobs; needs the metadata store).
+        `project` and `build_kind` pick the SLURM account and QOS (P1-03 R3; `--ci` passes
+        "ci"); the local executor has neither and gets the domain per batch."""
         if name == "slurm":
             yield SlurmExecutor(
                 cli=self.slurm_cli(),
@@ -326,6 +366,7 @@ class SiteServices:
                 env={k: self.environ[k] for k in _JOB_ENV if k in self.environ},
                 clock=self.clock,
                 project=project,
+                build_kind=build_kind,
             )
             return
         if name != "local":

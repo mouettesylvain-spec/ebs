@@ -124,7 +124,8 @@ def resolve_contents(
 
     An input id is its content digest, except for an output of a `deterministic: false`
     producer: that id is derived from the producer's key, and the bytes are found through the
-    producer's recorded result (`MetadataStore.resolve_output`).
+    producer's recorded result (`MetadataStore.resolve_output`). An imported release output
+    carries its content in the plan (`ImportInput.content`).
     """
     contents: dict[str, Digest] = {}
     for ref in spec.inputs:
@@ -148,7 +149,7 @@ def resolve_content(
             "driver must refine the plan with its producer's result before running it"
         )
     if isinstance(ref.source, ImportInput):
-        raise UsageError(f"input {ref.logical_path!r} imports a release; imports arrive with P2-03")
+        return ref.source.content  # the release recorded it: no store lookup (P2-03 R3)
     if not isinstance(ref.source, ActionOutputInput) or _deterministic(plan, ref.source):
         return ref.id
     if store is None:

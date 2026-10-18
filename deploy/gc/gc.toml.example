@@ -9,5 +9,7 @@ root = "/cas"
 url = "postgresql+psycopg://ebs_gc@ebs-db.example.invalid/ebs"
 
 [gc]
+# P2-01: the domains this account collects; it must be a member of each one's Unix group.
+domains = ["cpu-nda"]
 grace_hours = 24        # cache rows go first; their bytes only after this (invariant I15)
 tmp_max_age_hours = 24  # abandoned uploads in <cas>/<domain>/tmp/

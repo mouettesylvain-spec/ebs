@@ -6,6 +6,7 @@ lock makes each method atomic; a method validates and stages everything before i
 
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -18,21 +19,36 @@ from ebs.meta._common import (
     attribution_digests,
     cache_refs,
     check_blobs,
+    check_by,
     check_digest,
     check_driver_owner,
+    check_event_query,
+    check_exportable,
     check_final_status,
     check_lease_ttl,
     check_pin,
+    check_release,
+    check_release_imports,
     check_result,
     check_run,
+    check_set_channel,
     check_toolchain,
+    check_walk,
+    edge_models,
     edge_rows,
+    month_name,
+    month_start,
+    next_month,
+    provenance_graph,
+    release_matches,
     revalidate,
     stored_result,
     touch_cutoff,
     transition,
+    walk_levels,
 )
 from ebs.meta.api import (
+    EVENT_PAGE_MAX,
     ActionRow,
     ActionState,
     BlobRef,
@@ -40,17 +56,28 @@ from ebs.meta.api import (
     BuildId,
     BuildStatus,
     BuildView,
+    ChannelMove,
+    ChannelView,
     DomainPolicy,
     DriverLease,
     Event,
+    ExportRecord,
+    GateCheck,
     GcAttribution,
     GcBlob,
     GcCacheEntry,
     GcRoots,
     GcRun,
     LeaseId,
+    ProvenanceAction,
+    ProvenanceGraph,
     RegisterOutcome,
+    ReleaseCreate,
+    ReleaseId,
+    ReleaseImport,
+    ReleaseView,
     ResultManifest,
+    StoredEvent,
     Tombstone,
     ToolchainCreate,
     ToolchainRecord,
@@ -105,7 +132,9 @@ class InMemoryMetadataStore:
         self._uuids: set[str] = set()
         self._edges: dict[_EdgeKey, tuple[str, str | None]] = {}  # -> object_id, content
         self._blobs: dict[tuple[str, str], _Blob] = {}
-        self._events: list[Event] = []
+        self._events: list[StoredEvent] = []
+        self._stored_at: dict[int, datetime] = {}  # id -> store clock (the PG partition key)
+        self._last_event = 0
         self._toolchains: dict[str, ToolchainRecord] = {}
         self._toolchain_manifests: dict[str, bytes] = {}
         self._leases: dict[int, _Lease] = {}
@@ -115,6 +144,11 @@ class InMemoryMetadataStore:
         self._tombstones: dict[tuple[str, str], Tombstone] = {}
         self._policies: dict[str, DomainPolicy] = {}
         self.gc_runs: list[GcRun] = []
+        self._releases: dict[int, dict[str, object]] = {}  # JSON, like a database row
+        self._channels: dict[tuple[str, str, str], int] = {}  # -> last history entry
+        self._history: list[ChannelMove] = []
+        self._exports: list[ExportRecord] = []
+        self._release_imports: dict[int, dict[str, ReleaseImport]] = {}  # build -> alias -> row
 
     # --- action cache ---------------------------------------------------------------------------
 
@@ -276,6 +310,23 @@ class InMemoryMetadataStore:
             for lease in [i for i, x in self._leases.items() if x.build == build]:
                 del self._leases[lease]
 
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        with self._lock:
+            b = self._build(build)
+            recorded = self._release_imports.get(build, {})
+            ids = {int(r.release) for r in imports}
+            new = check_release_imports(
+                build, b.view.domain, imports, {i: self._release(i) for i in ids},
+                {alias: int(r.release) for alias, r in recorded.items()},
+            )  # fmt: skip
+            self._release_imports.setdefault(build, {}).update((r.alias, r) for r in new)
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        with self._lock:
+            self._build(build)
+            rows = self._release_imports.get(build, {})
+            return [rows[alias] for alias in sorted(rows)]
+
     def get_build(self, build: BuildId) -> BuildView:
         with self._lock:
             b = self._build(build)
@@ -415,6 +466,262 @@ class InMemoryMetadataStore:
             b.view = b.view.model_copy(update={"pinned": False})
             return self._pins.pop(build, None) is not None
 
+    # --- releases and channels (P2-02) -----------------------------------------------------------
+
+    def _release(self, release: int) -> ReleaseView | None:
+        row = self._releases.get(release)
+        return None if row is None else ReleaseView.model_validate_json(json.dumps(row))
+
+    def create_release(self, spec: ReleaseCreate, *, by: str) -> ReleaseView:
+        checked = revalidate(spec, ReleaseCreate, "create_release")
+        by = check_by(by, "create_release")
+        with self._lock:
+            b = self._build(checked.build)
+            results = {a: stored_result(p, checked.build, a) for a, p in b.results.items()}
+            check_release(checked, b.view, b.actions, results)
+            return self._insert_release(checked, by, exported_from=None)
+
+    def _insert_release(
+        self, spec: ReleaseCreate, by: str, *, exported_from: int | None
+    ) -> ReleaseView:
+        key = (spec.domain, spec.name, spec.version)
+        if any((r["domain"], r["name"], r["version"]) == key for r in self._releases.values()):
+            raise MetadataError(
+                f"release {spec.name} {spec.version} already exists in domain {spec.domain!r}; "
+                "releases are immutable, so publish a new version"
+            )
+        release_id = ReleaseId(len(self._releases) + 1)
+        view = ReleaseView(
+            **dict(spec),
+            id=release_id,
+            created_at=self._clock.now(),
+            created_by=by,
+            exported_from=None if exported_from is None else ReleaseId(exported_from),
+            yanked_at=None,
+            yanked_by=None,
+            yank_reason=None,
+        )
+        self._domains.add(spec.domain)
+        self._releases[release_id] = view.model_dump(mode="json")
+        return view.model_copy(deep=True)
+
+    def get_release(self, domain: str, name: str, version: str) -> ReleaseView | None:
+        check_domain(domain)
+        with self._lock:
+            for rid, r in self._releases.items():
+                if (r["domain"], r["name"], r["version"]) == (domain, name, version):
+                    return self._release(rid)
+        return None
+
+    def get_release_by_id(self, release: ReleaseId) -> ReleaseView | None:
+        with self._lock:
+            return self._release(release)
+
+    def list_releases(self, domain: str, *, name: str | None = None) -> list[ReleaseView]:
+        check_domain(domain)
+        with self._lock:
+            found = [
+                v
+                for rid in self._releases
+                if (v := self._release(rid)) is not None
+                and v.domain == domain
+                and (name is None or v.name == name)
+            ]
+        return sorted(found, key=lambda v: (v.name, v.created_at, v.id))
+
+    def yank_release(self, release: ReleaseId, *, by: str, reason: str) -> ReleaseView:
+        by = check_by(by, "yank_release")
+        if not isinstance(reason, str) or not reason or len(reason) > 4096:
+            raise MetadataError("yank_release: give a reason (1-4096 characters)")
+        with self._lock:
+            view = self._release(release)
+            if view is None:
+                raise MetadataError(f"yank_release: no release with id {release}")
+            if view.yanked_at is None:
+                view = view.model_copy(
+                    update={"yanked_at": self._clock.now(), "yanked_by": by, "yank_reason": reason}
+                )
+                self._releases[release] = view.model_dump(mode="json")
+            return view
+
+    def set_channel(
+        self,
+        domain: str,
+        name: str,
+        channel: str,
+        release: ReleaseId,
+        *,
+        by: str,
+        gate: GateCheck | None = None,
+    ) -> ChannelMove:
+        by = check_by(by, "set_channel")
+        checked_gate = None if gate is None else revalidate(gate, GateCheck, "set_channel gate")
+        with self._lock:
+            view = self._release(release)
+            check_set_channel(view, domain, name, channel)
+            assert view is not None
+            move = ChannelMove(
+                id=len(self._history) + 1,
+                domain=domain,
+                name=name,
+                channel=channel,
+                release=view.id,
+                version=view.version,
+                moved_at=self._clock.now(),
+                moved_by=by,
+                gate=checked_gate,
+            )
+            self._history.append(move)
+            self._channels[(domain, name, channel)] = move.id
+            return move
+
+    def get_channel(self, domain: str, name: str, channel: str) -> ChannelView | None:
+        check_domain(domain)
+        with self._lock:
+            last = self._channels.get((domain, name, channel))
+            if last is None:
+                return None
+            move = self._history[last - 1]
+            view = self._release(move.release)
+            assert view is not None
+            return ChannelView(
+                domain=domain, name=name, channel=channel, release=view,
+                updated_at=move.moved_at, updated_by=move.moved_by,
+            )  # fmt: skip
+
+    def channel_history(self, domain: str, name: str, channel: str) -> list[ChannelMove]:
+        check_domain(domain)
+        with self._lock:
+            return [m for m in self._history if (m.domain, m.name, m.channel) == (
+                domain, name, channel,
+            )]  # fmt: skip
+
+    def gate_builds(self, domain: str, flow: str, ids: Iterable[Digest]) -> list[BuildId]:
+        check_domain(domain)
+        wanted = {str(check_digest(d, "gate_builds id")) for d in ids}
+        with self._lock:
+            keys = {
+                key
+                for (d, key, direction, _path), (oid, _content) in self._edges.items()
+                if d == domain and direction == "in" and oid in wanted
+            }
+            found = [
+                BuildId(bid)
+                for bid, b in self._builds.items()
+                if b.view.domain == domain
+                and b.view.project == flow
+                and b.view.status == "passed"
+                and any(r.key is not None and str(r.key) in keys for r in b.actions.values())
+            ]
+        return sorted(found, reverse=True)
+
+    # --- provenance (ProvenanceStore, P2-04) -----------------------------------------------------
+
+    def provenance_upstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        return self._walk("upstream", domain, ids, keys, depth)
+
+    def provenance_downstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        return self._walk("downstream", domain, ids, keys, depth)
+
+    def _walk(
+        self, way: str, domain: str, ids: Iterable[Digest], keys: Iterable[Digest], depth: object
+    ) -> ProvenanceGraph:
+        domain, id_list, key_list, levels = check_walk(
+            domain, ids, keys, depth, f"provenance_{way}"
+        )
+        with self._lock:
+            edges = edge_models(
+                (
+                    (key, direction, path, oid, content)
+                    for (d, key, direction, path), (oid, content) in self._edges.items()
+                    if d == domain
+                ),
+                f"provenance_{way} {domain}",
+            )
+            # follow: the direction whose ids lead to the next level (the other one leads back).
+            follow = "in" if way == "upstream" else "out"
+            ahead: dict[str, set[str]] = {}  # key -> ids on its `follow` edges
+            behind: dict[str, set[str]] = {}  # id -> keys holding it on a `back` edge
+            by_content: dict[str, set[str]] = {}  # upstream only: content digest -> producers
+            for e in edges:
+                k, oid = str(e.action_key), str(e.object_id)
+                if e.direction == follow:
+                    ahead.setdefault(k, set()).add(oid)
+                    continue
+                behind.setdefault(oid, set()).add(k)
+                if e.content_digest is not None and way == "upstream":
+                    by_content.setdefault(str(e.content_digest), set()).add(k)
+
+            def step(level: set[str]) -> set[str]:
+                return {n for k in level for i in ahead.get(k, ()) for n in behind.get(i, ())}
+
+            first = set(key_list) | {
+                k for i in id_list for k in behind.get(i, set()) | by_content.get(i, set())
+            }
+            walked, truncated = walk_levels(first, step, levels)
+            kept = [e for e in edges if str(e.action_key) in walked]
+            objects = set(id_list) | {str(e.object_id) for e in kept}
+            rows = [
+                self._provenance_action(b, row)
+                for b in self._builds.values()
+                if b.view.domain == domain
+                for row in b.actions.values()
+                if row.key is not None and str(row.key) in walked
+            ]
+            found = [
+                match
+                for rid in sorted(self._releases)
+                if (rel := self._release(rid)) is not None and rel.domain == domain
+                for match in release_matches(rel, objects)
+            ]
+        return provenance_graph(domain, kept, rows, found, truncated)
+
+    @staticmethod
+    def _provenance_action(b: _Build, row: ActionRow) -> ProvenanceAction:
+        assert row.key is not None
+        result = b.results.get(row.action_id)
+        status = None if result is None else result.get("status")
+        return ProvenanceAction(
+            key=row.key, build=b.view.id, action_id=row.action_id, step=row.step, rule=row.rule,
+            params=row.params, toolchain=row.toolchain, state=row.state, cached=row.cached,
+            status=status, finished_at=row.finished_at,  # type: ignore[arg-type]
+            project=b.view.project, flow_repo=b.view.flow_repo, flow_commit=b.view.flow_commit,
+            flow_dirty=b.view.flow_dirty, user_name=b.view.user_name,
+            build_created_at=b.view.created_at,
+        )  # fmt: skip
+
+    def record_export(self, release: ReleaseId, to_domain: str, *, by: str) -> ReleaseView:
+        check_domain(to_domain)
+        by = check_by(by, "record_export")
+        with self._lock:
+            source = self._release(release)
+            if source is None:
+                raise MetadataError(f"record_export: no release with id {release}")
+            check_exportable(source)
+            if source.domain == to_domain:
+                raise MetadataError(
+                    f"record_export: release {release} is already in domain {to_domain!r}"
+                )
+            spec = ReleaseCreate.model_validate(
+                {**source.model_dump(include=set(ReleaseCreate.model_fields)), "domain": to_domain}
+            )
+            exported = self._insert_release(spec, by, exported_from=source.id)
+            self._exports.append(
+                ExportRecord(
+                    id=len(self._exports) + 1, release=source.id, exported=exported.id,
+                    to_domain=to_domain, exported_at=self._clock.now(), exported_by=by,
+                )
+            )  # fmt: skip
+            return exported
+
+    def list_exports(self, release: ReleaseId) -> list[ExportRecord]:
+        with self._lock:
+            return [e for e in self._exports if release in (e.release, e.exported)]
+
     # --- garbage collection (GcStore) -----------------------------------------------------------
 
     def set_policy(self, domain: str, policy: DomainPolicy) -> None:
@@ -464,7 +771,13 @@ class InMemoryMetadataStore:
                 if lease.domain == domain and lease.expires_at > now
                 for k in lease.digests
             }
-        return GcRoots(frozenset(pinned), frozenset(leased), frozenset())
+            released = {
+                Digest.parse(str(o["digest"]))
+                for r in self._releases.values()
+                if r["domain"] == domain
+                for o in r["outputs"].values()  # type: ignore[attr-defined]
+            }
+        return GcRoots(frozenset(pinned), frozenset(leased), frozenset(released))
 
     def gc_tombstones(self, domain: str) -> list[Tombstone]:
         check_domain(domain)
@@ -553,7 +866,58 @@ class InMemoryMetadataStore:
         checked = revalidate(event, Event, "emit")
         with self._lock:
             self._build(checked.build)
-            self._events.append(checked)
+            self._last_event += 1
+            self._events.append(StoredEvent(id=self._last_event, event=checked))
+            self._stored_at[self._last_event] = self._clock.now()
+
+    def events_after(
+        self,
+        after: int,
+        *,
+        build: BuildId | None = None,
+        domain: str | None = None,
+        limit: int = EVENT_PAGE_MAX,
+    ) -> list[StoredEvent]:
+        check_event_query(build, domain, limit)
+        with self._lock:
+            found = [
+                e
+                for e in self._events
+                if e.id > after
+                and (
+                    e.event.build == build
+                    if build is not None
+                    else self._builds[e.event.build].view.domain == domain
+                )
+            ]
+        return found[:limit]
+
+    def ensure_event_partitions(self, at: datetime, *, months_ahead: int = 1) -> list[str]:
+        """Nothing to create in memory: the months `PgMetadataStore` would partition."""
+        month, names = month_start(at), []
+        for _ in range(months_ahead + 1):
+            names.append(f"events_y{month.year:04}m{month.month:02}")
+            month = next_month(month)
+        return names
+
+    def prune_events(self, before: datetime, *, dry_run: bool = False) -> list[str]:
+        with self._lock:
+            months = sorted(
+                {
+                    start
+                    for e in self._events
+                    if next_month(start := month_start(self._stored_at[e.id])) <= before
+                }
+            )
+            if not dry_run:
+                gone = set(months)
+                # Ids are kept: the list stays in id order, and new ids continue after the last.
+                kept = [e for e in self._events if month_start(self._stored_at[e.id]) not in gone]
+                for e in self._events:
+                    if month_start(self._stored_at[e.id]) in gone:
+                        del self._stored_at[e.id]
+                self._events = kept
+        return [month_name(m) for m in months]
 
     # --- toolchain registry ---------------------------------------------------------------------
 

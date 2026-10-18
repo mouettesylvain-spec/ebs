@@ -7,13 +7,15 @@ from the injected clock, not from the database, so behaviour is testable with a 
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, ClassVar, Final
 
 import psycopg
 import sqlalchemy as sa
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -27,21 +29,35 @@ from ebs.meta._common import (
     attribution_digests,
     cache_refs,
     check_blobs,
+    check_by,
     check_digest,
     check_driver_owner,
+    check_event_query,
+    check_exportable,
     check_final_status,
     check_lease_ttl,
     check_pin,
+    check_release,
+    check_release_imports,
     check_result,
     check_run,
+    check_set_channel,
     check_toolchain,
+    check_walk,
+    edge_models,
     edge_rows,
+    month_name,
+    month_start,
+    next_month,
+    provenance_graph,
+    release_matches,
     revalidate,
     stored_result,
     touch_cutoff,
     transition,
 )
 from ebs.meta.api import (
+    EVENT_PAGE_MAX,
     ActionRow,
     ActionState,
     BlobRef,
@@ -49,43 +65,135 @@ from ebs.meta.api import (
     BuildId,
     BuildStatus,
     BuildView,
+    ChannelMove,
+    ChannelView,
     DomainPolicy,
     DriverLease,
     Event,
+    ExportRecord,
+    GateCheck,
     GcAttribution,
     GcBlob,
     GcCacheEntry,
     GcRoots,
     GcRun,
     LeaseId,
+    ProvenanceAction,
+    ProvenanceGraph,
     RegisterOutcome,
+    ReleaseCreate,
+    ReleaseId,
+    ReleaseImport,
+    ReleaseView,
     ResultManifest,
+    StoredEvent,
     Tombstone,
     ToolchainCreate,
     ToolchainRecord,
     check_domain,
 )
 from ebs.meta.models import (
+    SCHEMA,
     action_cache,
     actions,
     blobs,
     builds,
+    channel_history,
+    channels,
     domains,
     driver_leases,
     events,
+    exports,
     gc_runs,
     lease_objects,
     leases,
     pins,
     provenance_edges,
+    release_imports,
+    releases,
     tombstones,
     toolchain_manifests,
     toolchains,
 )
 
-__all__ = ["MetadataConfig", "PgMetadataStore"]
+__all__ = ["EVENTS_CHANNEL", "MetadataConfig", "PgMetadataStore"]
+
+EVENTS_CHANNEL: Final = "ebs_events"
+"""The NOTIFY channel of event wake-ups; the payload is `<domain> <build id>` (P2-05 R2)."""
 
 _log = get_logger(__name__)
+
+# Provenance walks (P2-04): one recursive CTE each, breadth-first in action levels. A key's level
+# is its shortest distance from the start (the min over the paths found); UNION drops repeated
+# (key, level) pairs, so a key is expanded at most once per level and the walk stops at `depth`.
+# Each returns every edge of the walked keys with the key's level (one row with NULL edge
+# fields for a key without edges), in the graph's order: byte order, like Python's sort.
+# The joins use the edges' primary key and their (domain, object_id) index.
+_WALK_SQL: Final = {
+    "upstream": sa.text("""
+WITH RECURSIVE walk(key, depth) AS (
+    SELECT o.action_key, 1 FROM ebs.provenance_edges o
+     WHERE o.domain = :domain AND o.direction = 'out'
+       AND o.object_id = ANY(CAST(:ids AS text[]))
+    UNION
+    SELECT o.action_key, 1 FROM ebs.provenance_edges o
+     WHERE o.domain = :domain AND o.direction = 'out'
+       AND o.content_digest = ANY(CAST(:ids AS text[]))
+    UNION
+    SELECT k, 1 FROM unnest(CAST(:keys AS text[])) AS k
+    UNION
+    SELECT o.action_key, w.depth + 1
+      FROM walk w
+      JOIN ebs.provenance_edges i
+        ON i.domain = :domain AND i.direction = 'in' AND i.action_key = w.key
+      JOIN ebs.provenance_edges o
+        ON o.domain = :domain AND o.direction = 'out' AND o.object_id = i.object_id
+     WHERE w.depth < :depth
+),
+levels AS (SELECT key, min(depth) AS depth FROM walk GROUP BY key)
+SELECT l.key, l.depth, e.direction, e.logical_path, e.object_id, e.content_digest
+  FROM levels l
+  LEFT JOIN ebs.provenance_edges e ON e.domain = :domain AND e.action_key = l.key
+ ORDER BY l.key COLLATE "C", e.direction COLLATE "C", e.logical_path COLLATE "C"
+"""),
+    "downstream": sa.text("""
+WITH RECURSIVE walk(key, depth) AS (
+    SELECT i.action_key, 1 FROM ebs.provenance_edges i
+     WHERE i.domain = :domain AND i.direction = 'in'
+       AND i.object_id = ANY(CAST(:ids AS text[]))
+    UNION
+    SELECT k, 1 FROM unnest(CAST(:keys AS text[])) AS k
+    UNION
+    SELECT i.action_key, w.depth + 1
+      FROM walk w
+      JOIN ebs.provenance_edges o
+        ON o.domain = :domain AND o.direction = 'out' AND o.action_key = w.key
+      JOIN ebs.provenance_edges i
+        ON i.domain = :domain AND i.direction = 'in' AND i.object_id = o.object_id
+     WHERE w.depth < :depth
+),
+levels AS (SELECT key, min(depth) AS depth FROM walk GROUP BY key)
+SELECT l.key, l.depth, e.direction, e.logical_path, e.object_id, e.content_digest
+  FROM levels l
+  LEFT JOIN ebs.provenance_edges e ON e.domain = :domain AND e.action_key = l.key
+ ORDER BY l.key COLLATE "C", e.direction COLLATE "C", e.logical_path COLLATE "C"
+"""),
+}
+# The keys one level past `keys`: whether `depth` cut the walk short.
+_STEP_SQL: Final = {
+    "upstream": sa.text("""
+SELECT DISTINCT o.action_key FROM ebs.provenance_edges i
+  JOIN ebs.provenance_edges o
+    ON o.domain = :domain AND o.direction = 'out' AND o.object_id = i.object_id
+ WHERE i.domain = :domain AND i.direction = 'in'
+   AND i.action_key = ANY(CAST(:keys AS text[]))"""),
+    "downstream": sa.text("""
+SELECT DISTINCT i.action_key FROM ebs.provenance_edges o
+  JOIN ebs.provenance_edges i
+    ON i.domain = :domain AND i.direction = 'in' AND i.object_id = o.object_id
+ WHERE o.domain = :domain AND o.direction = 'out'
+   AND o.action_key = ANY(CAST(:keys AS text[]))"""),
+}
 
 # ActionRow columns; the stored manifest (`result`) is only read by `get_result`.
 _ACTION_COLUMNS: Final = tuple(
@@ -138,6 +246,7 @@ class PgMetadataStore:
         self._engine = engine
         self._clock = clock or SystemClock()
         self._where = engine.url.render_as_string(hide_password=True)
+        self._event_months: set[datetime] = set()  # partitions this process created or used
 
     @classmethod
     def from_config(
@@ -313,6 +422,8 @@ class PgMetadataStore:
             values = row.model_dump()
             if values["queued_at"] is None:
                 values["queued_at"] = now
+            if values["params"] is not None:
+                values["params"] = Jsonb(values["params"])  # COPY does not adapt dicts
             records.append((build, *(values[c] for c in _ACTION_COLUMNS)))
         with self._tx(f"add_actions to build {build}") as conn:
             status = self._build_status(conn, build, lock=True)
@@ -432,13 +543,51 @@ class PgMetadataStore:
                 sa.update(builds)
                 .where(builds.c.id == build, builds.c.status == "running")
                 .values(status=status, finished_at=self._clock.now())
-                .returning(builds.c.id)
+                .returning(builds.c.id, builds.c.domain)
             ).first()
             if done is None:
                 current = self._build_status(conn, build)
                 raise MetadataError(f"build {build} is already finished ({current})")
             # A finished build holds no lease; a pin is a separate root.
             conn.execute(sa.delete(leases).where(leases.c.build_id == build))
+            _notify(conn, str(done.domain), build)  # its event streams end (P2-05 R2)
+
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        ri = release_imports
+        with self._tx(f"record_release_imports {build}") as conn:
+            domain: str | None = conn.execute(
+                sa.select(builds.c.domain).where(builds.c.id == int(build)).with_for_update()
+            ).scalar_one_or_none()
+            if domain is None:
+                raise MetadataError(f"no build with id {build}")
+            ids = sorted({int(r.release) for r in imports})
+            found = {int(v.id): v for v in self._select_releases(conn, releases.c.id.in_(ids))}
+            recorded = {
+                str(r.alias): int(r.release_id)
+                for r in conn.execute(sa.select(ri).where(ri.c.build_id == int(build)))
+            }
+            new = check_release_imports(
+                build, str(domain), imports, {i: found.get(i) for i in ids}, recorded
+            )
+            if new:
+                conn.execute(
+                    sa.insert(ri),
+                    [
+                        {"build_id": int(build), "alias": r.alias, "release_id": int(r.release)}
+                        for r in new
+                    ],
+                )
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        ri = release_imports
+        with self._tx(f"list_release_imports {build}") as conn:
+            self._build_status(conn, build)
+            rows = conn.execute(
+                sa.select(ri).where(ri.c.build_id == int(build)).order_by(ri.c.alias)
+            ).all()
+        return [
+            ReleaseImport(alias=str(r.alias), release=ReleaseId(int(r.release_id))) for r in rows
+        ]
 
     def get_build(self, build: BuildId) -> BuildView:
         with self._tx(f"get_build {build}") as conn:
@@ -732,6 +881,400 @@ class PgMetadataStore:
             ).first()
         return removed is not None
 
+    # --- releases and channels (P2-02) -----------------------------------------------------------
+
+    _RELEASE_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "id", "domain", "name", "version", "build_id", "outputs", "notes", "allow_failed",
+        "exported_from", "created_at", "created_by", "yanked_at", "yanked_by", "yank_reason",
+    )  # fmt: skip
+
+    @classmethod
+    def _release_view(cls, row: sa.RowMapping) -> ReleaseView:
+        doc = {("build" if k == "build_id" else k): row[k] for k in cls._RELEASE_COLUMNS}
+        try:
+            return ReleaseView.model_validate(doc)
+        except ValidationError as exc:
+            raise MetadataError(f"release {row['id']} is stored invalid: {exc}") from None
+
+    def _select_releases(
+        self, conn: sa.Connection, *where: sa.ColumnElement[bool]
+    ) -> list[ReleaseView]:
+        rows = (
+            conn.execute(
+                sa.select(*(releases.c[c] for c in self._RELEASE_COLUMNS))
+                .where(*where)
+                .order_by(releases.c.name, releases.c.created_at, releases.c.id)
+            )
+            .mappings()
+            .all()
+        )
+        return [self._release_view(r) for r in rows]
+
+    def _insert_release(
+        self, conn: sa.Connection, spec: ReleaseCreate, by: str, *, exported_from: int | None
+    ) -> ReleaseView:
+        self._ensure_domain(conn, spec.domain)
+        dumped = spec.model_dump(mode="json")
+        release_id: int | None = conn.execute(
+            pg_insert(releases)
+            .values(
+                domain=spec.domain,
+                name=spec.name,
+                version=spec.version,
+                build_id=spec.build,
+                outputs=dumped["outputs"],
+                notes=spec.notes,
+                allow_failed=spec.allow_failed,
+                exported_from=exported_from,
+                created_at=self._clock.now(),
+                created_by=by,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[releases.c.domain, releases.c.name, releases.c.version]
+            )
+            .returning(releases.c.id)
+        ).scalar_one_or_none()
+        if release_id is None:
+            raise MetadataError(
+                f"release {spec.name} {spec.version} already exists in domain {spec.domain!r}; "
+                "releases are immutable, so publish a new version"
+            )
+        return self._select_releases(conn, releases.c.id == release_id)[0]
+
+    def create_release(self, spec: ReleaseCreate, *, by: str) -> ReleaseView:
+        checked = revalidate(spec, ReleaseCreate, "create_release")
+        by = check_by(by, "create_release")
+        build = checked.build
+        with self._tx(f"create_release {checked.name} {checked.version}") as conn:
+            self._build_status(conn, build, lock=True)  # finish_build waits for this release
+            found = conn.execute(sa.select(builds).where(builds.c.id == build)).mappings().one()
+            view = BuildView.model_validate({**found, "action_counts": {}})
+            rows = (
+                conn.execute(
+                    sa.select(*(actions.c[n] for n in _ACTION_COLUMNS), actions.c.result).where(
+                        actions.c.build_id == build
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            actions_ = {
+                str(r["action_id"]): ActionRow.model_validate({n: r[n] for n in _ACTION_COLUMNS})
+                for r in rows
+            }
+            results = {
+                str(r["action_id"]): stored_result(r["result"], build, str(r["action_id"]))
+                for r in rows
+                if r["result"] is not None
+            }
+            check_release(checked, view, actions_, results)
+            return self._insert_release(conn, checked, by, exported_from=None)
+
+    def get_release(self, domain: str, name: str, version: str) -> ReleaseView | None:
+        check_domain(domain)
+        with self._tx(f"get_release {name} {version}") as conn:
+            found = self._select_releases(
+                conn,
+                releases.c.domain == domain,
+                releases.c.name == name,
+                releases.c.version == version,
+            )
+        return found[0] if found else None
+
+    def get_release_by_id(self, release: ReleaseId) -> ReleaseView | None:
+        with self._tx(f"get_release {release}") as conn:
+            found = self._select_releases(conn, releases.c.id == int(release))
+        return found[0] if found else None
+
+    def list_releases(self, domain: str, *, name: str | None = None) -> list[ReleaseView]:
+        check_domain(domain)
+        where = [releases.c.domain == domain]
+        if name is not None:
+            where.append(releases.c.name == name)
+        with self._tx(f"list_releases {domain}") as conn:
+            return self._select_releases(conn, *where)
+
+    def yank_release(self, release: ReleaseId, *, by: str, reason: str) -> ReleaseView:
+        by = check_by(by, "yank_release")
+        if not isinstance(reason, str) or not reason or len(reason) > 4096:
+            raise MetadataError("yank_release: give a reason (1-4096 characters)")
+        with self._tx(f"yank_release {release}") as conn:
+            conn.execute(
+                sa.update(releases)
+                .where(releases.c.id == int(release), releases.c.yanked_at.is_(None))
+                .values(yanked_at=self._clock.now(), yanked_by=by, yank_reason=reason)
+            )
+            found = self._select_releases(conn, releases.c.id == int(release))
+        if not found:
+            raise MetadataError(f"yank_release: no release with id {release}")
+        return found[0]
+
+    @staticmethod
+    def _move(row: sa.RowMapping, domain: str, name: str, channel: str) -> ChannelMove:
+        gate = (
+            None
+            if row["gate_flow"] is None
+            else GateCheck(flow=str(row["gate_flow"]), build=BuildId(int(row["gate_build_id"])))
+        )
+        return ChannelMove(
+            id=int(row["id"]),
+            domain=domain,
+            name=name,
+            channel=channel,
+            release=ReleaseId(int(row["release_id"])),
+            version=str(row["version"]),
+            moved_at=row["moved_at"],
+            moved_by=str(row["moved_by"]),
+            gate=gate,
+        )
+
+    def set_channel(
+        self,
+        domain: str,
+        name: str,
+        channel: str,
+        release: ReleaseId,
+        *,
+        by: str,
+        gate: GateCheck | None = None,
+    ) -> ChannelMove:
+        by = check_by(by, "set_channel")
+        checked_gate = None if gate is None else revalidate(gate, GateCheck, "set_channel gate")
+        now = self._clock.now()
+        with self._tx(f"set_channel {name}:{channel}") as conn:
+            # Lock the release row first: a concurrent yank either precedes this check or waits.
+            conn.execute(
+                sa.select(releases.c.id).where(releases.c.id == int(release)).with_for_update()
+            )
+            found = self._select_releases(conn, releases.c.id == int(release))
+            view = found[0] if found else None
+            check_set_channel(view, domain, name, channel)
+            assert view is not None
+            # Serialize moves of one channel: history order = commit order, and the pointer is
+            # always the channel's last move.
+            conn.execute(
+                sa.select(
+                    sa.func.pg_advisory_xact_lock(
+                        sa.func.hashtextextended(f"ebs.channel:{domain}/{name}:{channel}", 0)
+                    )
+                )
+            )
+            move_id: int = conn.execute(
+                sa.insert(channel_history)
+                .values(
+                    domain=domain,
+                    name=name,
+                    channel=channel,
+                    release_id=view.id,
+                    moved_at=now,
+                    moved_by=by,
+                    gate_flow=None if checked_gate is None else checked_gate.flow,
+                    gate_build_id=None if checked_gate is None else checked_gate.build,
+                )
+                .returning(channel_history.c.id)
+            ).scalar_one()
+            values = {
+                "release_id": view.id,
+                "move_id": move_id,
+                "updated_at": now,
+                "updated_by": by,
+            }
+            conn.execute(
+                pg_insert(channels)
+                .values(domain=domain, name=name, channel=channel, **values)
+                .on_conflict_do_update(index_elements=list(channels.primary_key), set_=values)
+            )
+        return ChannelMove(
+            id=move_id, domain=domain, name=name, channel=channel, release=view.id,
+            version=view.version, moved_at=now, moved_by=by, gate=checked_gate,
+        )  # fmt: skip
+
+    def get_channel(self, domain: str, name: str, channel: str) -> ChannelView | None:
+        check_domain(domain)
+        c = channels
+        with self._tx(f"get_channel {name}:{channel}") as conn:
+            found = conn.execute(
+                sa.select(c.c.release_id, c.c.updated_at, c.c.updated_by).where(
+                    c.c.domain == domain, c.c.name == name, c.c.channel == channel
+                )
+            ).first()
+            if found is None:
+                return None
+            view = self._select_releases(conn, releases.c.id == found.release_id)[0]
+        return ChannelView(
+            domain=domain, name=name, channel=channel, release=view,
+            updated_at=found.updated_at, updated_by=str(found.updated_by),
+        )  # fmt: skip
+
+    def channel_history(self, domain: str, name: str, channel: str) -> list[ChannelMove]:
+        check_domain(domain)
+        h = channel_history
+        with self._tx(f"channel_history {name}:{channel}") as conn:
+            rows = (
+                conn.execute(
+                    sa.select(h, releases.c.version)
+                    .join(releases, releases.c.id == h.c.release_id)
+                    .where(h.c.domain == domain, h.c.name == name, h.c.channel == channel)
+                    .order_by(h.c.id)
+                )
+                .mappings()
+                .all()
+            )
+        return [self._move(r, domain, name, channel) for r in rows]
+
+    def gate_builds(self, domain: str, flow: str, ids: Iterable[Digest]) -> list[BuildId]:
+        check_domain(domain)
+        wanted = sorted({str(check_digest(d, "gate_builds id")) for d in ids})
+        e = provenance_edges
+        stmt = (
+            sa.select(builds.c.id)
+            .distinct()
+            .select_from(e)
+            .join(actions, actions.c.key == e.c.action_key)
+            .join(builds, builds.c.id == actions.c.build_id)
+            .where(
+                e.c.domain == domain,
+                e.c.direction == "in",
+                e.c.object_id.in_(wanted),
+                builds.c.domain == domain,
+                builds.c.project == flow,
+                builds.c.status == "passed",
+            )
+            .order_by(builds.c.id.desc())
+        )
+        with self._tx(f"gate_builds {domain}/{flow}") as conn:
+            found: Sequence[int] = conn.execute(stmt).scalars().all() if wanted else []
+        return [BuildId(int(b)) for b in found]
+
+    # --- provenance (ProvenanceStore, P2-04) -----------------------------------------------------
+
+    def provenance_upstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        return self._walk("upstream", domain, ids, keys, depth)
+
+    def provenance_downstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        return self._walk("downstream", domain, ids, keys, depth)
+
+    def _walk(
+        self, way: str, domain: str, ids: Iterable[Digest], keys: Iterable[Digest], depth: object
+    ) -> ProvenanceGraph:
+        domain, id_list, key_list, levels = check_walk(
+            domain, ids, keys, depth, f"provenance_{way}"
+        )
+        params = {"domain": domain, "ids": id_list, "keys": key_list, "depth": levels}
+        a, b = actions, builds
+        with self._tx(f"provenance_{way} {domain}") as conn:
+            found = conn.execute(_WALK_SQL[way], params).all()
+            level = {str(r[0]): r[1] for r in found}
+            walked = sorted(level)
+            last = [k for k, d in level.items() if d == levels]
+            beyond: Sequence[str] = (
+                conn.execute(_STEP_SQL[way], {"domain": domain, "keys": last}).scalars().all()
+                if last
+                else []
+            )
+            edge_rows_ = [(r[0], r[2], r[3], r[4], r[5]) for r in found if r[2] is not None]
+            in_walk = sa.literal(walked, ARRAY(sa.Text))
+            action_rows = (
+                conn.execute(
+                    sa.select(
+                        a.c.key,
+                        a.c.build_id,
+                        a.c.action_id,
+                        a.c.step,
+                        a.c.rule,
+                        a.c.params,
+                        a.c.toolchain,
+                        a.c.state,
+                        a.c.cached,
+                        a.c.finished_at,
+                        a.c.result["status"].astext.label("status"),
+                        b.c.project,
+                        b.c.flow_repo,
+                        b.c.flow_commit,
+                        b.c.flow_dirty,
+                        b.c.user_name,
+                        b.c.created_at.label("build_created_at"),
+                    )
+                    .join(b, b.c.id == a.c.build_id)
+                    .where(b.c.domain == domain, a.c.key == sa.any_(in_walk))
+                    .order_by(a.c.build_id, a.c.action_id.collate("C"))
+                )
+                .mappings()
+                .all()
+            )
+            objects = sorted(set(id_list) | {r[3] for r in edge_rows_})
+            held: sa.ColumnElement[bool] = sa.text(  # type: ignore[assignment]
+                "EXISTS (SELECT 1 FROM jsonb_each(ebs.releases.outputs) AS o "
+                "WHERE o.value->>'id' = ANY(:objects))"
+            ).bindparams(sa.bindparam("objects", objects, type_=ARRAY(sa.Text)))
+            rels = self._select_releases(conn, releases.c.domain == domain, held)
+        edges = edge_models(edge_rows_, f"provenance_{way} {domain}")
+        rows = [
+            ProvenanceAction.model_validate(
+                {**{k: v for k, v in r.items() if k != "build_id"}, "build": r["build_id"],
+                 "key": Digest.parse(r["key"]),
+                 "toolchain": None if r["toolchain"] is None else Digest.parse(r["toolchain"])}
+            )
+            for r in action_rows
+        ]  # fmt: skip
+        matched = [m for rel in rels for m in release_matches(rel, set(objects))]
+        truncated = bool(set(beyond) - set(walked))
+        return provenance_graph(domain, edges, rows, matched, truncated, presorted=True)
+
+    def record_export(self, release: ReleaseId, to_domain: str, *, by: str) -> ReleaseView:
+        check_domain(to_domain)
+        by = check_by(by, "record_export")
+        with self._tx(f"record_export {release} to {to_domain}") as conn:
+            found = self._select_releases(conn, releases.c.id == int(release))
+            if not found:
+                raise MetadataError(f"record_export: no release with id {release}")
+            source = found[0]
+            check_exportable(source)
+            if source.domain == to_domain:
+                raise MetadataError(
+                    f"record_export: release {release} is already in domain {to_domain!r}"
+                )
+            spec = ReleaseCreate.model_validate(
+                {**source.model_dump(include=set(ReleaseCreate.model_fields)), "domain": to_domain}
+            )
+            exported = self._insert_release(conn, spec, by, exported_from=source.id)
+            conn.execute(
+                sa.insert(exports).values(
+                    release_id=source.id,
+                    exported_release_id=exported.id,
+                    to_domain=to_domain,
+                    exported_at=self._clock.now(),
+                    exported_by=by,
+                )
+            )
+        return exported
+
+    def list_exports(self, release: ReleaseId) -> list[ExportRecord]:
+        x = exports
+        with self._tx(f"list_exports {release}") as conn:
+            rows = conn.execute(
+                sa.select(x)
+                .where(
+                    sa.or_(x.c.release_id == int(release), x.c.exported_release_id == int(release))
+                )
+                .order_by(x.c.id)
+            ).all()
+        return [
+            ExportRecord(
+                id=int(r.id),
+                release=ReleaseId(int(r.release_id)),
+                exported=ReleaseId(int(r.exported_release_id)),
+                to_domain=str(r.to_domain),
+                exported_at=r.exported_at,
+                exported_by=str(r.exported_by),
+            )
+            for r in rows
+        ]
+
     # --- garbage collection (GcStore) -----------------------------------------------------------
 
     def gc_policy(self, domain: str) -> DomainPolicy:
@@ -799,11 +1342,21 @@ class PgMetadataStore:
                 .scalars()
                 .all()
             )
+            released_outputs: Sequence[dict[str, dict[str, str]]] = (
+                conn.execute(sa.select(releases.c.outputs).where(releases.c.domain == domain))
+                .scalars()
+                .all()
+            )
+        released = {o["digest"] for outputs in released_outputs for o in outputs.values()}
         pinned: set[Digest] = set()
         for plan_digest, result in pinned_builds:
             pinned.add(Digest.parse(plan_digest))
             pinned.update(attribution_digests(result))
-        return GcRoots(frozenset(pinned), frozenset(Digest.parse(k) for k in leased), frozenset())
+        return GcRoots(
+            frozenset(pinned),
+            frozenset(Digest.parse(k) for k in leased),
+            frozenset(Digest.parse(k) for k in released),
+        )
 
     def gc_tombstones(self, domain: str) -> list[Tombstone]:
         check_domain(domain)
@@ -947,18 +1500,128 @@ class PgMetadataStore:
     # --- events ---------------------------------------------------------------------------------
 
     def emit(self, event: Event) -> None:
+        """Append the event; inserts of a domain are serialized (an advisory lock held until
+        commit), so its ids commit in order and a stream resuming after an id misses nothing.
+        Commit wakes the streams of the build and its domain (NOTIFY `ebs_events`)."""
         checked = revalidate(event, Event, "emit")
-        with self._tx(f"emit {checked.type}") as conn:
-            self._build_status(conn, checked.build)
-            conn.execute(
-                sa.insert(events).values(
-                    build_id=checked.build,
-                    ts=checked.ts,
-                    type=checked.type,
-                    action_id=checked.action_id,
-                    data=checked.data,
-                )
+        stored_at = self._clock.now()  # the partition key: never the client's `ts`
+        month = month_start(stored_at)
+        for attempt in (0, 1):
+            try:
+                with self._tx(f"emit {checked.type}") as conn:
+                    domain: str | None = conn.execute(
+                        sa.select(builds.c.domain).where(builds.c.id == checked.build)
+                    ).scalar_one_or_none()
+                    if domain is None:
+                        raise MetadataError(f"no build with id {checked.build}")
+                    conn.execute(
+                        sa.select(sa.func.pg_advisory_xact_lock(
+                            sa.func.hashtextextended(f"{SCHEMA}.events:{domain}", 0)
+                        ))
+                    )  # fmt: skip
+                    if month not in self._event_months:
+                        conn.execute(sa.select(sa.func.ebs.ensure_events_partition(month)))
+                    conn.execute(
+                        sa.insert(events).values(
+                            build_id=checked.build,
+                            ts=checked.ts,
+                            type=checked.type,
+                            action_id=checked.action_id,
+                            data=checked.data,
+                            stored_at=stored_at,
+                        )
+                    )
+                    _notify(conn, str(domain), checked.build)
+                self._event_months.add(month)
+                return
+            except MetadataError as exc:
+                # Retention (maybe in another process) dropped the partition this process
+                # remembered: create it again, once. A missing partition is a check violation.
+                cause = getattr(exc.__cause__, "orig", exc.__cause__)
+                if attempt or not isinstance(cause, psycopg.errors.CheckViolation):
+                    raise
+                self._event_months.discard(month)
+
+    def events_after(
+        self,
+        after: int,
+        *,
+        build: BuildId | None = None,
+        domain: str | None = None,
+        limit: int = EVENT_PAGE_MAX,
+    ) -> list[StoredEvent]:
+        check_event_query(build, domain, limit)
+        e = events
+        stmt = sa.select(e.c.id, e.c.build_id, e.c.ts, e.c.type, e.c.action_id, e.c.data).where(
+            e.c.id > int(after)
+        )
+        if build is not None:
+            stmt = stmt.where(e.c.build_id == int(build))
+        else:
+            stmt = stmt.join(builds, builds.c.id == e.c.build_id).where(builds.c.domain == domain)
+        with self._tx(f"events_after {after}") as conn:
+            rows = conn.execute(stmt.order_by(e.c.id).limit(limit)).all()
+        return [
+            StoredEvent(
+                id=int(r.id),
+                event=Event.model_validate(
+                    {
+                        "ts": r.ts,
+                        "build": int(r.build_id),
+                        "type": r.type,
+                        "action_id": r.action_id,
+                        "data": r.data,
+                    }
+                ),
             )
+            for r in rows
+        ]
+
+    def _event_partitions(self, conn: sa.Connection) -> dict[datetime, str]:
+        rows: Sequence[str] = (
+            conn.execute(
+                sa.text(
+                    "SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid "
+                    "WHERE i.inhparent = CAST(:parent AS regclass)"
+                ),
+                {"parent": f"{SCHEMA}.events"},
+            )
+            .scalars()
+            .all()
+        )
+        found: dict[datetime, str] = {}
+        for name in rows:
+            m = _PARTITION.fullmatch(str(name))
+            if m is not None:
+                found[datetime(int(m.group(1)), int(m.group(2)), 1, tzinfo=UTC)] = str(name)
+        return found
+
+    def prune_events(self, before: datetime, *, dry_run: bool = False) -> list[str]:
+        if before.tzinfo is None:
+            raise MetadataError("prune_events: `before` must be timezone-aware")
+        with self._tx("prune_events") as conn:
+            parts = self._event_partitions(conn)
+            old = sorted(m for m in parts if next_month(m) <= before)
+            if not dry_run:
+                for m in old:
+                    conn.execute(sa.text(f'DROP TABLE {SCHEMA}."{parts[m]}"'))
+                    self._event_months.discard(m)
+        return [month_name(m) for m in old]
+
+    def ensure_event_partitions(self, at: datetime, *, months_ahead: int = 1) -> list[str]:
+        """Create the partitions of `at`'s month and the next `months_ahead` ones, so the first
+        events of a month need no DDL (the retention job calls this)."""
+        month = month_start(at)
+        names = []
+        with self._tx("ensure_event_partitions") as conn:
+            for _ in range(months_ahead + 1):
+                names.append(
+                    str(
+                        conn.execute(sa.select(sa.func.ebs.ensure_events_partition(month))).scalar()
+                    )
+                )
+                month = next_month(month)
+        return names
 
     # --- toolchain registry ---------------------------------------------------------------------
 
@@ -1053,3 +1716,11 @@ class PgMetadataStore:
                 )
                 .values(last_used_at=now)
             )
+
+
+_PARTITION: Final = re.compile(r"events_y(\d{4})m(\d{2})")
+
+
+def _notify(conn: sa.Connection, domain: str, build: int) -> None:
+    """Wake the event streams of `build` and `domain` when the transaction commits."""
+    conn.execute(sa.select(sa.func.pg_notify(EVENTS_CHANNEL, f"{domain} {int(build)}")))

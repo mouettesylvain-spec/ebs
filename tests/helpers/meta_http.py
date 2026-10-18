@@ -1,6 +1,6 @@
 """The metadata service in-process, for contract and route tests (P1-06).
 
-`make_service` serves a backing MetadataStore through the FastAPI app; `Service.store()` is an
+`make_service` serves a backing store through the FastAPI app; `Service.store()` is an
 `HttpMetadataStore` talking to it over Starlette's in-process transport: no sockets, no network.
 Authentication uses `FakeMungeVerifier`, which behaves like `unmunge` (each credential decodes
 once; replays and expired credentials are refused), and `FakeMunge`, the client-side source that
@@ -14,23 +14,29 @@ import threading
 import warnings
 from collections.abc import Callable, Generator, Iterable, Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
 from starlette.exceptions import StarletteDeprecationWarning
 
-from ebs.meta.api import API_PREFIX, MetadataStore
+from ebs.meta.api import API_PREFIX
 from ebs.meta.client import HttpMetadataStore, munge_payload
 from ebs.meta.service.app import ServiceDeps, create_app
 from ebs.meta.service.auth import (
     MUNGE_HEADER,
     AuthenticationError,
+    Authenticator,
+    AuthorizeHook,
     BearerAuthenticator,
     ChainAuthenticator,
     MungeAuthenticator,
     MungeIdentity,
     Policy,
 )
+from ebs.meta.service.deps import ServiceBackend
+from ebs.meta.service.oidc import OidcLogin
 from ebs.meta.service.tokens import InMemoryTokenStore
+from ebs.release.channels import GatePolicy
 
 with warnings.catch_warnings():
     # Starlette 1.x deprecates `httpx` for its test client in favour of `httpx2`; the transport
@@ -40,7 +46,7 @@ with warnings.catch_warnings():
 
 BASE_URL = "http://meta.test"
 AUDIENCE = "meta.test"  # MUNGE binding: the host[:port] of BASE_URL
-USERS: Mapping[int, str] = {1000: "alice", 1001: "bob", 1002: "carol"}
+USERS: Mapping[int, str] = {1000: "alice", 1001: "bob", 1002: "carol", 1003: "dave"}
 
 
 @dataclass
@@ -126,22 +132,34 @@ class Service:
 
 
 def make_service(
-    backing: MetadataStore,
+    backing: ServiceBackend,
     *,
     tokens: InMemoryTokenStore | None = None,
     users: Callable[[int], str] = user_of_uid,
     toolchain_admins: Iterable[str] = (),
+    gates: GatePolicy | None = None,
+    authorize: AuthorizeHook | None = None,
+    oidc: OidcLogin | None = None,
+    **options: Any,
 ) -> Service:
+    """`options` are further `ServiceDeps` fields (P2-05: events, limits, limiter, metrics)."""
     tokens = tokens if tokens is not None else InMemoryTokenStore()
     munge = FakeMungeVerifier()
     ready = ReadyProbe()
+    schemes: list[Authenticator] = [
+        MungeAuthenticator(munge, users, audience=AUDIENCE),
+        BearerAuthenticator(tokens),
+    ]
+    if oidc is not None:
+        schemes.append(oidc.sessions)
     deps = ServiceDeps(
         store=backing,
-        authenticator=ChainAuthenticator(
-            MungeAuthenticator(munge, users, audience=AUDIENCE), BearerAuthenticator(tokens)
-        ),
+        authenticator=ChainAuthenticator(*schemes),
         readiness=ready,
-        authorize=Policy(toolchain_admins),
+        authorize=authorize or Policy(toolchain_admins),
+        gates=gates or GatePolicy(),
+        oidc=oidc,
+        **options,
     )
     client = TestClient(create_app(deps), base_url=BASE_URL, raise_server_exceptions=False)
     return Service(deps, client, tokens, munge, ready)

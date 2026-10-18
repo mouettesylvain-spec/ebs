@@ -121,11 +121,25 @@ def test_rerun_failed_and_keep_going(site: Site) -> None:
         pytest.param(["--resume", "1", "--cache", "write"], id="resume-cache"),
         pytest.param(["--resume", "1", "--resume-into", "1"], id="resume-twice"),
         pytest.param(["--detach"], id="detach-local"),  # local actions in a 1-CPU driver job
+        # --ci writes its reports in the CI job: not from a detached or resumed driver
+        pytest.param(["--ci", "--detach", "--executor", "slurm"], id="ci-detach"),
+        pytest.param(["--ci", "--resume", "1"], id="ci-resume"),
     ],
 )
 def test_usage_errors(site: Site, args: list[str]) -> None:
     result = site.invoke(["build", *args])
     assert result.exit_code == ExitCode.USAGE, result.output
+
+
+# P2-08 x P2-07: --ci is refused with a detached or resumed driver, before anything starts.
+@pytest.mark.parametrize(
+    "args", [["--detach", "--executor", "slurm"], ["--resume", "1"], ["--resume-into", "1"]]
+)
+def test_ci_needs_its_own_driver(site: Site, args: list[str]) -> None:
+    result = site.invoke(["build", "--ci", *args])
+    assert result.exit_code == ExitCode.USAGE, result.output
+    assert "does not combine with --detach or --resume" in result.output
+    assert site.services.executors == []
 
 
 # R2

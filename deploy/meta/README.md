@@ -41,6 +41,37 @@ is the build's project. Service tokens can read and write the action cache but n
 Registering a toolchain makes it current for every later build, so only service tokens and the
 users in `[meta_service].toolchain_admins` may.
 
+Domains (P2-01): the service serves only `[meta_service].domains`, each configured in
+`[[domains]]`; run it as an account that is a member of exactly those domains' groups. A user
+sees a domain only if NSS (LDAP/SSSD) puts them in its `unix_group` (cached `group_ttl_s`, 60 s
+by default, so a removal takes effect within a minute). Bearer tokens are scoped with
+`token_domains = { "ci-cpu" = ["cpu-nda"] }`. Outside their domains callers get 403, or 404 for
+a build or release named by id, and every cache lookup is a miss. Create a domain's directories
+with `deploy/admin/create_domain.sh NAME GROUP` and verify them with `ebs domain check`.
+
+## Dashboard login, limits, events and metrics (P2-05)
+
+- **Login:** with `[meta_service.oidc]` set (see `config.toml.example`), `/auth/login` signs
+  users in with GitLab (authorization code + PKCE). The GitLab user name (`username_claim`) must
+  be the Unix user name: authorization uses its NSS groups like MUNGE. Sessions are signed
+  cookies valid `session_ttl_s` (8 h); to end every session at once, put a new key on the first
+  line of `session_secret_file` and remove the old ones. Serve the service over HTTPS
+  (`cookie_secure = true`); the issuer must be https too. GitLab user names must be the Unix
+  names and must not be choosable: take them from LDAP, or forbid username changes in GitLab,
+  or a user could take the name of a Unix account that never logged in to GitLab. Rate-limit
+  `/auth/*` at the proxy (per client address): each callback makes a request to GitLab.
+- **Limits:** `[meta_service.limits]` (per principal, per worker process); clients retry 429s.
+- **Events:** `GET /api/v1/builds/{id}/events` and `/api/v1/domains/{d}/events` are Server-Sent
+  Events. Put no buffering proxy in front of them (nginx: `proxy_buffering off`; the service
+  also sends `X-Accel-Buffering: no`) and allow `max_stream_s` (300 s) read timeouts. The
+  `events` table is partitioned by month; install the daily retention job:
+  `install -m 644 systemd/ebs-meta-prune.* /etc/systemd/system/ && systemctl enable --now
+  ebs-meta-prune.timer` (`events prune --dry-run` lists what it would drop).
+- **Metrics:** `GET /metrics` is Prometheus text, without credentials: let only the scraper reach
+  it. Counters are per worker process: scrape each worker, or run one worker per port.
+- **Logs:** JSON lines on stderr (journald), each with `request_id` (also the `X-Request-ID`
+  response header; a caller's well-formed `X-Request-ID` is kept).
+
 ## Client configuration
 
 ```toml
