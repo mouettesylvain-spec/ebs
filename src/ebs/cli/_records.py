@@ -51,6 +51,7 @@ class BuildRecord(BaseModel):
     created_at: AwareDatetime
     host: str = ""  # where the driver (`ebs build`) runs; "" = unknown
     pid: int = 0  # the driver's process id; 0 = unknown
+    driver_job: str = ""  # P2-08: the SLURM job driving a detached build; "" = none
     ci: dict[str, str] | None = None  # `ebs build --ci`: the CI job's metadata (P2-07 R1)
 
     def write(self, directory: Path) -> None:

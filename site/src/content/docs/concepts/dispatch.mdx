@@ -82,7 +82,7 @@ Test failures are never retried.
 
 ```sh
 ebs build --executor slurm --detach        # prints the build UUID and the driver's job id
-ebs status <uuid>                          # follow it from any login node
+ebs status <uuid>                          # follow it from any login node; names the driver job
 ebs build --resume <uuid>                  # take over a build whose driver died
 ```
 

@@ -72,4 +72,4 @@ can re-attach to a build after a crash.
   one-row matrix until it is fixed. **Fixed (2026-10-18, D-01 branch audit):** the runner reads the
   array map (`ebs.runner.main.array_action`); `test_detach_submits_driver_job` runs a two-task array
   and asserts no task was resubmitted. (2) `ebs status` could show the driver job id and owner
-  (from `driver.out` / the lease).
+  (from `driver.out` / the lease). **Done (2026-10-18):** `build.json` `driver_job`, `ebs status` `driver`.

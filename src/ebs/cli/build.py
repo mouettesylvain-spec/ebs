@@ -170,8 +170,15 @@ class _View:
             self.out.line(f"build {self.record.uuid} (id {self.record.build})")
 
     def resumed(self, record: BuildRecord) -> None:
-        """Follow a recorded build that this process now drives."""
-        self.record = record.model_copy(update={"host": socket.gethostname(), "pid": os.getpid()})
+        """Follow a recorded build that this process now drives (in a SLURM job: that job)."""
+        job = self.services.environ.get("SLURM_JOB_ID", "")
+        self.record = record.model_copy(
+            update={
+                "host": socket.gethostname(),
+                "pid": os.getpid(),
+                "driver_job": job if job.isdigit() else "",
+            }
+        )
         self.record.write(build_dir(self.services.cwd, record.uuid))
         self.events = record.events(self.services.cwd)
         if not self.out.json:
@@ -601,6 +608,9 @@ def _detach(
             comment=str(started.uuid),
         )
         job = services.slurm_cli().submit(script, opts)
+        if view.record is not None:  # `ebs status` names the driver job until it takes over
+            view.record = view.record.model_copy(update={"driver_job": str(job)})
+            view.record.write(directory)
     except (EbsError, OSError, ValueError) as exc:
         # If even that fails, the build stays `running` without a driver: `--resume` takes it.
         with contextlib.suppress(MetadataError):

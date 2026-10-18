@@ -4,6 +4,7 @@ import json
 import os
 import re
 import signal
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -234,6 +235,32 @@ def test_detach_records_cache_mode_and_flags(site: Site) -> None:
 
 class _Captured(Exception):
     pass
+
+
+# P2-08 follow-up: `ebs status` names the driver of a detached build: its SLURM job until the
+# job starts, then the job, node and pid of the driver that resumed the build there.
+def test_status_names_the_driver(site: Site, monkeypatch: pytest.MonkeyPatch) -> None:
+    doc, _ = _detach(site)
+    text = site.invoke(["status", doc["uuid"]])
+    assert "driver: SLURM job 4001, not started yet (`scancel 4001` cancels)" in text.stdout
+    status = json.loads(site.invoke(["status", doc["uuid"], "--json"]).stdout)
+    assert status["driver"] == {"job": "4001", "host": None, "pid": None}
+
+    site.services.environ["SLURM_JOB_ID"] = "4001"  # the driver job resumes the build
+    seen: dict[str, Any] = {}
+
+    def capture(*args: Any, **kwargs: Any) -> Any:
+        status = json.loads(site.invoke(["status", doc["uuid"], "--json"]).stdout)
+        seen.update(status)
+        text = site.invoke(["status", doc["uuid"]]).stdout
+        seen["text"] = text
+        raise _Captured
+
+    monkeypatch.setattr("ebs.cli.build.resume_build", capture)
+    site.invoke(["build", "--resume-into", doc["uuid"], "--executor", "local"])
+    host, pid = socket.gethostname(), os.getpid()
+    assert seen["driver"] == {"job": "4001", "host": host, "pid": pid}
+    assert f"driver: SLURM job 4001 on {host} (pid {pid})" in seen["text"]
 
 
 # P2-08 R4: both CLI driver paths handle SIGTERM, which `scancel` of a driver job sends.

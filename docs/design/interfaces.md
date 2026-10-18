@@ -1555,10 +1555,15 @@ apply), rewrites the record's `host`/`pid`, and prints `build <uuid> (id <n>): r
 
 **`ebs status --json`**: `{"v": 1, "uuid", "build", "status", "flow", "created_at", "steps":
 [{"step", "actions", "states": {state: n}}], "totals": {state: n}, "retries": [{"action_id",
-"state", "attempts": [{"attempt", "job_id", "node", "reason"}]}]}`. `retries` (P1-05 R2) lists the
+"state", "attempts": [{"attempt", "job_id", "node", "reason"}]}], "driver": {"job", "host",
+"pid"} | null}`. `retries` (P1-05 R2) lists the
 actions with at least one infrastructure failure, with every attempt (`reason` null for one that
 did not fail that way); text mode prints `<action>: <state> after <n> attempts (<reason> on
-<node>, …)` under `infrastructure failures:`. `--watch` redraws every `--interval` seconds until
+<node>, …)` under `infrastructure failures:`. `driver` (P2-08 follow-up) is who drives the build,
+from the local record: `job` the SLURM job of a detached build (`build.json` `driver_job`, set by
+`--detach` and by the driver job from `$SLURM_JOB_ID` when it resumes), `host`/`pid` the driving
+process (null until known); text mode prints `driver: SLURM job <id> on <host> (pid <n>)` (or
+`…, not started yet`) while the build runs. `--watch` redraws every `--interval` seconds until
 the build is no longer `running`.
 
 **`ebs logs ACTION`**: ACTION is an action id or a unique prefix. Finished actions: the log blob
