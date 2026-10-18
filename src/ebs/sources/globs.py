@@ -21,7 +21,7 @@ import os
 import posixpath
 import re
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from ebs.core.errors import SourceError, SourceEscapeError
@@ -46,6 +46,29 @@ def resolve_glob(base: Path, pattern: str, *, optional: bool = False) -> list[st
         )
     # Code-point order equals UTF-8 byte order.
     return sorted(found)
+
+
+def match_paths(paths: Iterable[str], pattern: str) -> list[str]:
+    """The `paths` (relative POSIX file paths, e.g. a stored tree's files) that `pattern`
+    matches with `resolve_glob`'s semantics, sorted; no filesystem access (P2-03 imports)."""
+    segments = tuple(pattern.split("/"))
+    return sorted(p for p in paths if _match(segments, tuple(p.split("/"))))
+
+
+def _match(pattern: tuple[str, ...], path: tuple[str, ...]) -> bool:
+    if not pattern:
+        # The pattern named a directory above the file: it stands for `dir/**`.
+        return not path or _match(("**",), path)
+    if not path:
+        return False
+    segment, rest = pattern[0], pattern[1:]
+    if segment == "**":
+        if not rest:
+            return not any(part.startswith(".") for part in path)
+        if _match(rest, path):  # zero directories
+            return True
+        return len(path) > 1 and not path[0].startswith(".") and _match(pattern, path[1:])
+    return _compile(segment)(path[0]) and _match(rest, path[1:])
 
 
 def _segments(base: Path, pattern: str) -> tuple[str, ...]:

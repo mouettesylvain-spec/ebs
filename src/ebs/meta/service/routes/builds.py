@@ -24,6 +24,8 @@ from ebs.meta.api import (
     LeaseRequest,
     OptionalResult,
     PinRequest,
+    ReleaseImportBatch,
+    ReleaseImportList,
     ResultManifest,
     StateChange,
 )
@@ -67,6 +69,26 @@ def create_build(
     owner = BuildOwner(user_name=spec.user_name, project=spec.project, domain=spec.domain)
     deps.check(caller, "build_write", domain=spec.domain, owner=owner)
     return ok(CreatedBuild(id=deps.store.create_build(spec)))
+
+
+@router.post(
+    "/{build}/release-imports", status_code=204, openapi_extra=json_body(ReleaseImportBatch)
+)
+def record_release_imports(
+    build: int,
+    batch: Annotated[ReleaseImportBatch, Depends(body(ReleaseImportBatch))],
+    deps: Deps,
+    caller: Caller,
+) -> Response:
+    _write(deps, caller, build)  # the store keeps every release in the build's domain
+    deps.store.record_release_imports(BuildId(build), batch.imports)
+    return no_content()
+
+
+@router.get("/{build}/release-imports", response_model=ReleaseImportList)
+def list_release_imports(build: int, deps: Deps, caller: Caller) -> Response:
+    _read(deps, caller, build)
+    return ok(ReleaseImportList(imports=deps.store.list_release_imports(BuildId(build))))
 
 
 @router.get("/{build}", response_model=BuildView)

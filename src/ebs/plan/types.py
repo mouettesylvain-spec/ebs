@@ -24,6 +24,8 @@ __all__ = [
     "FlowInfo",
     "GitInfo",
     "ImportInput",
+    "ImportPin",
+    "ImportedOutput",
     "InputKind",
     "InputRef",
     "InputSource",
@@ -31,6 +33,7 @@ __all__ = [
     "OutputType",
     "ParamValue",
     "Plan",
+    "PlanLock",
     "PlanToolchain",
     "RuleRef",
     "SourceInput",
@@ -87,10 +90,56 @@ class ActionOutputInput:
 
 @dataclass(frozen=True, slots=True)
 class ImportInput:
-    """An imported release (task P2-03); the planner does not produce these yet."""
+    """A file or output of an imported release (P2-03), staged at `imports/<name>/<path>`.
+
+    `name` is the import alias; `path` is `<release output>` (a whole output) or
+    `<release output>/<path in its tree>` (one file); `content` is the digest of the bytes to
+    stage: the input id, except for a whole `deterministic: false` output, whose id is the one
+    the release passed downstream. Not in the action key (only the id is).
+    """
 
     name: str
     path: str
+    content: Digest
+
+
+@dataclass(frozen=True, slots=True)
+class ImportedOutput:
+    """One output of a pinned release: the id passed downstream, its content and type."""
+
+    id: Digest
+    digest: Digest
+    type: InputKind
+
+
+@dataclass(frozen=True, slots=True)
+class ImportPin:
+    """The release `flow.lock` pins for one import, as the planner needs it (P2-03).
+
+    `channel` is the channel the release was resolved from (None when pinned by version);
+    `release` is the release digest (`ebs.release.lock.release_digest`).
+    """
+
+    domain: str
+    name: str
+    version: str
+    channel: str | None
+    release: Digest
+    outputs: Mapping[str, ImportedOutput]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "outputs", _ro(self.outputs))
+
+
+@dataclass(frozen=True, slots=True)
+class PlanLock:
+    """A loaded `flow.lock`: its digest (recorded as plan.json `lock`) and pins by alias."""
+
+    digest: Digest
+    imports: Mapping[str, ImportPin]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "imports", _ro(self.imports))
 
 
 InputSource: TypeAlias = "SourceInput | ActionOutputInput | ImportInput"

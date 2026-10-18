@@ -17,6 +17,7 @@ from ebs.meta.api import (
     DIGEST_SQL_PATTERN,
     DOMAIN_PATTERN,
     EVENT_TYPE_PATTERN,
+    IMPORT_ALIAS_PATTERN,
     ActionState,
     BuildStatus,
     CacheMode,
@@ -44,6 +45,7 @@ __all__ = [
     "metadata",
     "pins",
     "provenance_edges",
+    "release_imports",
     "releases",
     "tombstones",
     "toolchain_manifests",
@@ -401,4 +403,16 @@ exports = sa.Table(  # audited cross-domain copies, append-only
     sa.Column("exported_at", _TS, nullable=False),
     sa.Column("exported_by", sa.Text, nullable=False),
     sa.Index(None, "release_id"),
+)
+
+# --- Phase 2: imports (P2-03, revision 0008; append-only like the tables above) ----------------
+
+release_imports = sa.Table(  # which release each import alias of a build used (`used-by`)
+    "release_imports",
+    metadata,
+    sa.Column("build_id", sa.BigInteger, sa.ForeignKey("builds.id"), primary_key=True),
+    sa.Column("alias", sa.Text, primary_key=True),
+    sa.Column("release_id", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=False),
+    sa.Index(None, "release_id"),
+    sa.CheckConstraint(f"alias ~ '{IMPORT_ALIAS_PATTERN}'", name="alias_valid"),
 )

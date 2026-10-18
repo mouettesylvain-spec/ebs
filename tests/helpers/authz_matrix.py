@@ -29,6 +29,7 @@ from ebs.meta.api import (
     Event,
     LeaseId,
     ReleaseCreate,
+    ReleaseImport,
     ReleaseOutput,
     ReleaseView,
 )
@@ -180,6 +181,18 @@ OPS: list[tuple[str, Op, frozenset[str]]] = [
     ),
     ("PUT /builds/{build}/pin", lambda c, m, w: c.pin_build(m.finished, by=w.user), frozenset({A})),
     ("DELETE /builds/{build}/pin", lambda c, m, w: c.unpin_build(m.finished), frozenset({A})),
+    (
+        "POST /builds/{build}/release-imports",
+        lambda c, m, w: c.record_release_imports(
+            m.running, [ReleaseImport(alias="rtl", release=m.release.id)]
+        ),
+        frozenset({A}),
+    ),
+    (
+        "GET /builds/{build}/release-imports",
+        lambda c, m, w: c.list_release_imports(m.finished),
+        frozenset({A}),
+    ),
     (
         "POST /builds/{build}/finish",
         lambda c, m, w: c.finish_build(m.running, "passed"),

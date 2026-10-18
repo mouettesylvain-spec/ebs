@@ -14,6 +14,7 @@ from ebs.cli import (
     channel,
     domain,
     gc,
+    lock,
     logs,
     outputs,
     plan,
@@ -93,6 +94,7 @@ app.command("unpin")(gc.unpin_command)
 app.add_typer(domain.app, name="domain")
 app.add_typer(release.app, name="release")
 app.add_typer(channel.app, name="channel")
+app.add_typer(lock.app, name="lock")
 app.add_typer(rules.app, name="rules")
 app.add_typer(seeds.app, name="seeds")
 app.add_typer(toolchain.app, name="toolchain")

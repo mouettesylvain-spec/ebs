@@ -26,6 +26,7 @@ from ebs.meta._common import (
     check_lease_ttl,
     check_pin,
     check_release,
+    check_release_imports,
     check_result,
     check_run,
     check_set_channel,
@@ -59,6 +60,7 @@ from ebs.meta.api import (
     RegisterOutcome,
     ReleaseCreate,
     ReleaseId,
+    ReleaseImport,
     ReleaseView,
     ResultManifest,
     Tombstone,
@@ -128,6 +130,7 @@ class InMemoryMetadataStore:
         self._channels: dict[tuple[str, str, str], int] = {}  # -> last history entry
         self._history: list[ChannelMove] = []
         self._exports: list[ExportRecord] = []
+        self._release_imports: dict[int, dict[str, ReleaseImport]] = {}  # build -> alias -> row
 
     # --- action cache ---------------------------------------------------------------------------
 
@@ -288,6 +291,23 @@ class InMemoryMetadataStore:
             # A finished build holds no lease; a pin is a separate root.
             for lease in [i for i, x in self._leases.items() if x.build == build]:
                 del self._leases[lease]
+
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        with self._lock:
+            b = self._build(build)
+            recorded = self._release_imports.get(build, {})
+            ids = {int(r.release) for r in imports}
+            new = check_release_imports(
+                build, b.view.domain, imports, {i: self._release(i) for i in ids},
+                {alias: int(r.release) for alias, r in recorded.items()},
+            )  # fmt: skip
+            self._release_imports.setdefault(build, {}).update((r.alias, r) for r in new)
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        with self._lock:
+            self._build(build)
+            rows = self._release_imports.get(build, {})
+            return [rows[alias] for alias in sorted(rows)]
 
     def get_build(self, build: BuildId) -> BuildView:
         with self._lock:

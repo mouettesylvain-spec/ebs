@@ -82,6 +82,9 @@ from ebs.meta.api import (
     RegisterOutcome,
     ReleaseCreate,
     ReleaseId,
+    ReleaseImport,
+    ReleaseImportBatch,
+    ReleaseImportList,
     ReleaseList,
     ReleaseView,
     ResultManifest,
@@ -554,6 +557,22 @@ class HttpMetadataStore:
         except ValidationError as exc:
             raise MetadataError(f"{what}: invalid status {status!r}: {exc}") from None
         self._call("POST", f"/builds/{int(build)}/finish", what, body=body, idempotent=False)
+
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        what = f"record_release_imports {build}"
+        try:
+            body = ReleaseImportBatch(imports=list(imports))
+        except ValidationError as exc:
+            raise MetadataError(f"{what}: invalid request: {exc}") from None
+        # Recording the same rows again is a no-op in the store, so a retry is safe.
+        self._call(
+            "POST", f"/builds/{int(build)}/release-imports", what, body=body, idempotent=True
+        )
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        what = f"list_release_imports {build}"
+        r = self._call("GET", f"/builds/{int(build)}/release-imports", what, idempotent=True)
+        return self._parse(r, ReleaseImportList, what).imports
 
     def get_build(self, build: BuildId) -> BuildView:
         what = f"get_build {build}"

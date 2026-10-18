@@ -1,10 +1,11 @@
 """One build from plan to final status: the build record, events and the scheduler (P0-15 R10).
 
 `run_build` stores the plan in the CAS, creates the build record (git info of the flow repo,
-user, CI job, cache mode), adds the actions, runs the `Scheduler` and finishes the build with its
-status and per-state counts. With `handle_sigint`, Ctrl-C cancels submitted work and records the
-build as `cancelled` (R8). The usage of the actions that ran and passed is appended to
-`.ebs/usage.jsonl` for `ebs plan`'s tuning hints (P1-05 R4).
+user, CI job, cache mode) with the releases it imports (`release_imports`, P2-03), adds the
+actions, runs the `Scheduler` and finishes the build with its status and per-state counts.
+With `handle_sigint`, Ctrl-C cancels submitted work and records the build as `cancelled` (R8).
+The usage of the actions that ran and passed is appended to `.ebs/usage.jsonl` for `ebs plan`'s
+tuning hints (P1-05 R4).
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from __future__ import annotations
 import signal
 import threading
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,7 +31,14 @@ from ebs.driver.scheduler import DriverConfig, FinalState, Refiner, Scheduler
 from ebs.exec.api import Executor
 from ebs.gc.access import put_registered
 from ebs.gc.leases import LeaseKeeper
-from ebs.meta.api import ActionRow, BuildCreate, BuildId, BuildStatus, MetadataStore
+from ebs.meta.api import (
+    ActionRow,
+    BuildCreate,
+    BuildId,
+    BuildStatus,
+    MetadataStore,
+    ReleaseImport,
+)
 from ebs.plan.planfile import encode
 from ebs.plan.types import Plan
 
@@ -73,6 +81,7 @@ def run_build(
     clock: Clock | None = None,
     retry: RetryPolicy | None = None,
     handle_sigint: bool = False,
+    release_imports: Sequence[ReleaseImport] = (),
 ) -> BuildOutcome:
     config = config or DriverConfig()
     clock = clock or SystemClock()
@@ -94,6 +103,8 @@ def run_build(
             cache_mode=config.cache_mode,
         )
     )
+    if release_imports:  # for `ebs used-by` (P2-03 R5)
+        store.record_release_imports(build, release_imports)
     store.add_actions(
         build, [ActionRow(action_id=a.action_id, step=a.step, key=a.key) for a in plan.actions]
     )
