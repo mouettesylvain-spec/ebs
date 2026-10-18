@@ -21,7 +21,8 @@ call was made in the window), so one larger than a limit still runs, alone.
 Job logs (runner stdout+stderr, including its infra line) go to
 `<debug root>/<domain>/<build id|local>/slurm/%A_%a.out` (arrays) or `%j.out` (plain jobs);
 the job scripts and env files sit next to them in `jobs/`. Job names are
-`ebs:<first 8 hex of the build UUID|local>:<step>`, the comment field holds the build UUID.
+`ebs:<first 8 hex of the build UUID|local>:<step>`, the comment field starts with the build UUID
+(`SlurmCli.submit` appends its submission token).
 
 Each sbatch call sets the partition, cpus, memory and time limit (the action's `resources.time`
 plus `JOB_TIME_GRACE_S`, so the runner's own timeout fires first and it can still clean up and

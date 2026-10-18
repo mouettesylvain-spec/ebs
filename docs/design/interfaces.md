@@ -965,7 +965,11 @@ states.job_status(info: SlurmJobInfo, *, infra_reason: InfraReason | None = None
 ```
 
 - `comment` (P1-02) becomes `--comment=…`: the build UUID, read by admin tooling and the
-  scratch-cleanup epilog (P1-04).
+  scratch-cleanup epilog (P1-04). **CONTRACT CHANGE:** `submit` appends ` ebs-submit=<16 hex>`
+  (`SUBMIT_TAG`), a token unique to the submission, and after each transient sbatch failure
+  runs `squeue --json --states=all --me --name=<job name>`: a job carrying the token means the
+  controller accepted an earlier attempt whose reply was lost, so its id is returned instead
+  of submitting again (an array returns its array job id). Without a comment, plain retries.
 - argv is always a list; options are single `--name=value` elements; `--export=NONE` always
   (the job's environment is the env file only); `--no-requeue` unless `requeue=True` (the driver
   retries, a SLURM requeue would run the action twice).
@@ -1033,7 +1037,7 @@ render_jobscript(argv) -> str                         # fixed template, every va
   `env` (default: the caller's `PATH` and `EBS_CONFIG`). stdout+stderr go to
   `<debug_root>/<domain>/<build id|local>/slurm/%A_%a.out` (arrays) or `%j.out`; scripts and env
   files sit in its `jobs/` subdirectory. Job name `ebs:<build uuid[:8]|local>:<step>`, comment
-  the build UUID. Partition, cpus, memory (MiB, rounded up) and time (`resources.time` +
+  the build UUID (then the submission token). Partition, cpus, memory (MiB, rounded up) and time (`resources.time` +
   `JOB_TIME_GRACE_S` = 120 s, so the runner's own timeout fires first) come from the batch's
   largest request. P1-03: `--licenses` is `license_request(batch_licenses(actions))` (feature names
   `^[A-Za-z0-9_.-]+$`, an explicit `feat@server` kept as written); `--account`/`--qos` come from

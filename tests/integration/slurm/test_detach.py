@@ -144,7 +144,7 @@ def test_detach_submits_driver_job(tmp_path: Path, fake_slurm: FakeSlurm, pg_url
     driver = next(r for r in fake_jobs(fake_slurm) if str(r["id"]) == job_id)
     assert driver["cpus"] == 1
     assert (driver["partition"], driver["qos"], driver["time_s"]) == ("service", "driver", 7200)
-    assert driver["comment"] == uuid
+    assert driver["comment"].split(" ebs-submit=")[0] == uuid  # then the submission token
     assert driver["name"] == f"ebs:{uuid.replace('-', '')[:8]}:driver"
     assert Path(driver["workdir"]) == proj
     script = Path(driver["script"]).read_text()

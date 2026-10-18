@@ -236,6 +236,32 @@ def test_fault_injection_transient_cli(fake_slurm: FakeSlurm) -> None:
     assert _wait_state(cli, job, TERMINAL).state == "COMPLETED"
 
 
+# P1-01 follow-up: the controller accepted the job but the reply timed out. The retry finds
+# the job by the token in its comment instead of submitting a second one.
+def test_lost_sbatch_reply_submits_once(fake_slurm: FakeSlurm) -> None:
+    fake_slurm.inject(
+        {
+            "fault": "CLI_ERROR",
+            "command": "sbatch",
+            "count": 1,
+            "accept": True,
+            "message": "sbatch: error: Batch job submission failed: "
+            "Socket timed out on send/recv operation",
+        }
+    )
+    cli = fake_slurm.cli(clock=FakeClock())
+    uuid = "0b9f3c3e-6a51-4c0e-9d7e-2f4d6f1a2b3c"
+    job = cli.submit(_sh(fake_slurm, "x.sh", "true\n"), SbatchOptions(job_name="j", comment=uuid))
+    assert _wait_state(cli, job, TERMINAL).state == "COMPLETED"
+    out = subprocess.run(
+        [str(fake_slurm.bin_dir / "squeue"), "--json", "--states=all", "--name=j"],
+        capture_output=True, text=True, check=True,
+    ).stdout  # fmt: skip
+    jobs = json.loads(out)["jobs"]
+    assert [j["job_id"] for j in jobs] == [int(job)]
+    assert jobs[0]["comment"].startswith(f"{uuid} ebs-submit=")
+
+
 # R5 + R4: permanent submission errors come back with SLURM's message.
 def test_permanent_errors(fake_slurm: FakeSlurm) -> None:
     fake_slurm.configure(accounts=["a1"], qos=["q1"], licenses={"msimhdlsim": 2})

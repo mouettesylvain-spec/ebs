@@ -160,6 +160,7 @@ class SqueueJob(_Model):
     exit_code: ExitCode = ExitCode()
     name: str = ""
     nodes: str = ""
+    comment: str = ""
 
     @field_validator("job_state", mode="before")
     @classmethod
