@@ -38,6 +38,7 @@ from ebs.core.log import get_logger
 from ebs.meta._common import (
     check_blobs,
     check_digest,
+    check_driver_owner,
     check_lease_ttl,
     check_pin,
     check_toolchain,
@@ -62,6 +63,9 @@ from ebs.meta.api import (
     CreatedBuild,
     CreatedLease,
     DigestBatch,
+    DriverClaim,
+    DriverLease,
+    DriverRelease,
     Event,
     LeaseId,
     LeaseRequest,
@@ -662,6 +666,27 @@ class HttpMetadataStore:
                 body=LeaseRequest(digests=chunk, ttl_s=ttl_s),
                 idempotent=True,
             )
+
+    # --- driver lease (P2-08) -------------------------------------------------------------------
+
+    def claim_driver(self, build: BuildId, owner: str, ttl_s: int) -> DriverLease:
+        check_driver_owner(owner, "claim_driver")
+        check_lease_ttl(ttl_s)
+        what = f"claim_driver for build {build}"
+        body = DriverClaim(owner=owner, ttl_s=ttl_s)
+        # A retried claim by the same owner is a renewal: safe to repeat.
+        r = self._call("POST", f"/builds/{int(build)}/driver", what, body=body, idempotent=True)
+        return self._parse(r, DriverLease, what)
+
+    def release_driver(self, build: BuildId, owner: str) -> None:
+        check_driver_owner(owner, "release_driver")
+        self._call(
+            "POST",
+            f"/builds/{int(build)}/driver/release",
+            f"release_driver for build {build}",
+            body=DriverRelease(owner=owner),
+            idempotent=True,
+        )
 
     def pin_build(self, build: BuildId, *, by: str, reason: str = "") -> None:
         # The service records the authenticated caller as the pin's author, not `by`.

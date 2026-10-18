@@ -39,6 +39,7 @@ __all__ = [
     "BATCH_MAX",
     "DIGEST_SQL_PATTERN",
     "DOMAIN_PATTERN",
+    "DRIVER_LEASE_TTL_S",
     "EVENT_TYPE_PATTERN",
     "FINAL_BUILD_STATUSES",
     "LEASE_TTL_S",
@@ -67,6 +68,9 @@ __all__ = [
     "DigestBatch",
     "DigestField",
     "DomainPolicy",
+    "DriverClaim",
+    "DriverLease",
+    "DriverRelease",
     "ErrorBody",
     "Event",
     "EventType",
@@ -120,6 +124,10 @@ MAX_LEASE_TTL_S: Final = 86_400
 LEASE_TTL_S: Final = 900
 """Lease lifetime the driver requests and renews on its heartbeat (P1-09 R2: 15 min)."""
 
+DRIVER_LEASE_TTL_S: Final = 300
+"""Driver lease lifetime (P2-08 R3): renewed every third of it; a driver silent for longer may
+be replaced by `ebs build --resume`."""
+
 ActionState = Literal[
     "queued",
     "pending",
@@ -156,6 +164,7 @@ EventType = Literal[
     "retrying",
     "build_finished",
     "stat_audit_mismatch",
+    "build_resumed",  # P2-08: a new driver took over a running build
 ]
 
 FINAL_BUILD_STATUSES: Final[frozenset[str]] = frozenset(
@@ -360,6 +369,17 @@ class ActionRow(BaseModel):
     result_key: DigestField | None = None
 
 
+class DriverLease(BaseModel):
+    """Who drives a build, until when (P2-08 R3). `owner` is opaque to the store
+    (`host:pid:token` by convention)."""
+
+    model_config = _FROZEN
+
+    build: BuildId
+    owner: _Name
+    expires_at: AwareDatetime
+
+
 class ActionUpdate(BaseModel):
     """The fields `set_action_state(**fields)` accepts; timestamps are set by the store."""
 
@@ -527,6 +547,18 @@ class MetadataStore(Protocol):
         """Remove the pin; True if the build was pinned."""
         ...
 
+    # driver lease (P2-08 R3)
+    def claim_driver(self, build: BuildId, owner: str, ttl_s: int) -> DriverLease:
+        """Take or renew the build's driver lease, atomically: it becomes `owner`'s until
+        `now + ttl_s` if the build has none, it expired, or `owner` holds it. Returns the lease
+        as it now stands: its owner differs from `owner` when another driver holds it. The build
+        must be running; `1 <= ttl_s <= MAX_LEASE_TTL_S`."""
+        ...
+
+    def release_driver(self, build: BuildId, owner: str) -> None:
+        """Drop the build's driver lease if `owner` holds it; otherwise do nothing."""
+        ...
+
     # events
     def emit(self, event: Event) -> None: ...
 
@@ -691,6 +723,23 @@ class LeaseRequest(BaseModel):
     domain: _Domain | None = None  # acquire only
     digests: Annotated[list[DigestField], Field(max_length=BATCH_MAX)] = Field(default_factory=list)
     ttl_s: Annotated[StrictInt, Field(ge=1, le=MAX_LEASE_TTL_S)]
+
+
+class DriverClaim(BaseModel):
+    """Body of `claim_driver`."""
+
+    model_config = _WIRE
+
+    owner: _Name
+    ttl_s: Annotated[StrictInt, Field(ge=1, le=MAX_LEASE_TTL_S)]
+
+
+class DriverRelease(BaseModel):
+    """Body of `release_driver`."""
+
+    model_config = _WIRE
+
+    owner: _Name
 
 
 class CreatedLease(BaseModel):

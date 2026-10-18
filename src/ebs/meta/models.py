@@ -31,6 +31,7 @@ __all__ = [
     "blobs",
     "builds",
     "domains",
+    "driver_leases",
     "events",
     "gc_runs",
     "lease_objects",
@@ -319,4 +320,19 @@ tombstones = sa.Table(  # the grace period between deleting cache rows and their
     sa.Column("deleted_rows_at", _TS, nullable=False),
     sa.Column("blob_delete_after", _TS, nullable=False),
     _digest_check("digest"),
+)
+
+
+# --- Phase 2: detached and resumed drivers (P2-08, revision 0007) ---------------------------------
+
+driver_leases = sa.Table(  # one live driver per build; renewed by the driver's heartbeat
+    "driver_leases",
+    metadata,
+    sa.Column(
+        "build_id", sa.BigInteger, sa.ForeignKey("builds.id", ondelete="CASCADE"), primary_key=True
+    ),
+    sa.Column("owner", sa.Text, nullable=False),
+    sa.Column("expires_at", _TS, nullable=False),
+    sa.Column("claimed_at", _TS, nullable=False),
+    sa.CheckConstraint("length(owner) BETWEEN 1 AND 256", name="owner_length"),
 )

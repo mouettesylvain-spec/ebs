@@ -19,6 +19,9 @@ from ebs.meta.api import (
     Changed,
     CreatedBuild,
     CreatedLease,
+    DriverClaim,
+    DriverLease,
+    DriverRelease,
     Event,
     LeaseId,
     LeaseRequest,
@@ -193,6 +196,32 @@ def renew_lease(
 ) -> Response:
     _write(deps, caller, build)
     deps.store.renew_lease(BuildId(build), LeaseId(lease), req.ttl_s, add=req.digests)
+    return no_content()
+
+
+# --- driver lease (P2-08 R3) ---------------------------------------------------------------------
+
+
+@router.post("/{build}/driver", response_model=DriverLease, openapi_extra=json_body(DriverClaim))
+def claim_driver(
+    build: int,
+    req: Annotated[DriverClaim, Depends(body(DriverClaim))],
+    deps: Deps,
+    caller: Caller,
+) -> Response:
+    _write(deps, caller, build)
+    return ok(deps.store.claim_driver(BuildId(build), req.owner, req.ttl_s))
+
+
+@router.post("/{build}/driver/release", status_code=204, openapi_extra=json_body(DriverRelease))
+def release_driver(
+    build: int,
+    req: Annotated[DriverRelease, Depends(body(DriverRelease))],
+    deps: Deps,
+    caller: Caller,
+) -> Response:
+    _write(deps, caller, build)
+    deps.store.release_driver(BuildId(build), req.owner)
     return no_content()
 
 

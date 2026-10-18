@@ -181,6 +181,16 @@ def check_lease_ttl(ttl_s: object) -> int:
     return ttl_s
 
 
+def check_driver_owner(owner: object, what: str) -> str:
+    """A driver lease owner (P2-08): 1 to 256 characters, no control characters."""
+    if not isinstance(owner, str) or not 1 <= len(owner) <= 256 or any(ord(c) < 32 for c in owner):
+        raise MetadataError(
+            f"{what}: the owner must be 1 to 256 printable characters (host:pid:token), "
+            f"got {owner!r}"
+        )
+    return owner
+
+
 def check_pin(by: object, reason: object) -> tuple[str, str]:
     if not isinstance(by, str) or not by or len(by) > 256:
         raise MetadataError(f"pin_build: 'by' must name who pins the build, got {by!r}")

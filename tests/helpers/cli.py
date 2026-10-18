@@ -80,8 +80,12 @@ class TestServices(SiteServices):
         return self.memory_store
 
     @contextmanager
-    def open_executor(self, name: str, *, domain: str, log_dir: Path) -> Iterator[Executor]:
-        executor = ScriptedExecutor(self.memory_store, self.cas(domain), on_poll=self.on_poll)
+    def open_executor(
+        self, name: str, *, domain: str, log_dir: Path, project: str | None = None
+    ) -> Iterator[Executor]:
+        executor = ScriptedExecutor(
+            self.memory_store, self.cas(domain), on_poll=self.on_poll, record_jobs=True
+        )
         for action_id, outcomes in self.scripts.items():
             executor.script(action_id, *outcomes)
         self.executors.append(executor)

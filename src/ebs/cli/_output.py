@@ -23,6 +23,7 @@ from ebs.core.errors import (
     CasError,
     ConfigError,
     DigestError,
+    DriverBusyError,
     EbsError,
     ExecutorError,
     ExitCode,
@@ -42,7 +43,7 @@ DEBUG_KEY: Final = "ebs.debug"
 
 _USAGE: Final = (
     ConfigError, FlowError, PlanError, RuleError, SourceError, ToolchainError, DigestError,
-    CanonError, TreeError,
+    CanonError, TreeError, DriverBusyError,
 )  # fmt: skip
 _INFRA: Final = (MetadataError, CasError, ExecutorError, SandboxError)
 

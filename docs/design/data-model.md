@@ -93,6 +93,8 @@ channels(domain FK, name text, channel text, release_id FK, updated_at, updated_
 channel_history(id, domain, name, channel, release_id, moved_at, moved_by, gate_build_id null)
 release_imports(consumer_build_id FK, release_id FK, alias text)   -- used-by queries
 exports(id, release_id FK, to_domain FK, exported_at, exported_by)  -- audited cross-domain copy
+driver_leases(build_id PK FK builds ON DELETE CASCADE, owner text check 1..256 chars,
+              expires_at, claimed_at)          -- P2-08 (revision 0007): one live driver per build
 ```
 
 ## Phase 3

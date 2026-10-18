@@ -2,7 +2,8 @@
 
 Tests replace it with a subclass (in-memory store, scripted executor, fake clock) passed as the
 Typer context object. Config sections read here: `[cas]`, `[scratch]`, `[metadata]`, `[rules]`,
-`[stat_cache]` (`[gc]` is read by `ebs gc`) (docs/design/overview.md § Site configuration).
+`[stat_cache]`, `[slurm]`, `[debug]` (`[gc]` is read by `ebs gc`, `[driver]` by
+`ebs build --detach`) (docs/design/overview.md § Site configuration).
 """
 
 from __future__ import annotations
@@ -26,7 +27,10 @@ from ebs.core.clock import Clock, SystemClock
 from ebs.core.errors import ConfigError, ExecutorError, MetadataError, SourceError, ToolchainError
 from ebs.exec.api import Executor
 from ebs.exec.local import LocalExecutor
+from ebs.exec.slurm.cli import SlurmCli
+from ebs.exec.slurm.executor import SlurmExecutor, SlurmSettings
 from ebs.meta.api import GcStore, MetadataStore
+from ebs.meta.client import TOKEN_ENV
 from ebs.rules.api import DEFAULT_LICENSE_ERROR_PATTERNS, RuleSettings
 from ebs.rules.registry import RuleRegistry
 from ebs.runner.config import RunnerSettings
@@ -37,7 +41,8 @@ from ebs.toolchain.registry import RegistryToolchainResolver
 
 __all__ = ["EXECUTORS", "SiteServices", "StatCacheSettings"]
 
-EXECUTORS: Final = ("local",)
+EXECUTORS: Final = ("local", "slurm")
+_JOB_ENV: Final = ("PATH", "EBS_CONFIG", TOKEN_ENV)  # what a SLURM action job gets (0600 file)
 TOOLCHAINS_FILE: Final = Path(".ebs") / "toolchains.yaml"
 _STAT_KEYS: Final = frozenset({"path", "racy_window_s", "audit_fraction", "untrusted_mounts"})
 
@@ -299,9 +304,30 @@ class SiteServices:
             list(argv), cwd=cwd, env=None if env is None else dict(env), check=False
         ).returncode
 
+    def slurm_settings(self) -> SlurmSettings:
+        return SlurmSettings.from_config(self.config())
+
+    def slurm_cli(self) -> SlurmCli:
+        return SlurmCli(bin_dir=self.slurm_settings().bin_dir, clock=self.clock)
+
     @contextmanager
-    def open_executor(self, name: str, *, domain: str, log_dir: Path) -> Iterator[Executor]:
-        del domain  # the local executor passes it per batch
+    def open_executor(
+        self, name: str, *, domain: str, log_dir: Path, project: str | None = None
+    ) -> Iterator[Executor]:
+        """`local` (processes on this host) or `slurm` (jobs; needs the metadata store, and
+        `project` picks the SLURM account, P1-03)."""
+        if name == "slurm":
+            yield SlurmExecutor(
+                cli=self.slurm_cli(),
+                cas=self.cas(domain),
+                settings=self.slurm_settings(),
+                store=self.store(required=True),
+                runner_argv=self.runner_argv(),
+                env={k: self.environ[k] for k in _JOB_ENV if k in self.environ},
+                clock=self.clock,
+                project=project,
+            )
+            return
         if name != "local":
             raise ExecutorError(f"unknown executor {name!r}; available: {', '.join(EXECUTORS)}")
         executor = LocalExecutor(log_dir=log_dir, runner_argv=self.runner_argv(), env=self.environ)

@@ -158,6 +158,11 @@ os_constraint = ""             # node feature of the OS image, e.g. "rhel9" (--c
 default = ""
 ci = ""                        # `ebs build --ci`
 release = ""
+
+[driver]                       # P2-08: the SLURM job of `ebs build --detach` (1 CPU)
+partition = ""                 # empty: [slurm].default_partition
+qos = ""                       # empty: the build kind's QOS ([slurm.qos])
+time = "72h"                   # walltime: the longest build a detached driver may drive
 ```
 
 ## Glossary
