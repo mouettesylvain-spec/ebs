@@ -36,6 +36,7 @@ from ebs.meta._common import (
     check_lease_ttl,
     check_pin,
     check_release,
+    check_release_imports,
     check_result,
     check_run,
     check_set_channel,
@@ -73,6 +74,7 @@ from ebs.meta.api import (
     RegisterOutcome,
     ReleaseCreate,
     ReleaseId,
+    ReleaseImport,
     ReleaseView,
     ResultManifest,
     StoredEvent,
@@ -97,6 +99,7 @@ from ebs.meta.models import (
     leases,
     pins,
     provenance_edges,
+    release_imports,
     releases,
     tombstones,
     toolchain_manifests,
@@ -464,6 +467,43 @@ class PgMetadataStore:
             # A finished build holds no lease; a pin is a separate root.
             conn.execute(sa.delete(leases).where(leases.c.build_id == build))
             _notify(conn, str(done.domain), build)  # its event streams end (P2-05 R2)
+
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        ri = release_imports
+        with self._tx(f"record_release_imports {build}") as conn:
+            domain: str | None = conn.execute(
+                sa.select(builds.c.domain).where(builds.c.id == int(build)).with_for_update()
+            ).scalar_one_or_none()
+            if domain is None:
+                raise MetadataError(f"no build with id {build}")
+            ids = sorted({int(r.release) for r in imports})
+            found = {int(v.id): v for v in self._select_releases(conn, releases.c.id.in_(ids))}
+            recorded = {
+                str(r.alias): int(r.release_id)
+                for r in conn.execute(sa.select(ri).where(ri.c.build_id == int(build)))
+            }
+            new = check_release_imports(
+                build, str(domain), imports, {i: found.get(i) for i in ids}, recorded
+            )
+            if new:
+                conn.execute(
+                    sa.insert(ri),
+                    [
+                        {"build_id": int(build), "alias": r.alias, "release_id": int(r.release)}
+                        for r in new
+                    ],
+                )
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        ri = release_imports
+        with self._tx(f"list_release_imports {build}") as conn:
+            self._build_status(conn, build)
+            rows = conn.execute(
+                sa.select(ri).where(ri.c.build_id == int(build)).order_by(ri.c.alias)
+            ).all()
+        return [
+            ReleaseImport(alias=str(r.alias), release=ReleaseId(int(r.release_id))) for r in rows
+        ]
 
     def get_build(self, build: BuildId) -> BuildView:
         with self._tx(f"get_build {build}") as conn:

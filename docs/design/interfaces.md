@@ -212,7 +212,10 @@ def with_key(spec: ActionSpec) -> ActionSpec: ...             # key set, or None
 
 Supporting types (P0-08, `ebs.plan.types`): `RuleRef(kind, version)`, `ToolchainRef(name, module,
 id)`, `SourceInput(input, pattern)`, `ActionOutputInput(action_id, output)`, `ImportInput(name,
-path)` (P2-03), `OutputSpec(name, path, type: "file"|"dir", deterministic, optional)`,
+path, content)` (P2-03; **CONTRACT CHANGE:** `content` added: the digest of the bytes to stage,
+the id except for a whole `deterministic: false` release output; not in the key), `ImportPin(domain,
+name, version, channel, release, outputs: {name: ImportedOutput(id, digest, type)})` and
+`PlanLock(digest, imports: {alias: ImportPin})` (P2-03, what `ebs.release.lock.plan_lock` builds), `OutputSpec(name, path, type: "file"|"dir", deterministic, optional)`,
 `DebugSpec(collect, max_size: bytes | None, on_success)`, `FlowInfo(path, git: GitInfo | None)`,
 `GitInfo(repo, commit, dirty)`, `PlanToolchain(module, id, env)`, `Plan(ebs_version, domain, project,
 flow, toolchains, actions, edges, lock, key_schema, v)` with `Plan.action(id)`,
@@ -285,7 +288,24 @@ class Snapshotter(Protocol):        # implemented by ebs.sources.SourceSnapshott
 
 - `base` is the flow directory (tables and source globs resolve against it); `info` is recorded
   as plan.json `flow` (default `{"path": "flow.yaml", "git": null}`). `rehash=True` requires a
-  snapshotter with `rehash` set. `${imports.*}` raises `PlanError` until P2-03.
+  snapshotter with `rehash` set.
+- Imports (P2-03; **CONTRACT CHANGE:** `plan(…, lock: PlanLock | None = None)`): every flow
+  import needs a pin whose `name` equals `from`, whose `domain` is the flow's, and whose
+  `channel` (or `version`) is the one the flow asks for; else `PlanError` naming
+  `ebs lock update <alias>`. The planner never resolves channels. `${imports.A}` renders
+  `imports/A` (`${imports.A/x}`: `imports/A/x`). As an input value it must come first:
+  `${imports.A}` stages every release output whole at `imports/A/<output>` (kind `tree`/`file`,
+  id = the release's id), `${imports.A}/<output>` one of them, any other `${imports.A}/<glob>`
+  matches the release's files (`ebs.sources.globs.match_paths`, the `resolve_glob` semantics)
+  read from the tree manifests in the consumer domain's CAS (missing: `PlanError` suggesting
+  `ebs release export`); each match is a `file` input at `imports/A/<output>/<path>` with the
+  manifest's digest as id: nothing is re-hashed (a file output keeps the release's id). A
+  pattern starting with an exact output name and `/` globs inside that output only, so output
+  names with `[k=v]` are literal there; a glob matching a symlink is a `PlanError` (import the
+  whole output). Whole outputs keep keys stable across re-releases of the same producer key;
+  globbed files follow their bytes. plan.json `lock` is the lock digest when the
+  flow has imports, else null. Import source JSON: `{"type": "import", "name", "path",
+  "content"}`.
 - `refine` is idempotent and processes actions in plan order, so one call propagates through
   chains of nondeterministic outputs; ids of nondeterministic outputs always come from the
   producer's key, never from `produced`.
@@ -478,6 +498,23 @@ re-validated on write (values must also pass `canonical_json`).
   exported, to_domain, exported_at, exported_by}` audit row, atomically), `list_exports(release)`
   (rows naming it as source or copy). Release outputs (content digests, also of yanked releases)
   are `GcRoots.released`.
+- Release imports (P2-03, `MetadataStore`; **CONTRACT CHANGE:** new methods):
+  `record_release_imports(build, [ReleaseImport{alias, release}])` (all or nothing; every
+  release in the build's domain; the same row again is a no-op, another release for a recorded
+  alias is refused) and `list_release_imports(build)` (by alias). `run_build(…,
+  release_imports=)` records them right after `create_build`. Aliases match
+  `IMPORT_ALIAS_PATTERN`. PostgreSQL: table `release_imports` (revision 0009, append-only).
+- `ebs.release.lock` (L3, P2-03): `flow.lock` models `LockFile{version: 1, imports: {alias:
+  LockEntry{domain, name, version, channel | None, release, outputs: {name: LockedOutput{digest,
+  id, size, type}}}}}`; `parse_lock(text)` / `load_lock(path) -> LockFile | None` (`ReleaseError`
+  when invalid), `dump_lock(lock) -> str` (header comment + YAML with keys sorted at every
+  level; `dump(parse(t)) == t`), `lock_digest(lock)` (canonical JSON of the content),
+  `release_digest(view)` (`{"v": 1, name, version, outputs}`: no domain, so an exported copy
+  pins the same), `plan_lock(lock) -> PlanLock`, `resolve_lock(store, flow, old, aliases=())`
+  (channels and versions resolved in the flow's domain; yanked releases refused; with aliases
+  the others keep their pins), `diff_locks(old, new) -> [LockChange]` (`describe()`,
+  `to_json()`), `import_rows(store, flow, lock) -> [ReleaseImport]` (checks each pinned release
+  still has its digest).
 - `ebs.release` (L3, P2-02): `releases.create_release(store, *, name, version, build, outputs:
   ["step.output", "step.output[*]", "step.output[col=value,…]"], by, notes, allow_failed)`
   (selectors as in flow references; a matrix step needs one; `ReleaseError` for a broken rule),
@@ -537,6 +574,8 @@ in JSON mode (`model_validate_json`):
 | `PUT /builds/{b}/pin` | `pin_build` (by = caller) | `PinRequest{reason}` → 204 |
 | `DELETE /builds/{b}/pin` | `unpin_build` | → `Changed` |
 | `POST /builds/{b}/events` | `emit` | `Event` → 204 |
+| `POST /builds/{b}/release-imports` | `record_release_imports` | `ReleaseImportBatch{imports}` → 204 (P2-03, `build_write`) |
+| `GET /builds/{b}/release-imports` | `list_release_imports` | → `ReleaseImportList` (paged) |
 | `GET /builds/{b}/events` | `events_after(build=)` | → `text/event-stream` (P2-05, § 6.2) |
 | `GET /domains/{d}/events` | `events_after(domain=)` | → `text/event-stream` (P2-05) |
 | `POST /toolchains` | `register_toolchain` | `ToolchainRegistration` (manifest base64) → `RegisterOutcome` |
@@ -1477,6 +1516,17 @@ before anything is hashed (exit 2); `ebs gc` collects only `[gc].domain` and `[g
 `channel show|history NAME CHANNEL` (P2-02; `ebs.release`). `--domain` defaults to the domain of
 the latest build recorded here; B is a recorded build's UUID prefix or id, or any store build id.
 A broken rule (selector, version, failed action, gate, membership) exits 2.
+
+**`ebs lock update [ALIAS…] [-f FLOW] [--json]`**, **`ebs lock check [-f FLOW] [--json]`**
+(P2-03; `ebs.release.lock`): `update` resolves the flow's imports with the metadata store,
+prints one line per changed alias (`rtl: rtl-team/cpu 1 → 2 (channel stable); changed
+pack.srcs`, `rtl: added …`, `rtl: removed (was …)`) and rewrites `flow.lock` next to the flow
+when its text changes; with aliases only those move. `check` exits 1 when `update` would change
+the file (content or layout, or no file), printing the same lines, and writes nothing. `--json`:
+`{"changes": [{"alias", "change": "added|removed|changed", "name", "old_version", "new_version",
+"outputs_changed", "outputs_added", "outputs_removed"}], "written"}`. `ebs plan`/`build` of a
+flow with imports read `flow.lock` (missing or stale: exit 2); `build` records the
+`release_imports` rows.
 
 **`ebs gc [--dry-run] [--domain D] [--json]`** (P1-09; `ebs.gc`): collects one domain (default
 `[gc].domain`) as the GC service account; needs `[metadata].url` = a `postgresql` URL (direct

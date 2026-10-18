@@ -30,7 +30,9 @@ P0_TABLES = {
 P1_TABLES = {"toolchain_manifests"}  # P1-07
 GC_TABLES = {"leases", "lease_objects", "pins", "gc_runs", "tombstones"}  # P1-09 (revision 0006)
 P1_TABLES |= GC_TABLES
-P2_TABLES = {"releases", "channels", "channel_history", "exports"}  # P2-02 (revision 0007)
+RELEASE_TABLES = {"releases", "channels", "channel_history", "exports"}  # P2-02 (revision 0007)
+IMPORT_TABLES = {"release_imports"}  # P2-03 (revision 0009)
+P2_TABLES = RELEASE_TABLES | IMPORT_TABLES
 GOOD = "sha256:" + "a" * 64
 
 
@@ -375,9 +377,31 @@ def test_release_revision_round_trip(empty_db: URL) -> None:
     migrations.upgrade(url, "0006_gc")
     assert not P2_TABLES & _tables(empty_db)
     migrations.upgrade(url, "0007_releases")
-    assert _tables(empty_db) >= P2_TABLES
+    assert _tables(empty_db) >= RELEASE_TABLES
+    assert not IMPORT_TABLES & _tables(empty_db)
     migrations.downgrade(url, "0006_gc")
     assert not P2_TABLES & _tables(empty_db)
     assert _tables(empty_db) >= GC_TABLES
     migrations.upgrade(url, "0007_releases")
-    assert _tables(empty_db) >= P2_TABLES
+    assert _tables(empty_db) >= RELEASE_TABLES
+
+
+# P2-03: revision 0009 upgrades from 0008 and downgrades back to it (its triggers go with the
+# table), so a re-upgrade works; the rows are append-only.
+def test_release_imports_revision_round_trip(empty_db: URL) -> None:
+    url = url_string(empty_db)
+    migrations.upgrade(url, "0008_events_partitioned")
+    assert not IMPORT_TABLES & _tables(empty_db)
+    migrations.upgrade(url, "0009_release_imports")
+    assert _tables(empty_db) >= IMPORT_TABLES
+    engine = sa.create_engine(empty_db, poolclass=sa.pool.NullPool)
+    try:
+        with engine.connect() as conn, pytest.raises(sa.exc.DBAPIError, match="append-only"):
+            conn.execute(sa.text("TRUNCATE ebs.release_imports"))
+    finally:
+        engine.dispose()
+    migrations.downgrade(url, "0008_events_partitioned")
+    assert not IMPORT_TABLES & _tables(empty_db)
+    assert _tables(empty_db) >= RELEASE_TABLES
+    migrations.upgrade(url, "0009_release_imports")
+    assert _tables(empty_db) >= IMPORT_TABLES

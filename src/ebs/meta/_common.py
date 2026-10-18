@@ -24,6 +24,7 @@ from ebs.meta.api import (
     BuildView,
     GcRun,
     ReleaseCreate,
+    ReleaseImport,
     ReleaseView,
     ResultManifest,
     ToolchainCreate,
@@ -334,6 +335,41 @@ def check_exportable(release: ReleaseView) -> None:
             f"release {release.name} {release.version} is yanked ({release.yank_reason}); a "
             "yanked release is not exported"
         )
+
+
+def check_release_imports(
+    build: int,
+    domain: str,
+    rows: Iterable[ReleaseImport],
+    releases: Mapping[int, ReleaseView | None],
+    recorded: Mapping[str, int],
+) -> list[ReleaseImport]:
+    """The rows of `rows` not recorded yet (P2-03 R5); MetadataError if one breaks a rule.
+
+    `releases` maps each row's release id to the stored release (None: unknown); `recorded`
+    maps the build's recorded aliases to their release ids.
+    """
+    what = f"record_release_imports for build {build}"
+    new: dict[str, ReleaseImport] = {}
+    for row in rows:
+        row = revalidate(row, ReleaseImport, what)
+        release = releases.get(int(row.release))
+        if release is None or release.domain != domain:
+            # The same answer for another domain's release: ids reveal nothing across domains.
+            raise MetadataError(
+                f"{what}: import {row.alias!r}: no release with id {row.release} in the "
+                f"build's domain {domain!r}; a build imports releases of its own domain (export "
+                "one into it and pin that copy)"
+            )
+        before = recorded.get(row.alias, new[row.alias].release if row.alias in new else None)
+        if before is not None and int(before) != int(row.release):
+            raise MetadataError(
+                f"{what}: the build already imports release {before} as {row.alias!r}; an "
+                "import alias names one release per build"
+            )
+        if row.alias not in recorded:
+            new[row.alias] = row
+    return list(new.values())
 
 
 def check_event_query(build: object, domain: object, limit: object) -> None:

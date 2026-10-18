@@ -104,7 +104,9 @@ channels(domain FK, name text, channel text, release_id FK, move_id FK channel_h
          updated_at, updated_by, PRIMARY KEY(domain, name, channel))   -- the last move
 exports(id bigserial PK, release_id FK, exported_release_id FK releases, to_domain FK,
         exported_at, exported_by) index (release_id)        -- audited cross-domain copy, append-only
-release_imports(consumer_build_id FK, release_id FK, alias text)   -- used-by queries (P2-03)
+release_imports(build_id FK builds, alias text check ~ IMPORT_ALIAS_PATTERN,
+                release_id FK releases, PRIMARY KEY(build_id, alias))
+                index (release_id)   -- 0009, P2-03: used-by queries; append-only (trigger)
 ```
 
 ## Phase 3

@@ -56,8 +56,8 @@ class _Positions:
 def load_flow(path: Path, *, lock: Path | None = None) -> Flow:
     """Load and validate `path`; raise `FlowError` pointing at the offending YAML node.
 
-    `lock` (the `flow.lock` next to the flow) is reserved for imports (task P2-03) and is not
-    read yet.
+    `lock` is unused: the `flow.lock` pins are read by `ebs.release.lock.load_lock` and given
+    to the planner (P2-03).
     """
     del lock
     file = str(path)

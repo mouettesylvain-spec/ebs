@@ -43,6 +43,7 @@ __all__ = [
     "EVENT_PAGE_MAX",
     "EVENT_TYPE_PATTERN",
     "FINAL_BUILD_STATUSES",
+    "IMPORT_ALIAS_PATTERN",
     "LEASE_TTL_S",
     "MAX_LEASE_TTL_S",
     "RELEASE_NAME_PATTERN",
@@ -105,6 +106,9 @@ __all__ = [
     "RegisterOutcome",
     "ReleaseCreate",
     "ReleaseId",
+    "ReleaseImport",
+    "ReleaseImportBatch",
+    "ReleaseImportList",
     "ReleaseList",
     "ReleaseOutput",
     "ReleaseStore",
@@ -506,6 +510,16 @@ class MetadataStore(Protocol):
 
     def finish_build(self, build: BuildId, status: BuildStatus) -> None: ...
 
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        """Record which release each import alias of `build` used (P2-03 R5, for `used-by`),
+        all or nothing. Every release must be in the build's domain; recording the same row
+        again is a no-op, another release for a recorded alias is refused."""
+        ...
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        """The release imports of `build`, ordered by alias."""
+        ...
+
     def get_build(self, build: BuildId) -> BuildView: ...
 
     def list_actions(self, build: BuildId, *, state: ActionState | None = None) -> list[ActionRow]:
@@ -890,6 +904,19 @@ _Version = Annotated[StrictStr, Field(pattern=VERSION_PATTERN)]
 _Channel = Annotated[StrictStr, Field(pattern=CHANNEL_PATTERN)]
 
 
+IMPORT_ALIAS_PATTERN: Final = r"^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+"""Import aliases as flows name them (`imports: {rtl: …}` -> `${imports.rtl}`)."""
+
+
+class ReleaseImport(BaseModel):
+    """One `release_imports` row: a build consumed `release` through import `alias`."""
+
+    model_config = _FROZEN
+
+    alias: Annotated[StrictStr, Field(pattern=IMPORT_ALIAS_PATTERN)]
+    release: ReleaseId
+
+
 def release_output_name(action_id: str, output: str) -> str:
     """The name of an action's output in a release: `<action id>.<output>`."""
     return f"{action_id}.{output}"
@@ -1079,6 +1106,21 @@ class GateQuery(BaseModel):
 
     flow: _Name
     ids: Annotated[list[DigestField], Field(max_length=BATCH_MAX)]
+
+
+class ReleaseImportBatch(BaseModel):
+    """Body of `POST /builds/{id}/release-imports`."""
+
+    model_config = _WIRE
+
+    imports: Annotated[list[ReleaseImport], Field(max_length=BATCH_MAX)]
+
+
+class ReleaseImportList(BaseModel):
+    model_config = _WIRE
+
+    imports: list[ReleaseImport]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 class ReleaseList(BaseModel):

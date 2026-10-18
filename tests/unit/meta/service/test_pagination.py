@@ -13,6 +13,7 @@ from ebs.meta.api import (
     ActionRow,
     BuildId,
     ReleaseCreate,
+    ReleaseImport,
     ReleaseOutput,
     ToolchainCreate,
 )
@@ -80,6 +81,7 @@ def test_every_list_route_is_paginated() -> None:
         paged.append(route)
     assert sorted(paged) == [
         "GET /builds/{build}/actions",
+        "GET /builds/{build}/release-imports",
         "GET /channels/history",
         "GET /releases",
         "GET /releases/{release}/exports",
@@ -190,6 +192,10 @@ def test_client_reads_every_page() -> None:
     for target in ("d1", "d2", "d3"):
         store.record_export(releases[0].id, target, by="alice")
     assert len(client.list_exports(releases[0].id)) == 3
+    importer = finish(store, {}, status=None)
+    rows = [ReleaseImport(alias=a, release=releases[0].id) for a in ("c", "a", "b")]
+    store.record_release_imports(importer, rows)
+    assert [r.alias for r in client.list_release_imports(importer)] == ["a", "b", "c"]
 
 
 # R3: a server that keeps answering the same cursor is an error, not an endless loop.

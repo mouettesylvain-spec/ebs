@@ -10,7 +10,7 @@ Action layout (one object per action, in plan order):
      "env": {...}, "runtime_env": {...}, "toolchain": {"name", "module", "id"} | null,
      "inputs": [{"path", "kind", "id", "writable"?, "source": {"type": "source", "input", "pattern"}
                                                 | {"type": "output", "action", "output"}
-                                                | {"type": "import", "name", "path"}}],
+                                                | {"type": "import", "name", "path", "content"}}],
      "outputs": [{"name", "path", "type", "deterministic", "optional"}],
      "config_files": {...}, "resources": {"cpus", "mem", "time"[, "max_parallel"][, "constraint"]
                     [, "retry_on_timeout"]},
@@ -77,7 +77,12 @@ def _source_json(source: SourceInput | ActionOutputInput | ImportInput) -> JsonV
         return {"type": "source", "input": source.input, "pattern": source.pattern}
     if isinstance(source, ActionOutputInput):
         return {"type": "output", "action": source.action_id, "output": source.output}
-    return {"type": "import", "name": source.name, "path": source.path}
+    return {
+        "type": "import",
+        "name": source.name,
+        "path": source.path,
+        "content": str(source.content),
+    }
 
 
 def _opt(d: Digest | None) -> JsonValue:
@@ -259,7 +264,11 @@ def _source(value: object, path: str) -> SourceInput | ActionOutputInput | Impor
     if kind == "output":
         return ActionOutputInput(_get(doc, "action", path, _str), _get(doc, "output", path, _str))
     if kind == "import":
-        return ImportInput(_get(doc, "name", path, _str), _get(doc, "path", path, _str))
+        return ImportInput(
+            _get(doc, "name", path, _str),
+            _get(doc, "path", path, _str),
+            _get(doc, "content", path, _digest),
+        )
     raise _fail(f"{path}.type", "'source', 'output' or 'import'", kind)
 
 

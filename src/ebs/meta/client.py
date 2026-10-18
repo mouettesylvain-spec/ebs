@@ -82,6 +82,9 @@ from ebs.meta.api import (
     RegisterOutcome,
     ReleaseCreate,
     ReleaseId,
+    ReleaseImport,
+    ReleaseImportBatch,
+    ReleaseImportList,
     ReleaseList,
     ReleaseView,
     ResultManifest,
@@ -122,7 +125,9 @@ _BACKOFF_CAP_S: Final = 8.0
 _RETRY_AFTER_CAP_S: Final = 60.0
 
 _M = TypeVar("_M", bound=BaseModel)
-_P = TypeVar("_P", ActionList, ToolchainList, ReleaseList, ChannelHistory, ExportList)
+_P = TypeVar(
+    "_P", ActionList, ToolchainList, ReleaseList, ChannelHistory, ExportList, ReleaseImportList
+)
 _T = TypeVar("_T")
 
 
@@ -594,6 +599,22 @@ class HttpMetadataStore:
         except ValidationError as exc:
             raise MetadataError(f"{what}: invalid status {status!r}: {exc}") from None
         self._call("POST", f"/builds/{int(build)}/finish", what, body=body, idempotent=False)
+
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        what = f"record_release_imports {build}"
+        try:
+            body = ReleaseImportBatch(imports=list(imports))
+        except ValidationError as exc:
+            raise MetadataError(f"{what}: invalid request: {exc}") from None
+        # Recording the same rows again is a no-op in the store, so a retry is safe.
+        self._call(
+            "POST", f"/builds/{int(build)}/release-imports", what, body=body, idempotent=True
+        )
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        what = f"list_release_imports {build}"
+        pages = self._pages(f"/builds/{int(build)}/release-imports", what, ReleaseImportList)
+        return [x for page in pages for x in page.imports]
 
     def get_build(self, build: BuildId) -> BuildView:
         what = f"get_build {build}"
