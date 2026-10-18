@@ -21,11 +21,13 @@ from ebs.meta._common import (
     check_blobs,
     check_by,
     check_digest,
+    check_event_query,
     check_exportable,
     check_final_status,
     check_lease_ttl,
     check_pin,
     check_release,
+    check_release_imports,
     check_result,
     check_run,
     check_set_channel,
@@ -33,6 +35,9 @@ from ebs.meta._common import (
     check_walk,
     edge_models,
     edge_rows,
+    month_name,
+    month_start,
+    next_month,
     provenance_graph,
     release_matches,
     revalidate,
@@ -42,6 +47,7 @@ from ebs.meta._common import (
     walk_levels,
 )
 from ebs.meta.api import (
+    EVENT_PAGE_MAX,
     ActionRow,
     ActionState,
     BlobRef,
@@ -66,8 +72,10 @@ from ebs.meta.api import (
     RegisterOutcome,
     ReleaseCreate,
     ReleaseId,
+    ReleaseImport,
     ReleaseView,
     ResultManifest,
+    StoredEvent,
     Tombstone,
     ToolchainCreate,
     ToolchainRecord,
@@ -122,7 +130,9 @@ class InMemoryMetadataStore:
         self._uuids: set[str] = set()
         self._edges: dict[_EdgeKey, tuple[str, str | None]] = {}  # -> object_id, content
         self._blobs: dict[tuple[str, str], _Blob] = {}
-        self._events: list[Event] = []
+        self._events: list[StoredEvent] = []
+        self._stored_at: dict[int, datetime] = {}  # id -> store clock (the PG partition key)
+        self._last_event = 0
         self._toolchains: dict[str, ToolchainRecord] = {}
         self._toolchain_manifests: dict[str, bytes] = {}
         self._leases: dict[int, _Lease] = {}
@@ -135,6 +145,7 @@ class InMemoryMetadataStore:
         self._channels: dict[tuple[str, str, str], int] = {}  # -> last history entry
         self._history: list[ChannelMove] = []
         self._exports: list[ExportRecord] = []
+        self._release_imports: dict[int, dict[str, ReleaseImport]] = {}  # build -> alias -> row
 
     # --- action cache ---------------------------------------------------------------------------
 
@@ -295,6 +306,23 @@ class InMemoryMetadataStore:
             # A finished build holds no lease; a pin is a separate root.
             for lease in [i for i, x in self._leases.items() if x.build == build]:
                 del self._leases[lease]
+
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        with self._lock:
+            b = self._build(build)
+            recorded = self._release_imports.get(build, {})
+            ids = {int(r.release) for r in imports}
+            new = check_release_imports(
+                build, b.view.domain, imports, {i: self._release(i) for i in ids},
+                {alias: int(r.release) for alias, r in recorded.items()},
+            )  # fmt: skip
+            self._release_imports.setdefault(build, {}).update((r.alias, r) for r in new)
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        with self._lock:
+            self._build(build)
+            rows = self._release_imports.get(build, {})
+            return [rows[alias] for alias in sorted(rows)]
 
     def get_build(self, build: BuildId) -> BuildView:
         with self._lock:
@@ -809,7 +837,58 @@ class InMemoryMetadataStore:
         checked = revalidate(event, Event, "emit")
         with self._lock:
             self._build(checked.build)
-            self._events.append(checked)
+            self._last_event += 1
+            self._events.append(StoredEvent(id=self._last_event, event=checked))
+            self._stored_at[self._last_event] = self._clock.now()
+
+    def events_after(
+        self,
+        after: int,
+        *,
+        build: BuildId | None = None,
+        domain: str | None = None,
+        limit: int = EVENT_PAGE_MAX,
+    ) -> list[StoredEvent]:
+        check_event_query(build, domain, limit)
+        with self._lock:
+            found = [
+                e
+                for e in self._events
+                if e.id > after
+                and (
+                    e.event.build == build
+                    if build is not None
+                    else self._builds[e.event.build].view.domain == domain
+                )
+            ]
+        return found[:limit]
+
+    def ensure_event_partitions(self, at: datetime, *, months_ahead: int = 1) -> list[str]:
+        """Nothing to create in memory: the months `PgMetadataStore` would partition."""
+        month, names = month_start(at), []
+        for _ in range(months_ahead + 1):
+            names.append(f"events_y{month.year:04}m{month.month:02}")
+            month = next_month(month)
+        return names
+
+    def prune_events(self, before: datetime, *, dry_run: bool = False) -> list[str]:
+        with self._lock:
+            months = sorted(
+                {
+                    start
+                    for e in self._events
+                    if next_month(start := month_start(self._stored_at[e.id])) <= before
+                }
+            )
+            if not dry_run:
+                gone = set(months)
+                # Ids are kept: the list stays in id order, and new ids continue after the last.
+                kept = [e for e in self._events if month_start(self._stored_at[e.id]) not in gone]
+                for e in self._events:
+                    if month_start(self._stored_at[e.id]) in gone:
+                        del self._stored_at[e.id]
+                self._events = kept
+        return [month_name(m) for m in months]
 
     # --- toolchain registry ---------------------------------------------------------------------
 

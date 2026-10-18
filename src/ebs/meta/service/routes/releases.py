@@ -35,6 +35,7 @@ from ebs.meta.api import (
 from ebs.meta.service.auth import BuildOwner, NotFoundError, Operation, Principal
 from ebs.meta.service.authz import DomainDenied
 from ebs.meta.service.deps import ServiceDeps, body, current_principal, get_deps, json_body
+from ebs.meta.service.pagination import Cursor, Limit, paginate, sort_ts
 from ebs.meta.service.routes import ok
 from ebs.release.channels import move_channel
 
@@ -87,15 +88,31 @@ def create_release(
 
 @router.get("/releases", response_model=ReleaseList)
 def list_releases(
-    domain: str, deps: Deps, caller: Caller, name: str | None = None, version: str | None = None
+    domain: str,
+    deps: Deps,
+    caller: Caller,
+    name: str | None = None,
+    version: str | None = None,
+    limit: Limit = None,
+    cursor: Cursor = None,
 ) -> Response:
     _read(deps, caller, domain)
     if version is not None:
         if name is None:
             raise MetadataError("list_releases: a version needs a name")
         found = deps.store.get_release(domain, name, version)
-        return ok(ReleaseList(releases=[] if found is None else [found]))
-    return ok(ReleaseList(releases=deps.store.list_releases(domain, name=name)))
+        listed = [] if found is None else [found]
+    else:
+        listed = deps.store.list_releases(domain, name=name)
+    page, after = paginate(
+        listed,
+        lambda r: (r.name, sort_ts(r.created_at), int(r.id)),
+        cursor=cursor,
+        limit=limit,
+        max_page_size=deps.limits.max_page_size,
+        query={"list": "releases", "domain": domain, "name": name, "version": version},
+    )
+    return ok(ReleaseList(releases=page, next=after))
 
 
 @router.get("/releases/{release}", response_model=ReleaseList)
@@ -141,9 +158,19 @@ def record_export(
 
 
 @router.get("/releases/{release}/exports", response_model=ExportList)
-def list_exports(release: int, deps: Deps, caller: Caller) -> Response:
+def list_exports(
+    release: int, deps: Deps, caller: Caller, limit: Limit = None, cursor: Cursor = None
+) -> Response:
     _release(deps, caller, release, "read")
-    return ok(ExportList(exports=deps.store.list_exports(ReleaseId(release))))
+    page, after = paginate(
+        deps.store.list_exports(ReleaseId(release)),
+        lambda x: (x.id,),
+        cursor=cursor,
+        limit=limit,
+        max_page_size=deps.limits.max_page_size,
+        query={"list": "exports", "release": release},
+    )
+    return ok(ExportList(exports=page, next=after))
 
 
 @router.put("/channels", response_model=ChannelMove, openapi_extra=json_body(ChannelSet))
@@ -176,9 +203,25 @@ def get_channel(domain: str, name: str, channel: str, deps: Deps, caller: Caller
 
 
 @router.get("/channels/history", response_model=ChannelHistory)
-def channel_history(domain: str, name: str, channel: str, deps: Deps, caller: Caller) -> Response:
+def channel_history(
+    domain: str,
+    name: str,
+    channel: str,
+    deps: Deps,
+    caller: Caller,
+    limit: Limit = None,
+    cursor: Cursor = None,
+) -> Response:
     _read(deps, caller, domain)
-    return ok(ChannelHistory(moves=deps.store.channel_history(domain, name, channel)))
+    page, after = paginate(
+        deps.store.channel_history(domain, name, channel),
+        lambda m: (m.id,),
+        cursor=cursor,
+        limit=limit,
+        max_page_size=deps.limits.max_page_size,
+        query={"list": "channel_history", "domain": domain, "name": name, "channel": channel},
+    )
+    return ok(ChannelHistory(moves=page, next=after))
 
 
 @router.post(

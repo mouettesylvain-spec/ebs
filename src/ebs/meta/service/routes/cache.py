@@ -53,9 +53,9 @@ def _digest(value: str, what: str) -> Digest:
 @router.get("/cache/{key}", response_model=OptionalResult)
 def cache_get(domain: str, key: str, deps: Deps, caller: Caller) -> Response:
     digest = _digest(key, "cache_get key")
-    if not _member(deps, caller, domain):
-        return ok(OptionalResult(result=None))
-    return ok(OptionalResult(result=deps.store.cache_get(domain, digest)))
+    found = deps.store.cache_get(domain, digest) if _member(deps, caller, domain) else None
+    deps.metrics.count_cache(hits=int(found is not None), misses=int(found is None))
+    return ok(OptionalResult(result=found))
 
 
 @router.post("/cache/lookup", response_model=CacheHits, openapi_extra=json_body(DigestBatch))
@@ -66,12 +66,13 @@ def cache_get_many(
     caller: Caller,
 ) -> Response:
     hits: dict[str, ResultManifest] = {}
-    if not _member(deps, caller, domain):
-        return ok(CacheHits(results=hits))
-    for key in dict.fromkeys(batch.digests):
-        found = deps.store.cache_get(domain, key)
-        if found is not None:
-            hits[str(key)] = found
+    keys = list(dict.fromkeys(batch.digests))
+    if _member(deps, caller, domain):
+        for key in keys:
+            found = deps.store.cache_get(domain, key)
+            if found is not None:
+                hits[str(key)] = found
+    deps.metrics.count_cache(hits=len(hits), misses=len(keys) - len(hits))
     return ok(CacheHits(results=hits))
 
 

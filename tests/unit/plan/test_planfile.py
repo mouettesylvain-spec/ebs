@@ -37,7 +37,10 @@ def rich_specs(draw: st.DrawFn) -> ActionSpec:
     maybe_int = st.none() | st.integers(1, 1 << 40)
     extra = []
     if draw(st.booleans()):
-        extra.append(InputRef("zz/imported", "tree", ImportInput("rtl", "**"), None))
+        content = hash_bytes(b"imported tree")
+        extra.append(
+            InputRef("zz/imported", "tree", ImportInput("rtl", "pack.srcs", content), content)
+        )
     spec = dataclasses.replace(
         spec,
         inputs=tuple(

@@ -34,12 +34,11 @@ behind this release" from the provenance edges recorded since phase 0.
 
 ## Notes
 - Started while P2-01 and P2-02 were merged but still `review` (the user chose to proceed).
-- Rule kind, params and toolchain are stored on `actions` (revision 0008, `ActionRow.rule/params/
+- Rule kind, params and toolchain are stored on `actions` (revision 0010, `ActionRow.rule/params/
   toolchain`, set by the driver): the service has no CAS access to read plans, and `ebs tests`
-  must select `*.sim` rules from the database. Rows written before 0008 hold NULL, so they show
-  no params and are not listed by `ebs tests`. Revision 0008 may collide with a parallel task's
-  revision number (P2-03 adds `release_imports`): the second to merge renumbers and rebases its
-  `down_revision`.
+  must select `*.sim` rules from the database. Rows written before 0010 hold NULL, so they show
+  no params and are not listed by `ebs tests`. First numbered 0008; renumbered 0010 on top of
+  `0009_release_imports` when merging main (P2-05 took 0008, P2-03 0009).
 - `used-by` derives downstream builds from `in` provenance edges, which exist since P0 and count
   cache hits. When P2-03 lands `release_imports`, add builds that imported a release without
   consuming any of its outputs (union with the edge walk).

@@ -24,12 +24,15 @@ from ebs.meta.api import (
     LeaseRequest,
     OptionalResult,
     PinRequest,
+    ReleaseImportBatch,
+    ReleaseImportList,
     ResultManifest,
     StateChange,
 )
 from ebs.meta.service.auth import BuildOwner, NotFoundError, Operation, Principal
 from ebs.meta.service.authz import DomainDenied
 from ebs.meta.service.deps import ServiceDeps, body, current_principal, get_deps, json_body
+from ebs.meta.service.pagination import Cursor, Limit, paginate
 from ebs.meta.service.routes import no_content, ok
 
 # Authenticate before any body is read or validated (401, never 422, without credentials).
@@ -69,6 +72,36 @@ def create_build(
     return ok(CreatedBuild(id=deps.store.create_build(spec)))
 
 
+@router.post(
+    "/{build}/release-imports", status_code=204, openapi_extra=json_body(ReleaseImportBatch)
+)
+def record_release_imports(
+    build: int,
+    batch: Annotated[ReleaseImportBatch, Depends(body(ReleaseImportBatch))],
+    deps: Deps,
+    caller: Caller,
+) -> Response:
+    _write(deps, caller, build)  # the store keeps every release in the build's domain
+    deps.store.record_release_imports(BuildId(build), batch.imports)
+    return no_content()
+
+
+@router.get("/{build}/release-imports", response_model=ReleaseImportList)
+def list_release_imports(
+    build: int, deps: Deps, caller: Caller, limit: Limit = None, cursor: Cursor = None
+) -> Response:
+    _read(deps, caller, build)
+    page, after = paginate(
+        deps.store.list_release_imports(BuildId(build)),
+        lambda r: (r.alias,),
+        cursor=cursor,
+        limit=limit,
+        max_page_size=deps.limits.max_page_size,
+        query={"list": "release_imports", "build": build},
+    )
+    return ok(ReleaseImportList(imports=page, next=after))
+
+
 @router.get("/{build}", response_model=BuildView)
 def get_build(build: int, deps: Deps, caller: Caller) -> Response:
     _read(deps, caller, build)
@@ -89,10 +122,23 @@ def add_actions(
 
 @router.get("/{build}/actions", response_model=ActionList)
 def list_actions(
-    build: int, deps: Deps, caller: Caller, state: ActionState | None = None
+    build: int,
+    deps: Deps,
+    caller: Caller,
+    state: ActionState | None = None,
+    limit: Limit = None,
+    cursor: Cursor = None,
 ) -> Response:
     _read(deps, caller, build)
-    return ok(ActionList(actions=deps.store.list_actions(BuildId(build), state=state)))
+    page, after = paginate(
+        deps.store.list_actions(BuildId(build), state=state),
+        lambda a: (a.action_id,),
+        cursor=cursor,
+        limit=limit,
+        max_page_size=deps.limits.max_page_size,
+        query={"list": "actions", "build": build, "state": state},
+    )
+    return ok(ActionList(actions=page, next=after))
 
 
 @router.post(
@@ -154,6 +200,7 @@ def finish_build(
 ) -> Response:
     _write(deps, caller, build)
     deps.store.finish_build(BuildId(build), finish.status)  # type: ignore[arg-type]
+    deps.notify(build, deps.owner(build).domain)  # its streams end (P2-05 R2)
     return no_content()
 
 
@@ -170,6 +217,7 @@ def emit(
         )
     _write(deps, caller, build)
     deps.store.emit(event)
+    deps.notify(build, deps.owner(build).domain)  # wake its streams (P2-05 R2)
     return no_content()
 
 

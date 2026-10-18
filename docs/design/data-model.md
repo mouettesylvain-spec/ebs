@@ -31,7 +31,7 @@ actions(build_id FK, action_id text, step text, key text null, state text, attem
         queued_at not null, started_at, finished_at, cached bool, result_key text null,
         result jsonb null,                                 -- last ResultManifest (0003, P0-15)
         rule text null, params jsonb object null,          -- rule kind, plan params and
-        toolchain text null check digest,                  -- toolchain id (0008, P2-04)
+        toolchain text null check digest,                  -- toolchain id (0010, P2-04)
         PRIMARY KEY(build_id, action_id))
         check state in (… , 'skipped')                     -- 'skipped' added by 0003 (P0-15)
         check result is null or (object with v = 1)        -- ck_actions_result_manifest
@@ -57,9 +57,12 @@ toolchains(id text PK, name text, module text, version text, fingerprint text,
 toolchain_manifests(toolchain_id text PK FK toolchains ON DELETE CASCADE,
                     entries bytea)                             -- P1-07: zlib fingerprint lines
 
-events(id bigserial PK, build_id FK, ts, type text check ~ '^[a-z][a-z0-9_]*$',
-       action_id text null, data jsonb object)
-       index (build_id, id)                                -- dashboard / status stream; partition by month in P2
+events(id bigint default nextval('event_id_seq'), build_id FK, ts, type text
+       check ~ '^[a-z][a-z0-9_]*$', action_id text null, data jsonb object,
+       stored_at)                                           -- stored_at: store clock (0008)
+       PK (id, stored_at), index (build_id, id)             -- dashboard / status stream
+       PARTITION BY RANGE (stored_at): events_yYYYYmMM per UTC month -- P2-05, migration 0008;
+       ensure_events_partition(ts) creates one, retention drops whole partitions
 ```
 
 ## Phase 1
@@ -103,7 +106,9 @@ channels(domain FK, name text, channel text, release_id FK, move_id FK channel_h
          updated_at, updated_by, PRIMARY KEY(domain, name, channel))   -- the last move
 exports(id bigserial PK, release_id FK, exported_release_id FK releases, to_domain FK,
         exported_at, exported_by) index (release_id)        -- audited cross-domain copy, append-only
-release_imports(consumer_build_id FK, release_id FK, alias text)   -- used-by queries (P2-03)
+release_imports(build_id FK builds, alias text check ~ IMPORT_ALIAS_PATTERN,
+                release_id FK releases, PRIMARY KEY(build_id, alias))
+                index (release_id)   -- 0009, P2-03: used-by queries; append-only (trigger)
 ```
 
 ## Phase 3
@@ -125,5 +130,5 @@ archives(id, release_id FK, bundle_digest text, location text, created_at)
   edges (PK on `(domain, action_key, …)` and the `(domain, object_id)` index); a 20-level,
   50k-edge walk returns in under a second (`tests/integration/test_provenance_perf.py`).
 - `ebs tests <release>`: forward walk from release output ids to actions whose step rule kind is
-  `*.sim` (`actions.rule`, 0008). Releases holding a walked id are found by scanning the
+  `*.sim` (`actions.rule`, 0010). Releases holding a walked id are found by scanning the
   domain's `releases.outputs` (`jsonb_each`); fine while releases number in the thousands.

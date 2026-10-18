@@ -18,6 +18,7 @@ from ebs.meta.api import (
 )
 from ebs.meta.service.auth import Principal
 from ebs.meta.service.deps import ServiceDeps, body, current_principal, get_deps, json_body
+from ebs.meta.service.pagination import Cursor, Limit, paginate, sort_ts
 from ebs.meta.service.routes import no_content, ok
 
 # Authenticate before any body is read or validated (401, never 422, without credentials).
@@ -52,11 +53,23 @@ def register_toolchain(
 
 @router.get("", response_model=ToolchainList)
 def list_toolchains(
-    deps: Deps, caller: Caller, module: str | None = None, current_only: bool = False
+    deps: Deps,
+    caller: Caller,
+    module: str | None = None,
+    current_only: bool = False,
+    limit: Limit = None,
+    cursor: Cursor = None,
 ) -> Response:
     deps.check(caller, "read", domain=None, owner=None)
-    found = deps.store.list_toolchains(module=module, current_only=current_only)
-    return ok(ToolchainList(toolchains=found))
+    page, after = paginate(
+        deps.store.list_toolchains(module=module, current_only=current_only),
+        lambda t: (t.module, sort_ts(t.registered_at), str(t.id)),
+        cursor=cursor,
+        limit=limit,
+        max_page_size=deps.limits.max_page_size,
+        query={"list": "toolchains", "module": module, "current_only": current_only},
+    )
+    return ok(ToolchainList(toolchains=page, next=after))
 
 
 @router.get("/current", response_model=ToolchainList)

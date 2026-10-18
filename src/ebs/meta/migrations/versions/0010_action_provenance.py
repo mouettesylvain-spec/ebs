@@ -4,8 +4,8 @@
 rule kind is `*.sim`, from the database alone (the service has no CAS access to read plans).
 Rows written before this revision hold NULL.
 
-Revision ID: 0008_action_provenance
-Revises: 0007_releases
+Revision ID: 0010_action_provenance
+Revises: 0009_release_imports
 Create Date: 2026-10-17
 
 Frozen: later schema changes go into new revisions, never into this file.
@@ -17,8 +17,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision = "0008_action_provenance"
-down_revision: str | None = "0007_releases"
+revision = "0010_action_provenance"
+down_revision: str | None = "0009_release_imports"
 branch_labels: str | None = None
 depends_on: str | None = None
 

@@ -7,9 +7,10 @@ from the injected clock, not from the database, so behaviour is testable with a 
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, ClassVar, Final
 
 import psycopg
@@ -30,11 +31,13 @@ from ebs.meta._common import (
     check_blobs,
     check_by,
     check_digest,
+    check_event_query,
     check_exportable,
     check_final_status,
     check_lease_ttl,
     check_pin,
     check_release,
+    check_release_imports,
     check_result,
     check_run,
     check_set_channel,
@@ -42,6 +45,9 @@ from ebs.meta._common import (
     check_walk,
     edge_models,
     edge_rows,
+    month_name,
+    month_start,
+    next_month,
     provenance_graph,
     release_matches,
     revalidate,
@@ -50,6 +56,7 @@ from ebs.meta._common import (
     transition,
 )
 from ebs.meta.api import (
+    EVENT_PAGE_MAX,
     ActionRow,
     ActionState,
     BlobRef,
@@ -74,14 +81,17 @@ from ebs.meta.api import (
     RegisterOutcome,
     ReleaseCreate,
     ReleaseId,
+    ReleaseImport,
     ReleaseView,
     ResultManifest,
+    StoredEvent,
     Tombstone,
     ToolchainCreate,
     ToolchainRecord,
     check_domain,
 )
 from ebs.meta.models import (
+    SCHEMA,
     action_cache,
     actions,
     blobs,
@@ -96,13 +106,17 @@ from ebs.meta.models import (
     leases,
     pins,
     provenance_edges,
+    release_imports,
     releases,
     tombstones,
     toolchain_manifests,
     toolchains,
 )
 
-__all__ = ["MetadataConfig", "PgMetadataStore"]
+__all__ = ["EVENTS_CHANNEL", "MetadataConfig", "PgMetadataStore"]
+
+EVENTS_CHANNEL: Final = "ebs_events"
+"""The NOTIFY channel of event wake-ups; the payload is `<domain> <build id>` (P2-05 R2)."""
 
 _log = get_logger(__name__)
 
@@ -229,6 +243,7 @@ class PgMetadataStore:
         self._engine = engine
         self._clock = clock or SystemClock()
         self._where = engine.url.render_as_string(hide_password=True)
+        self._event_months: set[datetime] = set()  # partitions this process created or used
 
     @classmethod
     def from_config(
@@ -525,13 +540,51 @@ class PgMetadataStore:
                 sa.update(builds)
                 .where(builds.c.id == build, builds.c.status == "running")
                 .values(status=status, finished_at=self._clock.now())
-                .returning(builds.c.id)
+                .returning(builds.c.id, builds.c.domain)
             ).first()
             if done is None:
                 current = self._build_status(conn, build)
                 raise MetadataError(f"build {build} is already finished ({current})")
             # A finished build holds no lease; a pin is a separate root.
             conn.execute(sa.delete(leases).where(leases.c.build_id == build))
+            _notify(conn, str(done.domain), build)  # its event streams end (P2-05 R2)
+
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        ri = release_imports
+        with self._tx(f"record_release_imports {build}") as conn:
+            domain: str | None = conn.execute(
+                sa.select(builds.c.domain).where(builds.c.id == int(build)).with_for_update()
+            ).scalar_one_or_none()
+            if domain is None:
+                raise MetadataError(f"no build with id {build}")
+            ids = sorted({int(r.release) for r in imports})
+            found = {int(v.id): v for v in self._select_releases(conn, releases.c.id.in_(ids))}
+            recorded = {
+                str(r.alias): int(r.release_id)
+                for r in conn.execute(sa.select(ri).where(ri.c.build_id == int(build)))
+            }
+            new = check_release_imports(
+                build, str(domain), imports, {i: found.get(i) for i in ids}, recorded
+            )
+            if new:
+                conn.execute(
+                    sa.insert(ri),
+                    [
+                        {"build_id": int(build), "alias": r.alias, "release_id": int(r.release)}
+                        for r in new
+                    ],
+                )
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        ri = release_imports
+        with self._tx(f"list_release_imports {build}") as conn:
+            self._build_status(conn, build)
+            rows = conn.execute(
+                sa.select(ri).where(ri.c.build_id == int(build)).order_by(ri.c.alias)
+            ).all()
+        return [
+            ReleaseImport(alias=str(r.alias), release=ReleaseId(int(r.release_id))) for r in rows
+        ]
 
     def get_build(self, build: BuildId) -> BuildView:
         with self._tx(f"get_build {build}") as conn:
@@ -1392,18 +1445,128 @@ class PgMetadataStore:
     # --- events ---------------------------------------------------------------------------------
 
     def emit(self, event: Event) -> None:
+        """Append the event; inserts of a domain are serialized (an advisory lock held until
+        commit), so its ids commit in order and a stream resuming after an id misses nothing.
+        Commit wakes the streams of the build and its domain (NOTIFY `ebs_events`)."""
         checked = revalidate(event, Event, "emit")
-        with self._tx(f"emit {checked.type}") as conn:
-            self._build_status(conn, checked.build)
-            conn.execute(
-                sa.insert(events).values(
-                    build_id=checked.build,
-                    ts=checked.ts,
-                    type=checked.type,
-                    action_id=checked.action_id,
-                    data=checked.data,
-                )
+        stored_at = self._clock.now()  # the partition key: never the client's `ts`
+        month = month_start(stored_at)
+        for attempt in (0, 1):
+            try:
+                with self._tx(f"emit {checked.type}") as conn:
+                    domain: str | None = conn.execute(
+                        sa.select(builds.c.domain).where(builds.c.id == checked.build)
+                    ).scalar_one_or_none()
+                    if domain is None:
+                        raise MetadataError(f"no build with id {checked.build}")
+                    conn.execute(
+                        sa.select(sa.func.pg_advisory_xact_lock(
+                            sa.func.hashtextextended(f"{SCHEMA}.events:{domain}", 0)
+                        ))
+                    )  # fmt: skip
+                    if month not in self._event_months:
+                        conn.execute(sa.select(sa.func.ebs.ensure_events_partition(month)))
+                    conn.execute(
+                        sa.insert(events).values(
+                            build_id=checked.build,
+                            ts=checked.ts,
+                            type=checked.type,
+                            action_id=checked.action_id,
+                            data=checked.data,
+                            stored_at=stored_at,
+                        )
+                    )
+                    _notify(conn, str(domain), checked.build)
+                self._event_months.add(month)
+                return
+            except MetadataError as exc:
+                # Retention (maybe in another process) dropped the partition this process
+                # remembered: create it again, once. A missing partition is a check violation.
+                cause = getattr(exc.__cause__, "orig", exc.__cause__)
+                if attempt or not isinstance(cause, psycopg.errors.CheckViolation):
+                    raise
+                self._event_months.discard(month)
+
+    def events_after(
+        self,
+        after: int,
+        *,
+        build: BuildId | None = None,
+        domain: str | None = None,
+        limit: int = EVENT_PAGE_MAX,
+    ) -> list[StoredEvent]:
+        check_event_query(build, domain, limit)
+        e = events
+        stmt = sa.select(e.c.id, e.c.build_id, e.c.ts, e.c.type, e.c.action_id, e.c.data).where(
+            e.c.id > int(after)
+        )
+        if build is not None:
+            stmt = stmt.where(e.c.build_id == int(build))
+        else:
+            stmt = stmt.join(builds, builds.c.id == e.c.build_id).where(builds.c.domain == domain)
+        with self._tx(f"events_after {after}") as conn:
+            rows = conn.execute(stmt.order_by(e.c.id).limit(limit)).all()
+        return [
+            StoredEvent(
+                id=int(r.id),
+                event=Event.model_validate(
+                    {
+                        "ts": r.ts,
+                        "build": int(r.build_id),
+                        "type": r.type,
+                        "action_id": r.action_id,
+                        "data": r.data,
+                    }
+                ),
             )
+            for r in rows
+        ]
+
+    def _event_partitions(self, conn: sa.Connection) -> dict[datetime, str]:
+        rows: Sequence[str] = (
+            conn.execute(
+                sa.text(
+                    "SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid "
+                    "WHERE i.inhparent = CAST(:parent AS regclass)"
+                ),
+                {"parent": f"{SCHEMA}.events"},
+            )
+            .scalars()
+            .all()
+        )
+        found: dict[datetime, str] = {}
+        for name in rows:
+            m = _PARTITION.fullmatch(str(name))
+            if m is not None:
+                found[datetime(int(m.group(1)), int(m.group(2)), 1, tzinfo=UTC)] = str(name)
+        return found
+
+    def prune_events(self, before: datetime, *, dry_run: bool = False) -> list[str]:
+        if before.tzinfo is None:
+            raise MetadataError("prune_events: `before` must be timezone-aware")
+        with self._tx("prune_events") as conn:
+            parts = self._event_partitions(conn)
+            old = sorted(m for m in parts if next_month(m) <= before)
+            if not dry_run:
+                for m in old:
+                    conn.execute(sa.text(f'DROP TABLE {SCHEMA}."{parts[m]}"'))
+                    self._event_months.discard(m)
+        return [month_name(m) for m in old]
+
+    def ensure_event_partitions(self, at: datetime, *, months_ahead: int = 1) -> list[str]:
+        """Create the partitions of `at`'s month and the next `months_ahead` ones, so the first
+        events of a month need no DDL (the retention job calls this)."""
+        month = month_start(at)
+        names = []
+        with self._tx("ensure_event_partitions") as conn:
+            for _ in range(months_ahead + 1):
+                names.append(
+                    str(
+                        conn.execute(sa.select(sa.func.ebs.ensure_events_partition(month))).scalar()
+                    )
+                )
+                month = next_month(month)
+        return names
 
     # --- toolchain registry ---------------------------------------------------------------------
 
@@ -1498,3 +1661,11 @@ class PgMetadataStore:
                 )
                 .values(last_used_at=now)
             )
+
+
+_PARTITION: Final = re.compile(r"events_y(\d{4})m(\d{2})")
+
+
+def _notify(conn: sa.Connection, domain: str, build: int) -> None:
+    """Wake the event streams of `build` and `domain` when the transaction commits."""
+    conn.execute(sa.select(sa.func.pg_notify(EVENTS_CHANNEL, f"{domain} {int(build)}")))

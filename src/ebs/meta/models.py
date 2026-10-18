@@ -17,6 +17,7 @@ from ebs.meta.api import (
     DIGEST_SQL_PATTERN,
     DOMAIN_PATTERN,
     EVENT_TYPE_PATTERN,
+    IMPORT_ALIAS_PATTERN,
     ActionState,
     BuildStatus,
     CacheMode,
@@ -36,6 +37,7 @@ __all__ = [
     "channel_history",
     "channels",
     "domains",
+    "event_id_seq",
     "events",
     "exports",
     "gc_runs",
@@ -44,6 +46,7 @@ __all__ = [
     "metadata",
     "pins",
     "provenance_edges",
+    "release_imports",
     "releases",
     "tombstones",
     "toolchain_manifests",
@@ -140,7 +143,7 @@ actions = sa.Table(
     sa.Column("cached", sa.Boolean, nullable=False, server_default=sa.false()),
     sa.Column("result_key", sa.Text, nullable=True),
     sa.Column("result", JSONB, nullable=True),  # last recorded ResultManifest (0003, P0-15)
-    sa.Column("rule", sa.Text, nullable=True),  # rule kind, params, toolchain (0008, P2-04)
+    sa.Column("rule", sa.Text, nullable=True),  # rule kind, params, toolchain (0010, P2-04)
     sa.Column("params", JSONB(none_as_null=True), nullable=True),  # None is SQL NULL
     sa.Column("toolchain", sa.Text, nullable=True),
     _digest_check("key"),
@@ -238,10 +241,18 @@ toolchain_manifests = sa.Table(  # P1-07: fingerprint entries, for drift reports
     sa.Column("entries", sa.LargeBinary, nullable=False),  # zlib-compressed JSON lines
 )
 
+# Partitioned by UTC month of `stored_at`, the store's clock at insert (revision 0008, P2-05
+# R6): partitions `events_yYYYYmMM` are created on demand by `ebs.ensure_events_partition(ts)`
+# and dropped whole by retention. A partitioned table's primary key must include the partition
+# key, hence (id, stored_at); ids come from a sequence shared by every partition. `ts` is the
+# event's own (client) time and never picks a partition.
+event_id_seq = sa.Sequence("event_id_seq", metadata=metadata)
+
 events = sa.Table(
     "events",
     metadata,
-    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    # The database default is nextval('ebs.event_id_seq') too; autogenerate does not compare it.
+    sa.Column("id", sa.BigInteger, event_id_seq, nullable=False),
     sa.Column(
         "build_id", sa.BigInteger, sa.ForeignKey("builds.id", ondelete="CASCADE"), nullable=False
     ),
@@ -249,9 +260,12 @@ events = sa.Table(
     sa.Column("type", sa.Text, nullable=False),
     sa.Column("action_id", sa.Text, nullable=True),
     sa.Column("data", JSONB, nullable=False),
+    sa.Column("stored_at", _TS, nullable=False),
     sa.CheckConstraint(f"type ~ '{EVENT_TYPE_PATTERN}'", name="type_valid"),
     sa.CheckConstraint("jsonb_typeof(data) = 'object'", name="data_object"),
+    sa.PrimaryKeyConstraint("id", "stored_at"),
     sa.Index(None, "build_id", "id"),
+    postgresql_partition_by="RANGE (stored_at)",
 )
 
 api_tokens = sa.Table(  # bearer tokens of the metadata service (P1-06); only the hash is stored
@@ -406,4 +420,16 @@ exports = sa.Table(  # audited cross-domain copies, append-only
     sa.Column("exported_at", _TS, nullable=False),
     sa.Column("exported_by", sa.Text, nullable=False),
     sa.Index(None, "release_id"),
+)
+
+# --- Phase 2: imports (P2-03, revision 0009; append-only like the tables above) ----------------
+
+release_imports = sa.Table(  # which release each import alias of a build used (`used-by`)
+    "release_imports",
+    metadata,
+    sa.Column("build_id", sa.BigInteger, sa.ForeignKey("builds.id"), primary_key=True),
+    sa.Column("alias", sa.Text, primary_key=True),
+    sa.Column("release_id", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=False),
+    sa.Index(None, "release_id"),
+    sa.CheckConstraint(f"alias ~ '{IMPORT_ALIAS_PATTERN}'", name="alias_valid"),
 )

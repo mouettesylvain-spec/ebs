@@ -36,7 +36,7 @@ class Whoami(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
-    via: Literal["munge", "token"]
+    via: Literal["munge", "token", "session"]
     token_kind: TokenKind | None
     team: str | None
 

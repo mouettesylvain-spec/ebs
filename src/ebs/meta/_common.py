@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterable, Mapping
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -14,6 +14,7 @@ from ebs.core.digest import Digest
 from ebs.core.errors import CanonError, DigestError, MetadataError
 from ebs.meta.api import (
     CHANNEL_PATTERN,
+    EVENT_PAGE_MAX,
     FINAL_BUILD_STATUSES,
     MAX_LEASE_TTL_S,
     PROVENANCE_DEPTH_MAX,
@@ -28,6 +29,7 @@ from ebs.meta.api import (
     ProvenanceGraph,
     ProvenanceRelease,
     ReleaseCreate,
+    ReleaseImport,
     ReleaseView,
     ResultManifest,
     ToolchainCreate,
@@ -442,3 +444,66 @@ def release_matches(release: ReleaseView, objects: set[str]) -> list[ProvenanceR
         for name, o in sorted(release.outputs.items())
         if str(o.id) in objects
     ]  # fmt: skip
+
+
+def check_release_imports(
+    build: int,
+    domain: str,
+    rows: Iterable[ReleaseImport],
+    releases: Mapping[int, ReleaseView | None],
+    recorded: Mapping[str, int],
+) -> list[ReleaseImport]:
+    """The rows of `rows` not recorded yet (P2-03 R5); MetadataError if one breaks a rule.
+
+    `releases` maps each row's release id to the stored release (None: unknown); `recorded`
+    maps the build's recorded aliases to their release ids.
+    """
+    what = f"record_release_imports for build {build}"
+    new: dict[str, ReleaseImport] = {}
+    for row in rows:
+        row = revalidate(row, ReleaseImport, what)
+        release = releases.get(int(row.release))
+        if release is None or release.domain != domain:
+            # The same answer for another domain's release: ids reveal nothing across domains.
+            raise MetadataError(
+                f"{what}: import {row.alias!r}: no release with id {row.release} in the "
+                f"build's domain {domain!r}; a build imports releases of its own domain (export "
+                "one into it and pin that copy)"
+            )
+        before = recorded.get(row.alias, new[row.alias].release if row.alias in new else None)
+        if before is not None and int(before) != int(row.release):
+            raise MetadataError(
+                f"{what}: the build already imports release {before} as {row.alias!r}; an "
+                "import alias names one release per build"
+            )
+        if row.alias not in recorded:
+            new[row.alias] = row
+    return list(new.values())
+
+
+def check_event_query(build: object, domain: object, limit: object) -> None:
+    """The arguments of `EventReader.events_after`: exactly one of build and domain."""
+    if (build is None) == (domain is None):
+        raise MetadataError("events_after: give exactly one of build and domain")
+    if domain is not None:
+        check_domain(domain)
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= EVENT_PAGE_MAX:
+        raise MetadataError(f"events_after: limit must be 1..{EVENT_PAGE_MAX}, not {limit!r}")
+
+
+def month_start(ts: datetime) -> datetime:
+    """The first instant of the UTC month of `ts` (the partition of an event, P2-05 R6)."""
+    utc = ts.astimezone(UTC)
+    return utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def next_month(start: datetime) -> datetime:
+    return (
+        start.replace(year=start.year + 1, month=1)
+        if start.month == 12
+        else start.replace(month=start.month + 1)
+    )
+
+
+def month_name(start: datetime) -> str:
+    return f"{start.year:04}-{start.month:02}"

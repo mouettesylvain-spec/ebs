@@ -86,6 +86,9 @@ from ebs.meta.api import (
     RegisterOutcome,
     ReleaseCreate,
     ReleaseId,
+    ReleaseImport,
+    ReleaseImportBatch,
+    ReleaseImportList,
     ReleaseList,
     ReleaseView,
     ResultManifest,
@@ -123,9 +126,21 @@ way to give one."""
 
 _RETRY_STATUS: Final = frozenset({500, 502, 503, 504})
 _BACKOFF_CAP_S: Final = 8.0
+_RETRY_AFTER_CAP_S: Final = 60.0
 
 _M = TypeVar("_M", bound=BaseModel)
+_P = TypeVar(
+    "_P", ActionList, ToolchainList, ReleaseList, ChannelHistory, ExportList, ReleaseImportList
+)
 _T = TypeVar("_T")
+
+
+def _retry_after(response: httpx.Response) -> float | None:
+    """A 429's `Retry-After` in seconds (capped), or None if it gives none we can use."""
+    value = response.headers.get("Retry-After", "").strip()
+    if not value.isdigit():
+        return None
+    return min(float(value), _RETRY_AFTER_CAP_S)
 
 
 class MetadataHttpError(MetadataError):
@@ -388,6 +403,7 @@ class HttpMetadataStore:
             if self._credentials is not None:
                 headers |= self._credentials.headers(method, unquote(path))
             problem: str
+            wait: float | None = None  # the service's Retry-After of a 429
             try:
                 response = self._client.request(
                     method,
@@ -406,19 +422,23 @@ class HttpMetadataStore:
                 if response.status_code < 400:
                     return response
                 detail = self._detail(response)
-                if response.status_code not in _RETRY_STATUS:
+                limited = response.status_code == 429
+                if response.status_code not in _RETRY_STATUS and not limited:
                     raise MetadataHttpError(
                         self._client_error(what, response.status_code, detail),
                         response.status_code,
                     )
                 problem = f"HTTP {response.status_code}: {detail}"
-                retry = idempotent
+                # A rate-limited request was refused before anything ran: always retry it.
+                retry = idempotent or limited
+                if limited:
+                    wait = _retry_after(response)
             if not retry or attempt >= self._retries:
                 raise MetadataError(
                     f"{what}: metadata service at {self.base_url} failed: {problem}. Check "
                     "[metadata].url and that the service is up (GET /readyz)"
                 )
-            delay = min(self._backoff_s * 2**attempt, _BACKOFF_CAP_S)
+            delay = min(self._backoff_s * 2**attempt, _BACKOFF_CAP_S) if wait is None else wait
             _log.warning("metadata service call failed, retrying", call=what, problem=problem)
             attempt += 1
             self._sleep(delay)
@@ -440,6 +460,31 @@ class HttpMetadataStore:
         if status == 403:
             return f"{what}: {detail}"
         return f"{what}: {detail}" if status in (409, 422) else f"{what}: HTTP {status}: {detail}"
+
+    def _pages(
+        self,
+        path: str,
+        what: str,
+        model: type[_P],
+        params: Mapping[str, str] | None = None,
+    ) -> list[_P]:
+        """Every page of a list route (P2-05 R3): follow `next` until the last page."""
+        pages: list[_P] = []
+        cursor: str | None = None
+        while True:
+            query = dict(params or {}) | ({} if cursor is None else {"cursor": cursor})
+            r = self._call("GET", path, what, params=query, idempotent=True)
+            page = self._parse(r, model, what)
+            pages.append(page)
+            following = getattr(page, "next", None)
+            if following is None:
+                return pages
+            if following == cursor:
+                raise MetadataError(
+                    f"{what}: the metadata service at {self.base_url} returned the same page "
+                    "cursor twice; is the service the same version as this client?"
+                )
+            cursor = following
 
     def _parse(self, response: httpx.Response, model: type[_M], what: str) -> _M:
         try:
@@ -559,6 +604,22 @@ class HttpMetadataStore:
             raise MetadataError(f"{what}: invalid status {status!r}: {exc}") from None
         self._call("POST", f"/builds/{int(build)}/finish", what, body=body, idempotent=False)
 
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        what = f"record_release_imports {build}"
+        try:
+            body = ReleaseImportBatch(imports=list(imports))
+        except ValidationError as exc:
+            raise MetadataError(f"{what}: invalid request: {exc}") from None
+        # Recording the same rows again is a no-op in the store, so a retry is safe.
+        self._call(
+            "POST", f"/builds/{int(build)}/release-imports", what, body=body, idempotent=True
+        )
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        what = f"list_release_imports {build}"
+        pages = self._pages(f"/builds/{int(build)}/release-imports", what, ReleaseImportList)
+        return [x for page in pages for x in page.imports]
+
     def get_build(self, build: BuildId) -> BuildView:
         what = f"get_build {build}"
         r = self._call("GET", f"/builds/{int(build)}", what, idempotent=True)
@@ -567,8 +628,8 @@ class HttpMetadataStore:
     def list_actions(self, build: BuildId, *, state: ActionState | None = None) -> list[ActionRow]:
         what = f"list_actions {build}"
         params = None if state is None else {"state": state}
-        r = self._call("GET", f"/builds/{int(build)}/actions", what, params=params, idempotent=True)
-        return self._parse(r, ActionList, what).actions
+        pages = self._pages(f"/builds/{int(build)}/actions", what, ActionList, params)
+        return [a for page in pages for a in page.actions]
 
     def resolve_output(self, domain: str, object_id: Digest) -> Digest | None:
         check_domain(domain)
@@ -594,8 +655,9 @@ class HttpMetadataStore:
     def _toolchains(
         self, path: str, what: str, params: Mapping[str, str] | None = None
     ) -> list[ToolchainRecord]:
-        r = self._call("GET", path, what, params=params, idempotent=True)
-        return self._parse(r, ToolchainList, what).toolchains
+        return [
+            t for page in self._pages(path, what, ToolchainList, params) for t in page.toolchains
+        ]
 
     def get_toolchain(self, toolchain_id: Digest) -> ToolchainRecord | None:
         check_digest(toolchain_id, "get_toolchain id")
@@ -730,8 +792,7 @@ class HttpMetadataStore:
         return self._parse(r, ReleaseView, what)
 
     def _releases(self, path: str, what: str, params: Mapping[str, str]) -> list[ReleaseView]:
-        r = self._call("GET", path, what, params=params, idempotent=True)
-        return self._parse(r, ReleaseList, what).releases
+        return [r for page in self._pages(path, what, ReleaseList, params) for r in page.releases]
 
     def get_release(self, domain: str, name: str, version: str) -> ReleaseView | None:
         check_domain(domain)
@@ -791,8 +852,8 @@ class HttpMetadataStore:
         check_domain(domain)
         what = f"channel_history {name}:{channel}"
         params = {"domain": domain, "name": name, "channel": channel}
-        r = self._call("GET", "/channels/history", what, params=params, idempotent=True)
-        return self._parse(r, ChannelHistory, what).moves
+        pages = self._pages("/channels/history", what, ChannelHistory, params)
+        return [m for page in pages for m in page.moves]
 
     def gate_builds(self, domain: str, flow: str, ids: Iterable[Digest]) -> list[BuildId]:
         check_domain(domain)
@@ -848,5 +909,5 @@ class HttpMetadataStore:
 
     def list_exports(self, release: ReleaseId) -> list[ExportRecord]:
         what = f"list_exports {release}"
-        r = self._call("GET", f"/releases/{int(release)}/exports", what, idempotent=True)
-        return self._parse(r, ExportList, what).exports
+        pages = self._pages(f"/releases/{int(release)}/exports", what, ExportList)
+        return [x for page in pages for x in page.exports]

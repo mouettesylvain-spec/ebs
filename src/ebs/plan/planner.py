@@ -15,7 +15,14 @@ How a flow becomes actions:
    `<output>/<producer instance id>` (a tree, or a file `<output>/<instance id>/<file name>`),
    and renders to that path. Its id is `nondeterministic_output_id(producer key, output)` for
    `deterministic: false` outputs, else unknown (None) until the producer ran: `refine`.
-4. The key is computed once every input id is known (`ebs.plan.keys`).
+4. Imports (P2-03): `${imports.A}` renders `imports/A`. Planning needs the `flow.lock` pins
+   (`PlanLock`) and checks every import against them (the planner never resolves a channel).
+   An input `${imports.A}` stages every output of the pinned release whole, at
+   `imports/A/<output>`; `${imports.A}/<output>` one of them; any other `${imports.A}/<glob>`
+   is matched (`match_paths`) against the release's files, read from the tree manifests in this
+   domain's CAS: one file input per match. Ids are the ones the release recorded, never
+   re-hashed; a whole output's id is the release's (for `deterministic: false`, not its bytes).
+5. The key is computed once every input id is known (`ebs.plan.keys`).
 """
 
 from __future__ import annotations
@@ -31,7 +38,7 @@ from typing import Protocol
 import ebs
 from ebs.cas.api import CAS
 from ebs.core.digest import Digest
-from ebs.core.errors import PlanError, RuleError
+from ebs.core.errors import CasError, PlanError, RuleError
 from ebs.flow.interp import Ref, SourceLocation, parse_template
 from ebs.flow.matrix import StepInstance, expand_matrix, load_matrix_tables
 from ebs.flow.model import (
@@ -52,11 +59,14 @@ from ebs.plan.types import (
     ActionSpec,
     DebugSpec,
     FlowInfo,
+    ImportInput,
+    ImportPin,
     InputKind,
     InputRef,
     OutputSpec,
     OutputType,
     Plan,
+    PlanLock,
     PlanToolchain,
     RuleRef,
     SourceInput,
@@ -64,6 +74,7 @@ from ebs.plan.types import (
 )
 from ebs.rules.api import ActionTemplate, ExpandContext, RulePlugin
 from ebs.rules.registry import RuleRegistry
+from ebs.sources.globs import match_paths
 from ebs.sources.snapshot import SnapshotResult
 from ebs.toolchain.model import Toolchain, ToolchainResolver
 
@@ -82,7 +93,8 @@ SYSTEM_PATHS: tuple[str, ...] = (
 )
 """Absolute paths an argv may name besides the toolchain's install roots (OS image, read-only)."""
 
-IMPORTS_UNSUPPORTED = "imports require flow.lock support (task P2-03)"
+IMPORTS_DIR = "imports"
+"""Imported releases are staged at `imports/<alias>/<release output>`."""
 
 _ARG_SPLIT = re.compile(r"[=+,:]")
 _URL = re.compile(r"(?:https?|ftp)://[^\s,]*")  # remote URLs only; file:// is a path
@@ -160,18 +172,20 @@ class Planner:
         info: FlowInfo | None = None,
         targets: Sequence[str] = (),
         rehash: bool = False,
+        lock: PlanLock | None = None,
     ) -> Plan:
         """Expand `flow` (whose tables and sources live under `base`) into a plan.
 
         `targets` restricts the plan to those steps and their transitive dependencies.
         `rehash` asserts that the snapshotter ignores the stat cache (CI/release builds).
+        `lock` holds the `flow.lock` pins; a flow with imports cannot be planned without them.
         """
         if rehash and not self._sources.rehash:
             raise PlanError(
                 "plan(rehash=True) needs a source snapshotter created with rehash=True, so that "
                 "no source id comes from the stat cache"
             )
-        return _Run(self, flow, base).plan(info or FlowInfo(), targets)
+        return _Run(self, flow, base, lock).plan(info or FlowInfo(), targets)
 
     def refine(self, plan: Plan, produced: Mapping[tuple[str, str], Digest]) -> Plan:
         """Fill in input ids and keys that `produced` ((action_id, output) -> id) makes known.
@@ -217,10 +231,11 @@ def _output_id(producer: ActionSpec, out: OutputSpec) -> Digest | None:
 class _Run:
     """State of one `Planner.plan` call; also the resolver for `${steps.…}` references."""
 
-    def __init__(self, planner: Planner, flow: Flow, base: Path) -> None:
+    def __init__(self, planner: Planner, flow: Flow, base: Path, lock: PlanLock | None) -> None:
         self._p = planner
         self._flow = flow
         self._base = base
+        self._lock = lock
         self._planned: dict[str, _Planned] = {}
         self._toolchains: dict[str, Toolchain] = {}
         self._snapshots: dict[str, list[tuple[str, Digest]]] = {}
@@ -236,8 +251,11 @@ class _Run:
                 continue
             where = SourceLocation(step=name, field=field)
             for ref in parse_template(text, where=where).refs:
-                if ref.kind == "imports":
-                    raise PlanError(f"{where}: {ref.text}: {IMPORTS_UNSUPPORTED}")
+                if ref.kind == "imports" and ref.name not in self._flow.imports:
+                    raise PlanError(
+                        f"{where}: {ref.text} refers to unknown import {ref.name!r}"
+                        f"{_suggest(ref.name, list(self._flow.imports))}"
+                    )
                 if ref.kind != "steps" or ref in refs:
                     continue
                 if ref.name not in self._flow.steps:
@@ -253,6 +271,7 @@ class _Run:
         for target in targets:
             if target not in steps:
                 raise PlanError(f"unknown target {target!r}{_suggest(target, list(steps))}")
+        pins = self._check_imports()
         graph = StepGraph(steps)
         refs = {name: self._static_refs(name, step) for name, step in steps.items()}
         for name, step_refs in refs.items():
@@ -275,9 +294,47 @@ class _Run:
             },
             actions=tuple(actions),
             edges=tuple(sorted(self._edges)),
-            lock=None,
+            lock=None if self._lock is None or not pins else self._lock.digest,
             key_schema=KEY_SCHEMA_VERSION,
         )
+
+    def _check_imports(self) -> dict[str, ImportPin]:
+        """The pin of every import; PlanError if one is missing or stale (R2)."""
+        pins: dict[str, ImportPin] = {}
+        for alias, imp in self._flow.imports.items():
+            fix = f"run `ebs lock update {alias}` and review the flow.lock change"
+            where = f"imports.{alias}"
+            if self._lock is None:
+                raise PlanError(
+                    f"{where}: no flow.lock next to the flow pins the release it imports; {fix}"
+                )
+            pin = self._lock.imports.get(alias)
+            if pin is None:
+                raise PlanError(f"{where}: flow.lock has no entry for import {alias!r}; {fix}")
+            pinned = f"{pin.name} {pin.version}"
+            if pin.name != imp.from_:
+                raise PlanError(
+                    f"{where}: flow.lock pins release {pinned}, but the flow imports "
+                    f"{imp.from_}; {fix}"
+                )
+            if pin.domain != self._flow.domain:
+                raise PlanError(
+                    f"{where}: flow.lock pins a release of domain {pin.domain!r}, but the flow is "
+                    f"in domain {self._flow.domain!r}; {fix}"
+                )
+            origin = f"channel {pin.channel!r}" if pin.channel else f"version {pin.version}"
+            if imp.channel is not None and pin.channel != imp.channel:
+                raise PlanError(
+                    f"{where}: flow.lock pins {pinned} from {origin}, but the flow asks for "
+                    f"channel {imp.channel!r}; {fix}"
+                )
+            if imp.version is not None and (pin.version != imp.version or pin.channel):
+                raise PlanError(
+                    f"{where}: flow.lock pins {pinned}, but the flow asks for version "
+                    f"{imp.version}; {fix}"
+                )
+            pins[alias] = pin
+        return pins
 
     # -- steps ------------------------------------------------------------------------------
 
@@ -312,7 +369,8 @@ class _Run:
     # -- resolver ---------------------------------------------------------------------------
 
     def resolve(self, ref: Ref, *, where: SourceLocation) -> str | list[str]:
-        # Only `steps` refs reach here: `imports` refs were rejected by `_static_refs`.
+        if ref.kind == "imports":  # `_static_refs` checked the alias
+            return posixpath.join(IMPORTS_DIR, ref.name, *([ref.glob] if ref.glob else []))
         paths = [_staged_path(out, spec.action_id) for spec, out in self._select(ref, str(where))]
         return paths if ref.selector == "*" else paths[0]
 
@@ -482,6 +540,7 @@ class _Run:
             )
         found: list[InputRef] = []
         declared: list[tuple[str, str]] = []
+        imported: list[tuple[str, str, str]] = []  # (input name, alias, rendered pattern)
         writable_names: set[str] = set()
         writable_refs: set[Ref] = set()  # output references staged through a writable input
         for iname, value in step.inputs.items():
@@ -499,6 +558,18 @@ class _Run:
                     if writable:
                         writable_refs.update(p for p in parts if isinstance(p, Ref))
                     continue  # staged below, like every other output reference of the step
+                imports = [p for p in parts if isinstance(p, Ref) and p.kind == "imports"]
+                if imports:
+                    if len(imports) > 1 or parts[0] is not imports[0]:
+                        raise PlanError(
+                            f"{where}: {field} {text!r}: an import reference must start the "
+                            "input value: ${imports.A}, ${imports.A}/<output> or "
+                            "${imports.A}/<output>/<glob>"
+                        )
+                    patterns = inst.render(text, field=field, resolver=self)
+                    for pattern in patterns if isinstance(patterns, list) else [patterns]:
+                        imported.append((iname, imports[0].name, pattern))
+                    continue
                 rendered = inst.render(text, field=field, resolver=self)
                 for pattern in rendered if isinstance(rendered, list) else [rendered]:
                     declared.append((iname, pattern))
@@ -510,6 +581,10 @@ class _Run:
                 found.append(
                     InputRef(path, "file", SourceInput(iname, pattern), digest, writable=writable)
                 )
+        for iname, alias, pattern in imported:
+            found.extend(
+                self._import_inputs(alias, pattern, writable=iname in writable_names, where=where)
+            )
         for static in refs:
             for spec, out in self._select(static.ref, f"steps.{inst.name}.{static.field}"):
                 kind: InputKind = "tree" if out.type == "dir" else "file"
@@ -535,6 +610,87 @@ class _Run:
             if ref.writable and not seen.writable:  # one writable declaration is enough
                 unique[ref.logical_path] = dataclasses.replace(seen, writable=True)
         return tuple(unique[p] for p in sorted(unique))
+
+    def _import_inputs(
+        self, alias: str, pattern: str, *, writable: bool, where: str
+    ) -> list[InputRef]:
+        """The inputs one import pattern (`imports/<alias>[/…]`, rendered) stands for."""
+        assert self._lock is not None  # `_check_imports` passed
+        pin = self._lock.imports[alias]
+        release = f"release {pin.name} {pin.version} (import {alias!r})"
+        root = posixpath.join(IMPORTS_DIR, alias)
+        rest = pattern[len(root) :]
+        if not rest:
+            return [self._whole(alias, pin, name, writable) for name in sorted(pin.outputs)]
+        sub = rest[1:]
+        norm = posixpath.normpath(sub) if sub else ""
+        if not rest.startswith("/") or norm in ("", ".", "..") or norm.startswith(("../", "/")):
+            raise PlanError(
+                f"{where}: input pattern {pattern!r} leaves the release or names no file in it; "
+                f"write ${{imports.{alias}}}/<output>[/<glob>] (outputs of {release}: "
+                f"{', '.join(sorted(pin.outputs))})"
+            )
+        if norm in pin.outputs:
+            return [self._whole(alias, pin, norm, writable)]
+        # A pattern starting with an output's exact name globs inside that output only, so names
+        # with glob characters (`compile[lib=a].worklib`) are literal there.
+        scope = max((n for n in pin.outputs if norm.startswith(f"{n}/")), key=len, default=None)
+        files: dict[str, tuple[Digest, Digest | None]] = {}  # path -> (id, content | symlink)
+        for name, out in sorted(pin.outputs.items()):
+            if scope is not None and name != scope:
+                continue
+            if out.type == "file":
+                files[name] = (out.id, out.digest)
+                continue
+            try:
+                tree = self._tree_files(out.digest)
+            except CasError as exc:
+                raise PlanError(
+                    f"{where}: output {name!r} of {release} is not in the CAS of domain "
+                    f"{self._flow.domain!r} ({exc}); a release of another domain must be "
+                    f"copied here first: `ebs release export {pin.name} {pin.version} --to "
+                    f"{self._flow.domain}`"
+                ) from exc
+            for path, digest in tree:
+                files[f"{name}/{path}"] = (digest or out.id, digest)
+        if scope is None:
+            matched = match_paths(files, norm)
+        else:
+            inner = {p[len(scope) + 1 :]: p for p in files}
+            matched = [inner[p] for p in match_paths(inner, norm[len(scope) + 1 :])]
+        if not matched:
+            first = norm.split("/", 1)[0]
+            if scope is None and not any(c in first for c in "*?[") and first not in pin.outputs:
+                raise PlanError(
+                    f"{where}: input pattern {pattern!r}: {release} has no output {first!r}"
+                    f"{_suggest(first, list(pin.outputs))}; outputs: "
+                    f"{', '.join(sorted(pin.outputs))}"
+                )
+            raise PlanError(
+                f"{where}: input pattern {pattern!r} matches nothing in {release}; fix the "
+                "pattern (hidden files only match a pattern that names them)"
+            )
+        links = [p for p in matched if files[p][1] is None]
+        if links:
+            raise PlanError(
+                f"{where}: input pattern {pattern!r} matches the symlink {links[0]!r} in "
+                f"{release}; a symlink can only be staged with its whole tree: import the "
+                "output itself or match the file it points to"
+            )
+        refs = []
+        for path in matched:
+            oid, content = files[path]
+            assert content is not None  # symlinks were refused above
+            source = ImportInput(alias, path, content)
+            refs.append(
+                InputRef(posixpath.join(root, path), "file", source, oid, writable=writable)
+            )
+        return refs
+
+    def _whole(self, alias: str, pin: ImportPin, name: str, writable: bool) -> InputRef:
+        out = pin.outputs[name]
+        path = posixpath.join(IMPORTS_DIR, alias, name)
+        return InputRef(path, out.type, ImportInput(alias, name, out.digest), out.id, writable)
 
     def _snapshot(self, pattern: str) -> list[tuple[str, Digest]]:
         files = self._snapshots.get(pattern)

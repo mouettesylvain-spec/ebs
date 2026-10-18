@@ -40,8 +40,10 @@ __all__ = [
     "CHANNEL_PATTERN",
     "DIGEST_SQL_PATTERN",
     "DOMAIN_PATTERN",
+    "EVENT_PAGE_MAX",
     "EVENT_TYPE_PATTERN",
     "FINAL_BUILD_STATUSES",
+    "IMPORT_ALIAS_PATTERN",
     "LEASE_TTL_S",
     "MAX_LEASE_TTL_S",
     "PROVENANCE_DEPTH_MAX",
@@ -80,6 +82,7 @@ __all__ = [
     "DomainPolicy",
     "ErrorBody",
     "Event",
+    "EventReader",
     "EventType",
     "ExportList",
     "ExportRecord",
@@ -112,6 +115,9 @@ __all__ = [
     "RegisterOutcome",
     "ReleaseCreate",
     "ReleaseId",
+    "ReleaseImport",
+    "ReleaseImportBatch",
+    "ReleaseImportList",
     "ReleaseList",
     "ReleaseOutput",
     "ReleaseStore",
@@ -120,6 +126,7 @@ __all__ = [
     "ResultManifest",
     "RunnerInfo",
     "StateChange",
+    "StoredEvent",
     "Tombstone",
     "ToolchainCreate",
     "ToolchainList",
@@ -524,6 +531,16 @@ class MetadataStore(Protocol):
 
     def finish_build(self, build: BuildId, status: BuildStatus) -> None: ...
 
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        """Record which release each import alias of `build` used (P2-03 R5, for `used-by`),
+        all or nothing. Every release must be in the build's domain; recording the same row
+        again is a no-op, another release for a recorded alias is refused."""
+        ...
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        """The release imports of `build`, ordered by alias."""
+        ...
+
     def get_build(self, build: BuildId) -> BuildView: ...
 
     def list_actions(self, build: BuildId, *, state: ActionState | None = None) -> list[ActionRow]:
@@ -684,6 +701,7 @@ class ActionList(BaseModel):
     model_config = _WIRE
 
     actions: list[ActionRow]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 class CacheHits(BaseModel):
@@ -757,6 +775,7 @@ class ToolchainList(BaseModel):
     model_config = _WIRE
 
     toolchains: list[ToolchainRecord]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 # --- garbage collection (P1-09) ------------------------------------------------------------------
@@ -904,6 +923,19 @@ ReleaseId = NewType("ReleaseId", int)
 _ReleaseName = Annotated[StrictStr, Field(pattern=RELEASE_NAME_PATTERN)]
 _Version = Annotated[StrictStr, Field(pattern=VERSION_PATTERN)]
 _Channel = Annotated[StrictStr, Field(pattern=CHANNEL_PATTERN)]
+
+
+IMPORT_ALIAS_PATTERN: Final = r"^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+"""Import aliases as flows name them (`imports: {rtl: …}` -> `${imports.rtl}`)."""
+
+
+class ReleaseImport(BaseModel):
+    """One `release_imports` row: a build consumed `release` through import `alias`."""
+
+    model_config = _FROZEN
+
+    alias: Annotated[StrictStr, Field(pattern=IMPORT_ALIAS_PATTERN)]
+    release: ReleaseId
 
 
 def release_output_name(action_id: str, output: str) -> str:
@@ -1195,10 +1227,26 @@ class GateQuery(BaseModel):
     ids: Annotated[list[DigestField], Field(max_length=BATCH_MAX)]
 
 
+class ReleaseImportBatch(BaseModel):
+    """Body of `POST /builds/{id}/release-imports`."""
+
+    model_config = _WIRE
+
+    imports: Annotated[list[ReleaseImport], Field(max_length=BATCH_MAX)]
+
+
+class ReleaseImportList(BaseModel):
+    model_config = _WIRE
+
+    imports: list[ReleaseImport]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
+
+
 class ReleaseList(BaseModel):
     model_config = _WIRE
 
     releases: list[ReleaseView]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 class ChannelList(BaseModel):
@@ -1213,6 +1261,7 @@ class ChannelHistory(BaseModel):
     model_config = _WIRE
 
     moves: list[ChannelMove]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 class BuildList(BaseModel):
@@ -1225,6 +1274,7 @@ class ExportList(BaseModel):
     model_config = _WIRE
 
     exports: list[ExportRecord]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 
 class ProvenanceQuery(BaseModel):
@@ -1235,3 +1285,44 @@ class ProvenanceQuery(BaseModel):
     ids: Annotated[list[DigestField], Field(max_length=PROVENANCE_START_MAX)] = []
     keys: Annotated[list[DigestField], Field(max_length=PROVENANCE_START_MAX)] = []
     depth: Annotated[StrictInt, Field(ge=1, le=PROVENANCE_DEPTH_MAX)] = PROVENANCE_DEPTH_MAX
+
+
+# --- event stream (P2-05) ------------------------------------------------------------------------
+
+EVENT_PAGE_MAX: Final = 1000
+"""The most events one `events_after` call returns."""
+
+
+class StoredEvent(BaseModel):
+    """An event with its id in the `events` table. Ids grow in commit order within a domain
+    (the stores serialize the inserts of a domain), so `events_after(id)` resumes a stream
+    without gaps: the SSE `id:` field (`Last-Event-ID`)."""
+
+    model_config = _FROZEN
+
+    id: StrictInt
+    event: Event
+
+
+class EventReader(Protocol):
+    """What the service's event stream reads (P2-05 R2, R6). Only the PostgreSQL and in-memory
+    stores implement it: the stream is served by the metadata service, never read over HTTP as
+    a store."""
+
+    def events_after(
+        self,
+        after: int,
+        *,
+        build: BuildId | None = None,
+        domain: str | None = None,
+        limit: int = EVENT_PAGE_MAX,
+    ) -> list[StoredEvent]:
+        """The events with an id above `after` of `build`, or of every build of `domain`
+        (exactly one of the two), oldest first, at most `limit` (1..EVENT_PAGE_MAX)."""
+        ...
+
+    def prune_events(self, before: datetime, *, dry_run: bool = False) -> list[str]:
+        """Drop every month of events stored (by the store's clock, not the events' `ts`) that
+        ends at or before `before` (UTC months, the partitions of the `events` table); return
+        them as `YYYY-MM`, oldest first."""
+        ...
