@@ -24,6 +24,24 @@ from tests.helpers.cas import sample_tree, write
 HEX = st.from_regex(r"[0-9a-f]{64}", fullmatch=True)
 
 
+# Domain members share the CAS (interfaces.md § 5): directories the CAS creates must let the
+# next member add objects whatever the creator's umask, or a second user's upload fails.
+def test_created_dirs_are_group_writable(tmp_path: Path) -> None:
+    old = os.umask(0o022)
+    try:
+        cas = FsCAS(tmp_path / "cas", "test")
+        d = cas.put_bytes(b"shared")
+        cas.put_tree(sample_tree(tmp_path / "src"))
+    finally:
+        os.umask(old)
+    base = tmp_path / "cas" / "test"
+    ab, cd, _ = d.shard()
+    created = [base / "tmp", base / "blobs", base / "blobs" / "sha256" / ab,
+               base / "blobs" / "sha256" / ab / cd, base / "trees" / "sha256"]  # fmt: skip
+    for path in created:
+        assert stat.S_IMODE(path.stat().st_mode) == 0o2770, path
+
+
 def test_fs_cas_satisfies_protocol(cas: FsCAS) -> None:
     backend: CAS = cas
     assert backend.domain == "test"
