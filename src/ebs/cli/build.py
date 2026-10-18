@@ -608,9 +608,7 @@ def _detach(
             comment=str(started.uuid),
         )
         job = services.slurm_cli().submit(script, opts)
-        if view.record is not None:  # `ebs status` names the driver job until it takes over
-            view.record = view.record.model_copy(update={"driver_job": str(job)})
-            view.record.write(directory)
+        _record_driver_job(directory, str(job))
     except (EbsError, OSError, ValueError) as exc:
         # If even that fails, the build stays `running` without a driver: `--resume` takes it.
         with contextlib.suppress(MetadataError):
@@ -633,6 +631,14 @@ def _detach(
             f"driver job {job} submitted: follow the build with `ebs status {started.uuid}`, "
             f"cancel it with `scancel {job}`"
         )
+
+
+def _record_driver_job(directory: Path, job: str) -> None:
+    """Name the driver job in the build record (`ebs status`), unless the job already started
+    and wrote its own host, pid and job id: re-read, never overwrite what it wrote."""
+    record = BuildRecord.read(directory)
+    if not record.host:
+        record.model_copy(update={"driver_job": job}).write(directory)
 
 
 def _report(out: Output, outcome: BuildOutcome, json_mode: bool) -> None:

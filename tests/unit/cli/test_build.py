@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from ebs.cli._context import EXECUTORS, SiteServices
+from ebs.cli._records import BuildRecord
 from ebs.cli.build import CacheChoice, ExecutorChoice
 from ebs.core.errors import ExitCode
 from ebs.driver.cache_policy import CACHE_MODES
@@ -235,6 +236,28 @@ def test_detach_records_cache_mode_and_flags(site: Site) -> None:
 
 class _Captured(Exception):
     pass
+
+
+# Review: the driver job can start (and record its host, pid and job id) before `--detach`
+# returns from sbatch; the detaching process must not overwrite that record.
+def test_detach_keeps_the_record_of_a_started_driver(site: Site) -> None:
+    class _StartsAtOnce(_StubSbatch):
+        def submit(self, script: Path, opts: Any) -> str:
+            job = super().submit(script, opts)
+            directory = script.parent
+            record = BuildRecord.read(directory)
+            record.model_copy(update={"host": "node-a", "pid": 7, "driver_job": job}).write(
+                directory
+            )
+            return job
+
+    stub = _StartsAtOnce()
+    site.services.slurm_cli = lambda: stub  # type: ignore[assignment,method-assign,return-value]
+    result = site.invoke(["build", "--detach", "--executor", "slurm", "--json"])
+    assert result.exit_code == ExitCode.OK, result.output
+    uuid = json.loads(result.stdout.splitlines()[-1])["uuid"]
+    status = json.loads(site.invoke(["status", uuid, "--json"]).stdout)
+    assert status["driver"] == {"job": "4001", "host": "node-a", "pid": 7}
 
 
 # P2-08 follow-up: `ebs status` names the driver of a detached build: its SLURM job until the
