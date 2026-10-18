@@ -20,7 +20,9 @@ from ebs.domains import DomainCheck, check_domain
 
 __all__ = ["app"]
 
-app = typer.Typer(help="Confidentiality domains ([[domains]] in ebs.toml).", no_args_is_help=True)
+app = typer.Typer(
+    help="Confidentiality domains (the domains tables of ebs.toml).", no_args_is_help=True
+)
 
 
 def _size(n: int | None) -> str:

@@ -35,7 +35,7 @@ def gc_command(
         False, "--dry-run", help="Report what would be collected without deleting anything."
     ),
     domain: str | None = typer.Option(
-        None, "--domain", metavar="D", help="Domain to collect; default: [gc].domain."
+        None, "--domain", metavar="D", help="Domain to collect; default: gc.domain in ebs.toml."
     ),
     json_mode: bool = JSON_OPTION,
 ) -> None:
