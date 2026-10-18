@@ -601,7 +601,7 @@ def _parser() -> argparse.ArgumentParser:
     p = _Parser(prog="ebs-runner", description="Execute one action of a plan on this node.")
     p.add_argument("--plan", required=True, help="plan.json digest (sha256:…)")
     p.add_argument("--action", help="action id to run")
-    p.add_argument("--array-map", help="array map digest (SLURM job arrays; P1-04)")
+    p.add_argument("--array-map", help="array map digest; runs actions[$SLURM_ARRAY_TASK_ID]")
     p.add_argument("--build", type=int, help="build id to post the result to")
     p.add_argument("--domain", help="CAS domain (default: the build's)")
     p.add_argument("--keep-scratch", action="store_true", help="keep the scratch dir, print it")
@@ -616,10 +616,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     environ = dict(os.environ)
     store: MetadataStore | None = None
     try:
-        if args.array_map is not None:
-            raise UsageError("--array-map (SLURM job arrays) arrives with task P1-04")
-        if args.action is None:
-            raise UsageError("--action is required")
+        if (args.action is None) == (args.array_map is None):
+            raise UsageError("give exactly one of --action and --array-map")
         try:
             plan = Digest.parse(args.plan)
         except DigestError as exc:
@@ -645,8 +643,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             caller_env=environ,
             host=socket.gethostname(),
         )
+        action = args.action
+        if action is None:
+            action = array_action(cas, args.array_map, plan, environ.get("SLURM_ARRAY_TASK_ID"))
         request = RunRequest(
-            plan, args.action, None if args.build is None else BuildId(args.build),
+            plan, action, None if args.build is None else BuildId(args.build),
             keep_scratch=args.keep_scratch,
         )  # fmt: skip
         with _signal_handlers():
@@ -665,6 +666,43 @@ def main(argv: Sequence[str] | None = None) -> int:
         close = getattr(store, "close", None)
         if close is not None:
             close()
+
+
+def array_action(cas: CAS, array_map: str, plan: Digest, task: str | None) -> str:
+    """The action of array task `task` in the executor's array map (interfaces.md § 9).
+
+    The map is `{"v": 1, "plan": …, "actions": [<task 0>, …]}`; `ebs.exec.slurm.arrays` writes
+    it, but the runner may not import `ebs.exec`, so this reads it on its own.
+    """
+    try:
+        digest = Digest.parse(array_map)
+    except DigestError as exc:
+        raise UsageError(f"--array-map: {exc}") from exc
+    if task is None or not task.isdigit():
+        raise UsageError(f"--array-map needs $SLURM_ARRAY_TASK_ID (got {task!r})")
+    if not cas.has(digest):
+        raise UsageError(f"array map {digest} is not in CAS domain {cas.domain!r}")
+    with cas.open(digest) as f:
+        try:
+            doc = json.loads(f.read())
+        except ValueError as exc:
+            raise UsageError(f"array map {digest} is not JSON: {exc}") from exc
+    actions = doc.get("actions") if isinstance(doc, dict) else None
+    if (
+        not isinstance(doc, dict)
+        or doc.get("v") != 1
+        or not isinstance(actions, list)
+        or not all(isinstance(a, str) for a in actions)
+    ):
+        raise UsageError(
+            f"array map {digest} is not a version 1 map; was it written by another ebs?"
+        )
+    if doc.get("plan") != str(plan):
+        raise UsageError(f"array map {digest} is for plan {doc.get('plan')}, not {plan}")
+    index = int(task)
+    if index >= len(actions):
+        raise UsageError(f"array task {index} is not in array map {digest} ({len(actions)} tasks)")
+    return str(actions[index])
 
 
 def _open_store(section: Mapping[str, object]) -> MetadataStore:

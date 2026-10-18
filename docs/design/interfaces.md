@@ -1051,7 +1051,7 @@ ebs-runner --plan sha256:<plan digest> --array-map sha256:<map digest> [--build 
 
 Array map (P1-02, a blob in the domain's CAS, canonical JSON; `ebs.exec.slurm.arrays`):
 `{"v": 1, "plan": "sha256:<plan digest>", "actions": [<action id of task 0>, <task 1>, …]}`.
-Task `$SLURM_ARRAY_TASK_ID` runs `actions[i]`; its `plan` must equal `--plan` (P1-04 reads it).
+Task `$SLURM_ARRAY_TASK_ID` runs `actions[i]`; its `plan` must equal `--plan` (`ebs.runner.main.array_action`).
 
 Exit codes: `0` result posted (passed or failed), `64` bad usage, `70` internal error,
 `75` infra failure (temporary; driver retries), `76` input verification failed (digest mismatch).
@@ -1064,7 +1064,8 @@ Lifecycle and guarantees: architecture.md "Runner lifecycle on a node". P0-13 de
 - Options: `--domain` is required without `--build` (else taken from the build, must match);
   `--keep-scratch` keeps the scratch dir and prints `scratch kept at <path>` on stderr. Without
   `--build` nothing is posted and the ResultManifest is printed as JSON on stdout. `--array-map`
-  is P1-04 (exit 64 until then). Config: `[cas].root`, `[scratch].dir`, `[runner]`, `[rules]`,
+  picks `actions[$SLURM_ARRAY_TASK_ID]` of the map (exit 64 if the map is missing, for another
+  plan, or has no such task). Config: `[cas].root`, `[scratch].dir`, `[runner]`, `[rules]`,
   `[metadata]` (only with `--build`), via `ebs.config.load_config`.
 - Exit 64 also for: a plan not in the CAS or of another domain, an unknown action id, an
   action whose key or input ids are unset (the driver must refine the plan), a rule kind or

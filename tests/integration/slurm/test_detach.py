@@ -129,9 +129,8 @@ def test_detach_submits_driver_job(tmp_path: Path, fake_slurm: FakeSlurm, pg_url
     proj = tmp_path / "proj"
     (proj / "src").mkdir(parents=True)
     (proj / "flow.yaml").write_text(FLOW)
-    # One row: plain jobs only. The real ebs-runner does not implement --array-map yet (see the
-    # task notes), and an array task would only pass through the driver's infra retries.
-    (proj / "tests.csv").write_text("test\nsmoke\n")
+    # Two rows: `sim` runs as one job array, read by the real ebs-runner's --array-map.
+    (proj / "tests.csv").write_text("test\nsmoke\nlong\n")
     (proj / "src" / "a.txt").write_text("hello\n")
 
     proc = site.ebs(proj, "build", "--detach", "--executor", "slurm", "--cache", "write")
@@ -161,13 +160,18 @@ def test_detach_submits_driver_job(tmp_path: Path, fake_slurm: FakeSlurm, pg_url
     wait_until(lambda: status()["status"] != "running", timeout=60, what="the detached build")
     doc = status()
     assert doc["status"] == "passed", doc
-    assert doc["totals"] == {"done": 2}
-    # The actions ran as their own SLURM jobs, each submitted once by the driver job.
+    assert doc["totals"] == {"done": 3}
+    # Each step ran as one SLURM job (sim as an array), submitted once by the driver job: an array
+    # task the runner refused would show up as an extra, retried job.
     prefix = f"ebs:{uuid.replace('-', '')[:8]}"
-    assert sorted(r["name"] for r in fake_jobs(fake_slurm)) == [
-        f"{prefix}:driver",
-        f"{prefix}:gen",
-        f"{prefix}:sim",
+    jobs = sorted(
+        (r["name"], r["array_task_id"] if r["array_job_id"] else -1) for r in fake_jobs(fake_slurm)
+    )
+    assert jobs == [
+        (f"{prefix}:driver", -1),
+        (f"{prefix}:gen", -1),
+        (f"{prefix}:sim", 0),
+        (f"{prefix}:sim", 1),
     ]
     assert all(r["state"] == "COMPLETED" for r in fake_jobs(fake_slurm))
     record = json.loads((proj / ".ebs" / "builds" / uuid / "build.json").read_text())

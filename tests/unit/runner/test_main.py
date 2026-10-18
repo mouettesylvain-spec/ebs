@@ -373,3 +373,50 @@ def test_no_lease_without_build(cas: FsCAS, tmp_path: Path) -> None:
         )
         is None
     )
+
+
+def _array_site(cas: FsCAS, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'[cas]\nroot = "{tmp_path / "cas"}"\n[scratch]\ndir = "{tmp_path / "scratch"}"\n'
+    )
+    monkeypatch.setenv("EBS_CONFIG", str(config))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))  # no user config
+    monkeypatch.chdir(tmp_path)
+
+
+# P1-04 (array tasks): task $SLURM_ARRAY_TASK_ID runs actions[i] of the executor's array map.
+def test_array_map_runs_the_task_action(
+    cas: FsCAS, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    from ebs.exec.slurm.arrays import store_array_map
+
+    plan = store_plan(cas, shell_spec("echo a", action_id="a"), shell_spec("exit 1", action_id="b"))
+    array_map = store_array_map(cas, plan, ["a", "b"])
+    _array_site(cas, tmp_path, monkeypatch)
+    monkeypatch.setenv("SLURM_ARRAY_TASK_ID", "1")
+    code = main(["--plan", str(plan), "--array-map", str(array_map), "--domain", "test"])
+    assert code == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["status"] == "failed"  # b ran, not a
+
+
+@pytest.mark.parametrize("case", ["other_plan", "out_of_range", "no_task_id", "with_action"])
+def test_array_map_mismatch_exit_64(
+    case: str, cas: FsCAS, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ebs.exec.slurm.arrays import store_array_map
+
+    plan = store_plan(cas, shell_spec("echo a", action_id="a"), shell_spec("echo b", action_id="b"))
+    other = store_plan(cas, shell_spec("echo c", action_id="a"))
+    array_map = store_array_map(cas, other if case == "other_plan" else plan, ["a", "b"])
+    _array_site(cas, tmp_path, monkeypatch)
+    if case != "no_task_id":
+        monkeypatch.setenv("SLURM_ARRAY_TASK_ID", "2" if case == "out_of_range" else "0")
+    else:
+        monkeypatch.delenv("SLURM_ARRAY_TASK_ID", raising=False)
+    argv = ["--plan", str(plan), "--array-map", str(array_map), "--domain", "test"]
+    if case == "with_action":
+        argv += ["--action", "a"]
+    assert main(argv) == EXIT_USAGE
