@@ -1,5 +1,6 @@
 # Copy to .github/workflows/ebs.yml. Runs on a self-hosted runner that can reach the site's
-# CAS and metadata service; CI fills the shared cache (--cache write) for everyone else.
+# CAS and metadata service. `ebs build --ci` fills the shared cache for everyone else and writes
+# ebs-junit.xml, ebs-summary.md and ebs.env into the working directory.
 name: ebs
 on:
   push:
@@ -17,15 +18,14 @@ jobs:
       - name: Plan
         run: ebs plan
       - name: Build
-        run: ebs build --cache write -k
-      - name: Status
+        run: ebs build --ci -k
+      - name: Summary
         if: always()
-        run: ebs status
-      - name: Collect reports
-        if: always()
-        run: ebs fetch summary -o ebs-out
+        run: cat ebs-summary.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ebs-out
-          path: ebs-out/
+          name: ebs-reports
+          path: |
+            ebs-junit.xml
+            ebs-summary.md

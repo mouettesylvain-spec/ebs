@@ -2,7 +2,7 @@
 
 A pipeline runs `ebs build --ci`. GitLab then shows the simulation results in the merge request,
 links the build, and can gate promotion of a channel. Start from the template in
-[`examples/ci/.gitlab-ci.yml`](../../examples/ci/.gitlab-ci.yml).
+[`integrations/ci/gitlab-ci.yml`](../../integrations/ci/gitlab-ci.yml).
 
 ## Setup
 
