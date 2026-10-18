@@ -238,6 +238,24 @@ class _Captured(Exception):
     pass
 
 
+# Review: once the driver job is queued, a build record that cannot be updated only warns; it
+# never marks the build infra_failed (its driver would then find it finished and give up).
+def test_detach_record_failure_does_not_fail_the_build(
+    site: Site, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(directory: Path, job: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("ebs.cli.build._record_driver_job", broken)
+    stub = _StubSbatch()
+    site.services.slurm_cli = lambda: stub  # type: ignore[assignment,method-assign,return-value]
+    result = site.invoke(["build", "--detach", "--executor", "slurm", "--json"])
+    assert result.exit_code == ExitCode.OK, result.output
+    assert "could not name it" in result.stderr
+    doc = json.loads(result.stdout.splitlines()[-1])
+    assert site.services.memory_store.get_build(BuildId(doc["build"])).status == "running"
+
+
 # Review: the driver job can start (and record its host, pid and job id) before `--detach`
 # returns from sbatch; the detaching process must not overwrite that record.
 def test_detach_keeps_the_record_of_a_started_driver(site: Site) -> None:

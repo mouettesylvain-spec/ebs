@@ -608,7 +608,6 @@ def _detach(
             comment=str(started.uuid),
         )
         job = services.slurm_cli().submit(script, opts)
-        _record_driver_job(directory, str(job))
     except (EbsError, OSError, ValueError) as exc:
         # If even that fails, the build stays `running` without a driver: `--resume` takes it.
         with contextlib.suppress(MetadataError):
@@ -617,6 +616,10 @@ def _detach(
         if isinstance(exc, EbsError):
             raise
         raise ConfigError(f"cannot submit the driver job of build {started.uuid}: {exc}") from exc
+    try:  # the job is queued now: a record that cannot be updated must not fail the build
+        _record_driver_job(directory, str(job))
+    except (EbsError, OSError) as exc:
+        out.warn(f"driver job {job} submitted, but the build record could not name it: {exc}")
     if out.json:
         out.emit(
             {
