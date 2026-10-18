@@ -37,6 +37,7 @@ from ebs.exec.api import Executor, ExecutorBusy, JobHandle, JobStatus, SubmitBat
 from ebs.gc.access import put_registered
 from ebs.gc.leases import LeaseKeeper
 from ebs.meta.api import (
+    TERMINAL_STATES,
     ActionState,
     BuildId,
     CacheMode,
@@ -92,6 +93,12 @@ class Refiner(Protocol):
     def refine(self, plan: Plan, produced: Mapping[tuple[str, str], Digest]) -> Plan: ...
 
 
+class Heartbeat(Protocol):
+    """Called once per loop pass; may raise to stop the driver (`DriverLeaseKeeper`, P2-08)."""
+
+    def heartbeat(self) -> None: ...
+
+
 class Scheduler:
     """Runs one build's actions to a final state. Single-threaded; `request_cancel` is the only
     method that may be called from elsewhere (a signal handler)."""
@@ -111,6 +118,7 @@ class Scheduler:
         config: DriverConfig,
         retry: RetryPolicy,
         lease: LeaseKeeper | None = None,
+        driver_lease: Heartbeat | None = None,
     ) -> None:
         self._plan = plan
         self._plan_digest: Digest | None = plan_digest  # None: refined since last stored
@@ -154,6 +162,7 @@ class Scheduler:
         self._excluded: set[str] = set()  # nodes this build no longer uses (R3)
         self._avoid: dict[str, set[str]] = {}  # per action: nodes its retries avoid
         self._lease = lease  # GC roots of this build (P1-09 R2)
+        self._driver_lease = driver_lease  # one live driver per build (P2-08 R3)
         self._touched: set[Digest] = set()  # cache-hit objects, touched once per pass (R1)
 
     # --- public ---------------------------------------------------------------------------------
@@ -171,6 +180,51 @@ class Scheduler:
     def _cancelling(self) -> bool:
         # A method, not the attribute: a signal handler may set it between two checks.
         return self._cancel_requested
+
+    def restore(
+        self,
+        states: Mapping[str, ActionState],
+        results: Mapping[str, ResultManifest],
+        attached: Iterable[JobHandle],
+    ) -> None:
+        """Take over a build another driver started (P2-08 R2), before `run`.
+
+        `states` are the store's action states (missing: `queued`); only final states,
+        `queued`, and `pending`/`running` for actions whose job is in `attached` may appear.
+        `results` holds the recorded manifest of every `done`, `failed` and `cached` action: a
+        success refines the plan again, so its consumers get their keys. Attached jobs are
+        polled like jobs submitted here; queued actions are scheduled as usual.
+        """
+        for handle in attached:
+            if states.get(handle.action_id) not in ("pending", "running"):
+                raise ValueError(f"attached job {handle} is for an action that is not running")
+            self._inflight[handle] = handle.action_id
+        running = set(self._inflight.values())
+        for action_id in self._order:  # plan order: producers are refined before consumers
+            state = states.get(action_id, "queued")
+            if state in ("pending", "running") and action_id not in running:
+                raise ValueError(f"{action_id} is {state} but no job is attached to it")
+            self._store_state[action_id] = state
+            if state not in TERMINAL_STATES:
+                continue
+            self._final[action_id] = state  # type: ignore[assignment]  # TERMINAL_STATES
+            result = results.get(action_id)
+            if result is not None:  # consumers may still need them: this driver's lease holds them
+                used = self._result_objects(result)
+                self._touched |= used
+                if self._lease is not None:
+                    self._lease.add(used)
+            if state in ("done", "cached") and result is not None and result.status == "passed":
+                self._succeeded(self._plan.action(action_id), result)
+            elif state in ("done", "failed", "cached"):
+                if result is None:
+                    raise ValueError(f"{action_id} is {state} but has no recorded result")
+                self._failed(action_id)
+            elif state == "infra_failed":
+                self.infra_exhausted.add(action_id)
+                self._failed(action_id)
+            elif state == "skipped" and self._producers[action_id] <= self._ok:
+                self._failed(action_id)  # its inputs were never produced (`_missing_input`)
 
     def run(self) -> dict[str, FinalState]:
         """Drive every action to a final state; returns them in plan order."""
@@ -401,6 +455,8 @@ class Scheduler:
             self._touched.clear()
 
     def _heartbeat(self) -> None:
+        if self._driver_lease is not None:
+            self._driver_lease.heartbeat()  # raises if another driver took the build over
         if self._lease is not None:
             self._lease.heartbeat()
 
@@ -433,10 +489,16 @@ class Scheduler:
 
     def _apply(self, handle: JobHandle, status: JobStatus) -> None:
         action_id = self._inflight[handle]
-        key = self._plan.action(action_id).key
+        spec = self._plan.action(action_id)
+        key = spec.key
         if status.state == "pending":
             self._set_state(action_id, "pending", key=key, pending_reason=status.pending_reason)
-            self._events.emit("pending", action_id, reason=status.pending_reason or "other")
+            # P2-06: the license features let the dashboard split license waits by feature.
+            features = sorted(spec.licenses)
+            extra: dict[str, object] = {"licenses": features} if features else {}
+            self._events.emit(
+                "pending", action_id, reason=status.pending_reason or "other", **extra
+            )
         elif status.state == "running":
             self._ensure_running(action_id, key)
             self._events.emit("running", action_id, job_id=handle.job_id)

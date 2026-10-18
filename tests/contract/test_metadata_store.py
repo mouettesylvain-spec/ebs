@@ -15,7 +15,7 @@ import time
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Protocol, get_args
 from uuid import uuid4
 
@@ -96,7 +96,7 @@ class MemoryInspector:
         return None if blob is None else blob.last_access
 
     def event_types(self, build: BuildId) -> list[tuple[str, str | None]]:
-        return [(e.type, e.action_id) for e in self._s._events if e.build == build]
+        return [(e.event.type, e.event.action_id) for e in self._s.events_after(0, build=build)]
 
     def leased(self, domain: str, now: datetime) -> set[Digest]:
         return set(self._s.gc_roots(domain, now).leased)
@@ -259,7 +259,9 @@ def h(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterat
 def _over_http(backing: Harness) -> Harness:
     """The same harness with the store replaced by an HTTP client of a service over it."""
     # alice registers the toolchains of the P1-07 tests: make her a toolchain admin.
-    service = make_service(backing.store, toolchain_admins=("alice",))
+    store = backing.store
+    assert isinstance(store, InMemoryMetadataStore | PgMetadataStore)  # the service's backends
+    service = make_service(store, toolchain_admins=("alice",))
     return Harness(service.store(), backing.clock, backing.inspect)
 
 
@@ -1172,6 +1174,47 @@ def test_leases(h: Harness) -> None:
     assert h.inspect.leased("test", h.clock.now()) == set()
     with pytest.raises(MetadataError, match="finished"):
         h.store.acquire_lease("test", build, first, 900)
+
+
+# P2-08 R3: one live driver per build. A claim succeeds when the build has no driver lease, its
+# lease expired, or the claimant already holds it (a renewal); otherwise the holder is returned.
+def test_driver_lease(h: Harness) -> None:
+    build = new_build(h, "a")
+    a = h.store.claim_driver(build, "host-a:1:tok-a", 120)
+    assert (a.owner, a.expires_at) == ("host-a:1:tok-a", h.clock.now() + timedelta(seconds=120))
+    h.clock.advance(60)
+    refused = h.store.claim_driver(build, "host-b:2:tok-b", 120)
+    assert refused.owner == "host-a:1:tok-a"  # still A's: B must not drive
+    assert refused.expires_at == a.expires_at
+    renewed = h.store.claim_driver(build, "host-a:1:tok-a", 120)
+    assert renewed.expires_at == h.clock.now() + timedelta(seconds=120)
+    h.clock.advance(121)  # A stopped heartbeating
+    taken = h.store.claim_driver(build, "host-b:2:tok-b", 120)
+    assert taken.owner == "host-b:2:tok-b"
+    assert h.store.claim_driver(build, "host-a:1:tok-a", 120).owner == "host-b:2:tok-b"
+    h.store.release_driver(build, "host-a:1:tok-a")  # not A's any more: no effect
+    assert h.store.claim_driver(build, "host-c:3:tok-c", 120).owner == "host-b:2:tok-b"
+    h.store.release_driver(build, "host-b:2:tok-b")
+    assert h.store.claim_driver(build, "host-c:3:tok-c", 120).owner == "host-c:3:tok-c"
+    other = new_build(h, "b")  # leases are per build
+    assert h.store.claim_driver(other, "host-a:1:tok-a", 120).owner == "host-a:1:tok-a"
+    third = new_build(h, "c")
+    assert h.store.claim_driver(third, "host-a:1:tok-a", 120).owner == "host-a:1:tok-a"
+    h.store.release_driver(third, "host-a:1:tok-a")  # releases that build's lease only
+    assert h.store.claim_driver(other, "host-d:4:tok-d", 120).owner == "host-a:1:tok-a"
+    h.clock.advance(120)  # exactly the TTL: expired
+    assert h.store.claim_driver(other, "host-d:4:tok-d", 120).owner == "host-d:4:tok-d"
+    for bad in (0, 86_401):
+        with pytest.raises(MetadataError, match="ttl_s"):
+            h.store.claim_driver(other, "host-a:1:tok-a", bad)
+    with pytest.raises(MetadataError):
+        h.store.claim_driver(other, "", 120)
+    with pytest.raises(MetadataError):
+        h.store.claim_driver(BuildId(999_999), "host-a:1:tok-a", 120)
+    h.store.finish_build(build, "passed")
+    with pytest.raises(MetadataError, match="finished"):
+        h.store.claim_driver(build, "host-c:3:tok-c", 120)
+    h.store.release_driver(build, "host-c:3:tok-c")  # releasing after the end is harmless
 
 
 # P1-09 R2: a lease may hold more digests than one HTTP batch.

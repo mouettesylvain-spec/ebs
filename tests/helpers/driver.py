@@ -173,8 +173,10 @@ class ScriptedExecutor:
         *,
         default: Outcome = "pass",
         on_poll: Callable[[int], None] | None = None,
+        record_jobs: bool = False,
     ) -> None:
         self._store = store
+        self._record_jobs = record_jobs  # like SLURM: job id + `pending` stored at submission
         self._cas = cas
         self._default = default
         self._on_poll = on_poll
@@ -187,6 +189,7 @@ class ScriptedExecutor:
         self.finished: list[str] = []  # action ids whose job reached `done`
         self.poll_sizes: list[int] = []
         self.cancelled: list[str] = []
+        self.adopted: list[str] = []  # action ids re-attached by a resumed driver (P2-08)
 
     def script(
         self,
@@ -244,7 +247,18 @@ class ScriptedExecutor:
             self.submitted.append(spec.action_id)
             self.submitted_specs.append(spec)
             handles.append(handle)
+            if self._record_jobs and batch.build is not None:
+                self._store.set_action_state(
+                    batch.build, spec.action_id, "pending", slurm_job_id=handle.job_id
+                )
         return handles
+
+    def adopt(self, build: BuildId, handles: Sequence[JobHandle]) -> None:
+        """Re-attach jobs a dead driver submitted (they outlived it, as SLURM jobs do)."""
+        for h in handles:
+            assert h in self._jobs, f"{h} was never submitted"
+            assert self._jobs[h].build == build, f"{h} belongs to another build"
+            self.adopted.append(h.action_id)
 
     def poll(self, handles: Sequence[JobHandle]) -> dict[JobHandle, JobStatus]:
         self.poll_sizes.append(len(handles))

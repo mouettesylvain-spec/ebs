@@ -67,12 +67,18 @@ Runtime: `pydantic>=2.11`, `ruamel.yaml`, `typer`, `rich`, `sqlalchemy>=2`, `ale
 `psycopg[binary]>=3`, `fastapi`, `uvicorn`, `httpx`, `structlog`, `tomli-w`.
 Optional extras: `blake3` (`[blake3]`), `boto3` (`[s3]`, P3).
 Dev: `pytest`, `pytest-cov`, `hypothesis`, `jsonschema` (schema tests, P0-04), `pytest-timeout`, `pytest-xdist`, `testcontainers[postgres]`,
-`syrupy` (golden files), `import-linter`, `mypy`, `ruff`, `respx` (httpx mocks).
+`syrupy` (golden files), `import-linter`, `mypy`, `ruff`, `respx` (httpx mocks), `xmlschema`
+(JUnit XSD validation, P2-07).
 The runner entry point must import only stdlib + `pydantic` + `httpx` + `core`/`cas`/`runner`.
 
 Documentation site (`site/`, D-01; Node, never shipped with the package): `astro`,
 `@astrojs/starlight`, `animejs`, `sharp`; dev: `@astrojs/check`, `typescript`,
 `starlight-links-validator`. Exact versions are pinned in `site/package.json` and its lockfile.
+
+Dashboard (`web/`, P2-06; Node 24, exact versions in `web/package.json`): runtime `react`,
+`react-dom`, `react-router-dom`, `openapi-fetch`, `elkjs` (DAG layout); dev `vite`,
+`@vitejs/plugin-react`, `typescript`, `vitest`, `jsdom`, `openapi-typescript`,
+`@playwright/test`, `@axe-core/playwright`, `@types/*`. No Python dependency is added.
 
 ## Site configuration (`ebs.toml`)
 
@@ -177,6 +183,14 @@ release = ""
 
 [release.gates]                # P2-02: channel (or "name:channel") => gate flow project
 # stable = "cpu-gate"          # read by the CLI on a direct database, else by the service
+
+[ci]                           # P2-07: `ebs build --ci`
+# build_url = "https://ebs.example/builds/{uuid}"   # link in ebs-summary.md ({build}, {uuid})
+
+[driver]                       # P2-08: the SLURM job of `ebs build --detach` (1 CPU)
+partition = ""                 # empty: [slurm].default_partition
+qos = ""                       # empty: the build kind's QOS ([slurm.qos])
+time = "72h"                   # walltime: the longest build a detached driver may drive
 ```
 
 ## Glossary

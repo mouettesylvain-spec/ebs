@@ -16,37 +16,57 @@ from ebs.core.clock import Clock, SystemClock
 from ebs.core.digest import Digest
 from ebs.core.errors import MetadataError
 from ebs.meta._common import (
+    aggregate_stats,
     attribution_digests,
+    build_matches,
     cache_refs,
     check_blobs,
+    check_build_filter,
     check_by,
     check_digest,
+    check_driver_owner,
+    check_event_query,
     check_exportable,
     check_final_status,
     check_lease_ttl,
     check_pin,
     check_release,
+    check_release_imports,
     check_result,
     check_run,
     check_set_channel,
+    check_stats_window,
     check_toolchain,
+    check_walk,
+    edge_models,
     edge_rows,
+    month_name,
+    month_start,
+    next_month,
+    provenance_graph,
+    release_matches,
+    result_summary,
     revalidate,
     stored_result,
     touch_cutoff,
     transition,
+    walk_levels,
 )
 from ebs.meta.api import (
+    EVENT_PAGE_MAX,
     ActionRow,
     ActionState,
     BlobRef,
     BuildCreate,
+    BuildFilter,
     BuildId,
     BuildStatus,
     BuildView,
     ChannelMove,
     ChannelView,
     DomainPolicy,
+    DomainStats,
+    DriverLease,
     Event,
     ExportRecord,
     GateCheck,
@@ -56,11 +76,16 @@ from ebs.meta.api import (
     GcRoots,
     GcRun,
     LeaseId,
+    ProvenanceAction,
+    ProvenanceGraph,
     RegisterOutcome,
     ReleaseCreate,
     ReleaseId,
+    ReleaseImport,
     ReleaseView,
     ResultManifest,
+    ResultSummary,
+    StoredEvent,
     Tombstone,
     ToolchainCreate,
     ToolchainRecord,
@@ -115,12 +140,15 @@ class InMemoryMetadataStore:
         self._uuids: set[str] = set()
         self._edges: dict[_EdgeKey, tuple[str, str | None]] = {}  # -> object_id, content
         self._blobs: dict[tuple[str, str], _Blob] = {}
-        self._events: list[Event] = []
+        self._events: list[StoredEvent] = []
+        self._stored_at: dict[int, datetime] = {}  # id -> store clock (the PG partition key)
+        self._last_event = 0
         self._toolchains: dict[str, ToolchainRecord] = {}
         self._toolchain_manifests: dict[str, bytes] = {}
         self._leases: dict[int, _Lease] = {}
         self._next_lease = 1
         self._pins: dict[int, tuple[str, str, datetime]] = {}  # build -> by, reason, at
+        self._drivers: dict[int, DriverLease] = {}  # P2-08: build -> its driver lease
         self._tombstones: dict[tuple[str, str], Tombstone] = {}
         self._policies: dict[str, DomainPolicy] = {}
         self.gc_runs: list[GcRun] = []
@@ -128,6 +156,7 @@ class InMemoryMetadataStore:
         self._channels: dict[tuple[str, str, str], int] = {}  # -> last history entry
         self._history: list[ChannelMove] = []
         self._exports: list[ExportRecord] = []
+        self._release_imports: dict[int, dict[str, ReleaseImport]] = {}  # build -> alias -> row
 
     # --- action cache ---------------------------------------------------------------------------
 
@@ -289,6 +318,23 @@ class InMemoryMetadataStore:
             for lease in [i for i, x in self._leases.items() if x.build == build]:
                 del self._leases[lease]
 
+    def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
+        with self._lock:
+            b = self._build(build)
+            recorded = self._release_imports.get(build, {})
+            ids = {int(r.release) for r in imports}
+            new = check_release_imports(
+                build, b.view.domain, imports, {i: self._release(i) for i in ids},
+                {alias: int(r.release) for alias, r in recorded.items()},
+            )  # fmt: skip
+            self._release_imports.setdefault(build, {}).update((r.alias, r) for r in new)
+
+    def list_release_imports(self, build: BuildId) -> list[ReleaseImport]:
+        with self._lock:
+            self._build(build)
+            rows = self._release_imports.get(build, {})
+            return [rows[alias] for alias in sorted(rows)]
+
     def get_build(self, build: BuildId) -> BuildView:
         with self._lock:
             b = self._build(build)
@@ -303,6 +349,52 @@ class InMemoryMetadataStore:
             return sorted(
                 (r for r in rows if state is None or r.state == state), key=lambda r: r.action_id
             )
+
+    # --- dashboard reads (P2-06) ----------------------------------------------------------------
+
+    def list_builds(self, domain: str, flt: BuildFilter) -> list[BuildView]:
+        checked = check_build_filter(domain, flt)
+        with self._lock:
+            ids = [
+                i
+                for i, b in self._builds.items()
+                if b.view.domain == domain and build_matches(b.view, checked)
+            ]
+        return [self.get_build(BuildId(i)) for i in sorted(ids, reverse=True)]
+
+    def result_summaries(self, build: BuildId, *, step: str | None = None) -> list[ResultSummary]:
+        with self._lock:
+            b = self._build(build)
+            found = [
+                result_summary(a, b.results[a])
+                for a, row in b.actions.items()
+                if a in b.results and (step is None or row.step == step)
+            ]
+        return sorted(found, key=lambda r: r.action_id)
+
+    def domain_stats(self, domain: str, *, since: datetime, until: datetime) -> DomainStats:
+        check_stats_window(domain, since, until)
+        with self._lock:
+            chosen = {
+                i: b
+                for i, b in self._builds.items()
+                if b.view.domain == domain and since <= b.view.created_at < until
+            }
+            rows = [
+                (row.step, row.state, b.results.get(a))
+                for b in chosen.values()
+                for a, row in b.actions.items()
+            ]
+            evs = [e.event for e in self._events if e.event.build in chosen]
+        return aggregate_stats(
+            domain,
+            since=since,
+            until=until,
+            now=self._clock.now(),
+            builds=len(chosen),
+            actions=rows,
+            events=evs,
+        )
 
     # --- access tracking -------------------------------------------------------------------------
 
@@ -384,6 +476,32 @@ class InMemoryMetadataStore:
             found.expires_at = now + timedelta(seconds=ttl_s)
             found.digests |= keys
             self._touch_rows(found.domain, keys)
+
+    def claim_driver(self, build: BuildId, owner: str, ttl_s: int) -> DriverLease:
+        check_driver_owner(owner, "claim_driver")
+        check_lease_ttl(ttl_s)
+        with self._lock:
+            b = self._build(build)
+            if b.view.status != "running":
+                raise MetadataError(
+                    f"claim_driver: build {build} is finished ({b.view.status}); only running "
+                    "builds have a driver"
+                )
+            now = self._clock.now()
+            held = self._drivers.get(build)
+            if held is None or held.expires_at <= now or held.owner == owner:
+                held = DriverLease(
+                    build=build, owner=owner, expires_at=now + timedelta(seconds=ttl_s)
+                )
+                self._drivers[build] = held
+            return held
+
+    def release_driver(self, build: BuildId, owner: str) -> None:
+        check_driver_owner(owner, "release_driver")
+        with self._lock:
+            held = self._drivers.get(build)
+            if held is not None and held.owner == owner:
+                del self._drivers[build]
 
     def pin_build(self, build: BuildId, *, by: str, reason: str = "") -> None:
         by, reason = check_pin(by, reason)
@@ -550,6 +668,85 @@ class InMemoryMetadataStore:
                 and any(r.key is not None and str(r.key) in keys for r in b.actions.values())
             ]
         return sorted(found, reverse=True)
+
+    # --- provenance (ProvenanceStore, P2-04) -----------------------------------------------------
+
+    def provenance_upstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        return self._walk("upstream", domain, ids, keys, depth)
+
+    def provenance_downstream(
+        self, domain: str, *, ids: Iterable[Digest], keys: Iterable[Digest], depth: int
+    ) -> ProvenanceGraph:
+        return self._walk("downstream", domain, ids, keys, depth)
+
+    def _walk(
+        self, way: str, domain: str, ids: Iterable[Digest], keys: Iterable[Digest], depth: object
+    ) -> ProvenanceGraph:
+        domain, id_list, key_list, levels = check_walk(
+            domain, ids, keys, depth, f"provenance_{way}"
+        )
+        with self._lock:
+            edges = edge_models(
+                (
+                    (key, direction, path, oid, content)
+                    for (d, key, direction, path), (oid, content) in self._edges.items()
+                    if d == domain
+                ),
+                f"provenance_{way} {domain}",
+            )
+            # follow: the direction whose ids lead to the next level (the other one leads back).
+            follow = "in" if way == "upstream" else "out"
+            ahead: dict[str, set[str]] = {}  # key -> ids on its `follow` edges
+            behind: dict[str, set[str]] = {}  # id -> keys holding it on a `back` edge
+            by_content: dict[str, set[str]] = {}  # upstream only: content digest -> producers
+            for e in edges:
+                k, oid = str(e.action_key), str(e.object_id)
+                if e.direction == follow:
+                    ahead.setdefault(k, set()).add(oid)
+                    continue
+                behind.setdefault(oid, set()).add(k)
+                if e.content_digest is not None and way == "upstream":
+                    by_content.setdefault(str(e.content_digest), set()).add(k)
+
+            def step(level: set[str]) -> set[str]:
+                return {n for k in level for i in ahead.get(k, ()) for n in behind.get(i, ())}
+
+            first = set(key_list) | {
+                k for i in id_list for k in behind.get(i, set()) | by_content.get(i, set())
+            }
+            walked, truncated = walk_levels(first, step, levels)
+            kept = [e for e in edges if str(e.action_key) in walked]
+            objects = set(id_list) | {str(e.object_id) for e in kept}
+            rows = [
+                self._provenance_action(b, row)
+                for b in self._builds.values()
+                if b.view.domain == domain
+                for row in b.actions.values()
+                if row.key is not None and str(row.key) in walked
+            ]
+            found = [
+                match
+                for rid in sorted(self._releases)
+                if (rel := self._release(rid)) is not None and rel.domain == domain
+                for match in release_matches(rel, objects)
+            ]
+        return provenance_graph(domain, kept, rows, found, truncated)
+
+    @staticmethod
+    def _provenance_action(b: _Build, row: ActionRow) -> ProvenanceAction:
+        assert row.key is not None
+        result = b.results.get(row.action_id)
+        status = None if result is None else result.get("status")
+        return ProvenanceAction(
+            key=row.key, build=b.view.id, action_id=row.action_id, step=row.step, rule=row.rule,
+            params=row.params, toolchain=row.toolchain, state=row.state, cached=row.cached,
+            status=status, finished_at=row.finished_at,  # type: ignore[arg-type]
+            project=b.view.project, flow_repo=b.view.flow_repo, flow_commit=b.view.flow_commit,
+            flow_dirty=b.view.flow_dirty, user_name=b.view.user_name,
+            build_created_at=b.view.created_at,
+        )  # fmt: skip
 
     def record_export(self, release: ReleaseId, to_domain: str, *, by: str) -> ReleaseView:
         check_domain(to_domain)
@@ -723,7 +920,58 @@ class InMemoryMetadataStore:
         checked = revalidate(event, Event, "emit")
         with self._lock:
             self._build(checked.build)
-            self._events.append(checked)
+            self._last_event += 1
+            self._events.append(StoredEvent(id=self._last_event, event=checked))
+            self._stored_at[self._last_event] = self._clock.now()
+
+    def events_after(
+        self,
+        after: int,
+        *,
+        build: BuildId | None = None,
+        domain: str | None = None,
+        limit: int = EVENT_PAGE_MAX,
+    ) -> list[StoredEvent]:
+        check_event_query(build, domain, limit)
+        with self._lock:
+            found = [
+                e
+                for e in self._events
+                if e.id > after
+                and (
+                    e.event.build == build
+                    if build is not None
+                    else self._builds[e.event.build].view.domain == domain
+                )
+            ]
+        return found[:limit]
+
+    def ensure_event_partitions(self, at: datetime, *, months_ahead: int = 1) -> list[str]:
+        """Nothing to create in memory: the months `PgMetadataStore` would partition."""
+        month, names = month_start(at), []
+        for _ in range(months_ahead + 1):
+            names.append(f"events_y{month.year:04}m{month.month:02}")
+            month = next_month(month)
+        return names
+
+    def prune_events(self, before: datetime, *, dry_run: bool = False) -> list[str]:
+        with self._lock:
+            months = sorted(
+                {
+                    start
+                    for e in self._events
+                    if next_month(start := month_start(self._stored_at[e.id])) <= before
+                }
+            )
+            if not dry_run:
+                gone = set(months)
+                # Ids are kept: the list stays in id order, and new ids continue after the last.
+                kept = [e for e in self._events if month_start(self._stored_at[e.id]) not in gone]
+                for e in self._events:
+                    if month_start(self._stored_at[e.id]) in gone:
+                        del self._stored_at[e.id]
+                self._events = kept
+        return [month_name(m) for m in months]
 
     # --- toolchain registry ---------------------------------------------------------------------
 

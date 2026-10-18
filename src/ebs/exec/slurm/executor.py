@@ -4,8 +4,8 @@
 one job array per batch, split at `max_array_size`), each running a fixed job script that execs
 `ebs-runner` (`jobscript`). Every job id is recorded in the MetadataStore
 (`actions.slurm_job_id`, state `pending`) before `submit` returns, so a restarted driver can
-re-attach (P2-08). If a later sbatch call or a record fails, the jobs already submitted for the
-batch are cancelled and `submit` raises ExecutorError: no job is ever left untracked.
+re-attach (P2-08: `adopt`). If a later sbatch call or a record fails, the jobs already submitted
+for the batch are cancelled and `submit` raises ExecutorError: no job is ever left untracked.
 
 `poll` makes one `SlurmCli.query` (one squeue, plus one sacct for jobs squeue forgot) for every
 unfinished handle it is given and reports array tasks one by one; finished jobs are answered
@@ -341,6 +341,29 @@ class SlurmExecutor:
         log.info("jobs cancelled", count=len(live))
 
     # --- extras ----------------------------------------------------------------------------------
+
+    def adopt(self, build: BuildId, handles: Sequence[JobHandle]) -> None:
+        """Track jobs another driver of `build` submitted (P2-08: a resumed driver re-attaches
+        to the job ids recorded in `actions.slurm_job_id`); `poll` and `cancel` then treat
+        them like jobs submitted here. Their state is unknown until the next poll."""
+        log_dir = self._settings.debug_root / self._cas.domain / str(build) / "slurm"
+        adopted: list[_Job] = []
+        for handle in handles:
+            if handle.executor != self.name:
+                raise ExecutorError(
+                    f"cannot adopt {handle}: it was handed out by executor {handle.executor!r}"
+                )
+            text = handle.job_id
+            ref: JobRef = ArrayTaskId.parse(text) if "_" in text else JobId(text)
+            if isinstance(ref, str) and not ref.isdigit():
+                raise ExecutorError(f"cannot adopt {handle}: {text!r} is not a SLURM job id")
+            adopted.append(_Job(handle, ref, log_dir / f"{text}.out"))
+        for j in adopted:
+            if j.handle in self._jobs:
+                continue
+            self._jobs[j.handle] = j
+            if isinstance(j.ref, ArrayTaskId):
+                self._arrays.setdefault(j.ref.array_job_id, []).append(j)
 
     def job_ref(self, handle: JobHandle) -> JobRef:
         """The SLURM job (or array task) behind `handle`."""

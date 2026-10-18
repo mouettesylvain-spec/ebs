@@ -1,4 +1,4 @@
-.PHONY: check check-all lint test-unit test-perf test-integration fmt cov nightly \
+.PHONY: check check-all check-web lint test-unit test-perf test-integration fmt cov nightly \
 	site-ref site-dev site-build site-bench
 
 UV ?= uv
@@ -30,6 +30,10 @@ check-all: check test-integration
 
 test-integration:
 	$(PYTEST) -m integration -q
+
+# The dashboard (web/, P2-06): needs Node 24 and, for e2e, `npx playwright install chromium`.
+check-web:
+	cd web && npm ci && npm run check:api && npm run typecheck && npm test && npm run e2e
 
 fmt:
 	$(RUN) ruff check --fix .

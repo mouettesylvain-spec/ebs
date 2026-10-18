@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -23,26 +24,31 @@ from ebs.core.digest import hash_bytes
 from ebs.domains import Domains
 from ebs.meta.api import (
     API_PREFIX,
+    PROVENANCE_DEPTH_MAX,
     ActionRow,
     BlobRef,
     BuildId,
     Event,
     LeaseId,
     ReleaseCreate,
+    ReleaseImport,
     ReleaseOutput,
     ReleaseView,
 )
 from ebs.meta.client import BearerCredential, HttpMetadataStore, MetadataHttpError
 from ebs.meta.service.auth import Policy
 from ebs.meta.service.authz import DomainPolicy
+from ebs.meta.service.deps import ServiceBackend
+from ebs.meta.service.events_stream import EventStreamConfig
+from ebs.meta.service.logs import LogSource
 from ebs.meta.service.tokens import InMemoryTokenStore
-from ebs.release.releases import ReleaseBackend
 from tests.helpers.meta_http import FakeMunge, Service, make_service
 from tests.helpers.release import Action, finish, out
 
 A, B = "dom-a", "dom-b"
 LIB = out(b"worklib")
 KEY = hash_bytes(b"cache key in A")
+LOG_ROOT = Path("/nonexistent/ebs-authz-matrix")  # the log route finds no file under it
 
 
 GROUPS: dict[str, set[str]] = {"alice": {"grp-a"}, "bob": {"grp-b"}, "carol": {"grp-a", "grp-b"}}
@@ -71,13 +77,16 @@ class Mine:
     lease: LeaseId
 
 
-def _service(pg: ReleaseBackend) -> tuple[Service, list[Who]]:
+def _service(pg: ServiceBackend) -> tuple[Service, list[Who]]:
     tokens = InMemoryTokenStore()
     domains = Domains.from_config(
         {"domains": {A: {"unix_group": "grp-a"}, B: {"unix_group": "grp-b"}}}
     )
     policy = DomainPolicy(Policy(), domains, [A, B], Groups(), {"ci-a": [A]})
-    svc = make_service(pg, tokens=tokens, authorize=policy)
+    svc = make_service(
+        pg, tokens=tokens, authorize=policy, events=EventStreamConfig(max_stream_s=0.0),
+        logs=LogSource(lambda _d: LOG_ROOT, lambda _d: LOG_ROOT),
+    )  # fmt: skip
     ci = BearerCredential(tokens.add("ci-a", kind="ci", team="demo"))
     who = [
         Who("alice", "alice", frozenset({A}), svc.store(FakeMunge(uid=1000))),
@@ -89,7 +98,7 @@ def _service(pg: ReleaseBackend) -> tuple[Service, list[Who]]:
     return svc, who
 
 
-def _mine(pg: ReleaseBackend, who: Who) -> Mine:
+def _mine(pg: ServiceBackend, who: Who) -> Mine:
     running = finish(pg, {}, domain=A, user=who.user, status=None)
     pg.add_actions(
         running, [ActionRow(action_id="a", step="a"), ActionRow(action_id="b", step="b")]
@@ -146,6 +155,18 @@ OPS: list[tuple[str, Op, frozenset[str]]] = [
         frozenset({A}),
     ),
     ("GET /builds/{build}/actions", lambda c, m, w: c.list_actions(m.finished), frozenset({A})),
+    # The event streams (P2-05 R2): the finished build's ends at once, the domain's after its
+    # backlog (max_stream_s = 0). The store has no stream method: raw calls, same credentials.
+    (
+        "GET /builds/{build}/events",
+        lambda c, m, w: _stream(c, f"/builds/{m.finished}/events"),
+        frozenset({A}),
+    ),
+    (
+        "GET /domains/{domain}/events",
+        lambda c, m, w: _stream(c, f"/domains/{A}/events"),
+        frozenset({A}),
+    ),
     (
         "POST /builds/{build}/actions/{action_id}/state",
         lambda c, m, w: c.set_action_state(m.running, "b", "running"),
@@ -178,8 +199,30 @@ OPS: list[tuple[str, Op, frozenset[str]]] = [
         lambda c, m, w: c.renew_lease(m.running, m.lease, 600),
         frozenset({A}),
     ),
+    (  # P2-08: the driver lease, like the GC lease, needs write access to the build's domain
+        "POST /builds/{build}/driver",
+        lambda c, m, w: c.claim_driver(m.running, f"{w.name}:1:tok", 120),
+        frozenset({A}),
+    ),
+    (
+        "POST /builds/{build}/driver/release",
+        lambda c, m, w: c.release_driver(m.running, f"{w.name}:1:tok"),
+        frozenset({A}),
+    ),
     ("PUT /builds/{build}/pin", lambda c, m, w: c.pin_build(m.finished, by=w.user), frozenset({A})),
     ("DELETE /builds/{build}/pin", lambda c, m, w: c.unpin_build(m.finished), frozenset({A})),
+    (
+        "POST /builds/{build}/release-imports",
+        lambda c, m, w: c.record_release_imports(
+            m.running, [ReleaseImport(alias="rtl", release=m.release.id)]
+        ),
+        frozenset({A}),
+    ),
+    (
+        "GET /builds/{build}/release-imports",
+        lambda c, m, w: c.list_release_imports(m.finished),
+        frozenset({A}),
+    ),
     (
         "POST /builds/{build}/finish",
         lambda c, m, w: c.finish_build(m.running, "passed"),
@@ -205,6 +248,39 @@ OPS: list[tuple[str, Op, frozenset[str]]] = [
     (
         "POST /domains/{domain}/gate-builds",
         lambda c, m, w: c.gate_builds(A, "gate", [LIB.id]),
+        frozenset({A}),
+    ),
+    (  # P2-04 R4
+        "POST /domains/{domain}/provenance/upstream",
+        lambda c, m, w: _found_actions(
+            c.provenance_upstream(A, ids=[LIB.id], keys=[], depth=PROVENANCE_DEPTH_MAX)
+        ),
+        frozenset({A}),
+    ),
+    (
+        "POST /domains/{domain}/provenance/downstream",
+        lambda c, m, w: c.provenance_downstream(A, ids=[LIB.id], keys=[], depth=1),
+        frozenset({A}),
+    ),
+    # P2-06: the dashboard's reads (raw calls: the store client has no such methods).
+    (
+        "GET /domains/{domain}/builds",
+        lambda c, m, w: _found(_get(c, f"/domains/{A}/builds")["builds"]),
+        frozenset({A}),
+    ),
+    (
+        "GET /domains/{domain}/stats",
+        lambda c, m, w: _get(c, f"/domains/{A}/stats"),
+        frozenset({A}),
+    ),
+    (
+        "GET /builds/{build}/results",
+        lambda c, m, w: _found(_get(c, f"/builds/{m.finished}/results")["results"]),
+        frozenset({A}),
+    ),
+    (
+        "GET /builds/{build}/actions/{action_id}/log",
+        lambda c, m, w: _no_log_yet(c, f"/builds/{m.finished}/actions/compile/log"),
         frozenset({A}),
     ),
     (
@@ -240,6 +316,33 @@ DOMAIN_FREE = {
 }  # fmt: skip
 
 
+def _found_actions(graph: Any) -> Any:
+    assert graph.actions, "a member walks the domain's provenance"
+    return graph
+
+
+def _stream(c: HttpMetadataStore, path: str) -> str:
+    text = c._call("GET", path, f"GET {path}", idempotent=True).text
+    assert text.startswith("retry:"), text
+    return text
+
+
+def _get(c: HttpMetadataStore, path: str) -> Any:
+    return c._call("GET", path, f"GET {path}", idempotent=True).json()
+
+
+def _no_log_yet(c: HttpMetadataStore, path: str) -> None:
+    """A member reaches the log reader, which finds no file (`LOG_ROOT` does not exist); a
+    non-member gets the 404 of a missing build instead (run_matrix checks the status)."""
+    try:
+        c._call("GET", path, f"GET {path}", idempotent=True)
+    except MetadataHttpError as exc:
+        if exc.status != 404 or "no log of action" not in str(exc):
+            raise
+        return
+    raise AssertionError(f"{path}: a log was served from a root that does not exist")
+
+
 def _found(value: list[Any]) -> list[Any]:
     assert value, "a member sees the domain's releases"
     return value
@@ -267,7 +370,7 @@ def _result(m: Mine, w: Who) -> Any:
     )  # fmt: skip
 
 
-def covers_every_route(store: ReleaseBackend) -> None:
+def covers_every_route(store: ServiceBackend) -> None:
     svc, _ = _service(store)
     paths = svc.client.get(f"{API_PREFIX}/openapi.json").json()["paths"]
     routes = {f"{m.upper()} {p.removeprefix(API_PREFIX)}" for p, ops in paths.items() for m in ops}
@@ -281,7 +384,7 @@ def _expected_status(route: str, needed: frozenset[str], who: Who) -> int:
     return 404 if by_id and A not in who.domains else 403
 
 
-def run_matrix(store: ReleaseBackend) -> None:
+def run_matrix(store: ServiceBackend) -> None:
     svc, everyone = _service(store)
     mine = {w.name: _mine(store, w) for w in everyone}
     store.cache_put(A, KEY, _result(mine["alice"], everyone[0]))

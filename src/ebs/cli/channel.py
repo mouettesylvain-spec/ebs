@@ -3,6 +3,10 @@
 `set NAME CHANNEL VERSION` points `NAME:CHANNEL` at a release, after the channel's gate
 (`[release.gates]`, `ebs.release.channels`) passes; with the metadata service, the service's
 own gate policy applies. `history` lists every move with its author and gate check.
+
+`--if-passing` makes `set` a CI gate job (P2-07 R4): the channel moves only if the gate build
+(`--gate-build`, else `$EBS_BUILD_ID` from the `ebs build --ci` job's dotenv artifact) passed;
+otherwise the command fails and the pipeline with it.
 """
 
 from __future__ import annotations
@@ -12,11 +16,11 @@ from typing import Any
 import typer
 
 from ebs.cli._context import SiteServices
-from ebs.cli._output import handle_errors, make_output
+from ebs.cli._output import UsageError, handle_errors, make_output
 from ebs.cli.plan import JSON_OPTION
 from ebs.cli.release import DOMAIN_OPTION, default_domain, find_release, release_store
 from ebs.meta.api import BuildId, ChannelMove
-from ebs.release.channels import GatePolicy, move_channel
+from ebs.release.channels import GatePolicy, move_channel, require_passing
 
 __all__ = ["app"]
 
@@ -36,6 +40,17 @@ def _move_text(m: ChannelMove) -> str:
     return f"{m.moved_at.isoformat()}  {m.version}  by {m.moved_by}{gate}"
 
 
+def _env_build(value: str | None) -> BuildId:
+    if not value:
+        raise UsageError(
+            "--if-passing needs the gate build: give --gate-build ID, or run after the "
+            "`ebs build --ci` job so EBS_BUILD_ID comes from its dotenv artifact (ebs.env)"
+        )
+    if not value.strip().isdigit() or int(value) <= 0:
+        raise UsageError(f"EBS_BUILD_ID={value!r} is not a build id (a positive integer)")
+    return BuildId(int(value))
+
+
 @app.command("set")
 @handle_errors
 def set_command(
@@ -46,19 +61,27 @@ def set_command(
     gate_build: int | None = typer.Option(
         None, "--gate-build", metavar="ID", help="The gate build to check (default: any)."
     ),
+    if_passing: bool = typer.Option(
+        False,
+        "--if-passing",
+        help="CI gate: move only if the gate build (--gate-build, else $EBS_BUILD_ID) passed.",
+    ),
     domain: str | None = DOMAIN_OPTION,
     json_mode: bool = JSON_OPTION,
 ) -> None:
     """Point NAME:CHANNEL at release VERSION (after the channel's gate, if any)."""
     services: SiteServices = ctx.obj
     out = make_output(services.environ, json_mode=json_mode, tty=services.is_tty())
+    build = None if gate_build is None else BuildId(gate_build)
+    if if_passing and build is None:
+        build = _env_build(services.environ.get("EBS_BUILD_ID"))
     store = release_store(services)
     rel = find_release(store, default_domain(services, domain), name, version)
     gates = GatePolicy.from_section(services.config().get("release", {}))
+    passed = require_passing(store, build, rel) if if_passing and build is not None else None
     move = move_channel(
-        store, gates, rel, channel, by=services.user(),
-        gate_build=None if gate_build is None else BuildId(gate_build),
-    )  # fmt: skip
+        store, gates, rel, channel, by=services.user(), gate_build=build, passed=passed
+    )
     if json_mode:
         out.emit(_move_doc(move))
     else:

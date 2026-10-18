@@ -1,6 +1,6 @@
 # P2-01 — Domains and authorization
 
-Status: review · Phase: 2 · Depends on: P1-06 · Size: L
+Status: done · Phase: 2 · Depends on: P1-06 · Size: L
 
 ## Goal
 NDA boundaries enforced end to end: each domain has its own CAS root, debug area and cache namespace;

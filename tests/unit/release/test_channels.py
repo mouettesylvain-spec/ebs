@@ -10,7 +10,7 @@ from ebs.core.clock import FakeClock
 from ebs.core.errors import ConfigError, MetadataError, ReleaseError
 from ebs.meta.api import ActionRow, BuildId, GateCheck, ReleaseView
 from ebs.meta.memory import InMemoryMetadataStore
-from ebs.release.channels import GatePolicy, move_channel
+from ebs.release.channels import GatePolicy, move_channel, require_passing
 from ebs.release.releases import create_release
 from tests.helpers.release import Action, finish, out
 
@@ -154,3 +154,19 @@ def test_gate_via_cache_hit() -> None:
     assert store.gate_builds("test", "cpu-gate", [next(iter(rel.outputs.values())).id]) == [
         hit, first,
     ]  # fmt: skip
+
+
+# P2-07 R4: `--if-passing` needs a passed build of the release's domain; it becomes the gate.
+def test_require_passing() -> None:
+    store = InMemoryMetadataStore(clock=FakeClock())
+    rel = _release(store, "1.0")
+    ok = finish(store, {"sim": Action()}, project="verif")
+    bad = finish(store, {"sim": Action(passed=False)}, project="verif", status="failed")
+    running = finish(store, {"sim": Action()}, status=None)
+    other = finish(store, {"sim": Action()}, domain="other")
+    for build, why in [(bad, "is failed"), (running, "is running"), (other, "domain 'other'")]:
+        with pytest.raises(ReleaseError, match=why):
+            require_passing(store, build, rel)
+    passed = require_passing(store, ok, rel)
+    move = move_channel(store, GatePolicy(), rel, "nightly", by="ci", passed=passed)
+    assert move.gate == GateCheck(flow="verif", build=ok)

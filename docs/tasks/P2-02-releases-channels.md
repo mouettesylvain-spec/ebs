@@ -1,6 +1,6 @@
 # P2-02 — Releases and channels
 
-Status: review · Phase: 2 · Depends on: P1-09 · Size: L
+Status: done · Phase: 2 · Depends on: P1-09 · Size: L
 
 ## Goal
 Teams publish selected outputs of a build as immutable, versioned releases and move channels

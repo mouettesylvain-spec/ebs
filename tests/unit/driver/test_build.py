@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 import signal
 
 import pytest
 
+from ebs.core.digest import hash_bytes
 from ebs.core.errors import ExitCode
+from ebs.driver.build import action_row
 from ebs.plan.planfile import plan_digest
-from ebs.plan.types import FlowInfo, GitInfo
+from ebs.plan.types import FlowInfo, GitInfo, RuleRef, ToolchainRef
 from tests.helpers.driver import Env, Node
 
 
@@ -100,3 +103,25 @@ def test_no_sigint_handler_by_default(env: Env) -> None:
     env.run(env.plan({"a": Node()}), executor)
     assert seen
     assert all(h is before for h in seen)
+
+
+# P2-04 R1, R3: each action's store row says what it is (rule kind, params, toolchain), so
+# provenance queries can show it and `ebs tests` can select `*.sim` rules from the store alone.
+def test_actions_record_rule_params_toolchain(env: Env) -> None:
+    plan = env.plan({"a": Node(), "b": Node(deps=(("a", "out"),))})
+    outcome = env.run(plan, env.executor())
+    rows = env.store.list_actions(outcome.build)
+    assert [(r.action_id, r.rule, r.params, r.toolchain) for r in rows] == [
+        ("a", "shell", {}, None),
+        ("b", "shell", {}, None),
+    ]
+    tc = hash_bytes(b"toolchain")
+    spec = dataclasses.replace(
+        plan.actions[0],
+        rule=RuleRef("questa.sim", "1"),
+        params={"test": "smoke", "seed": 3, "gui": False, "plusargs": ("+a", "+b")},
+        toolchain=ToolchainRef("questa", "questa/2025.2", tc),
+    )
+    row = action_row(spec)
+    assert (row.rule, row.toolchain) == ("questa.sim", tc)
+    assert row.params == {"test": "smoke", "seed": 3, "gui": False, "plusargs": ["+a", "+b"]}
