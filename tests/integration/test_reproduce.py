@@ -22,9 +22,9 @@ def _site(tmp_path: Path) -> Site:
     return site
 
 
-def _run(site: Site, dest: Path) -> dict[str, Any]:
+def _run(site: Site, dest: Path, code: ExitCode = ExitCode.OK) -> dict[str, Any]:
     result = site.invoke(["reproduce", GEN, "--dir", str(dest), "--run", "--json"])
-    assert result.exit_code == ExitCode.OK, result.output
+    assert result.exit_code == code, result.output
     doc: dict[str, Any] = json.loads(result.stdout)
     return doc
 
@@ -63,11 +63,12 @@ def test_different_output_reported(tmp_path: Path) -> None:
     store.record_result(
         BuildId(built.build), GEN, gen.model_copy(update={"outputs": {**gen.outputs, "out": wrong}})
     )
-    doc = _run(site, tmp_path / "repro")
+    # P1-10 follow-up: a difference exits 1, so CI can use the comparison directly.
+    doc = _run(site, tmp_path / "repro", ExitCode.ACTIONS_FAILED)
     out = next(o for o in doc["ran"]["outputs"] if o["name"] == "out")
     assert out["status"] == "different"
     assert out["recorded"] == str(wrong.digest)
     assert doc["ran"]["identical"] is False
     text = site.invoke(["reproduce", GEN, "--dir", str(tmp_path / "again"), "--run"])
-    assert text.exit_code == ExitCode.OK, text.output
+    assert text.exit_code == ExitCode.ACTIONS_FAILED, text.output
     assert "differs" in text.stdout
