@@ -104,7 +104,7 @@ class _Build:
         digest = self.record.final_plan or self.record.plan
         try:
             with self.cas().open(digest) as f:
-                plan = decode(f.read())
+                plan = decode(f.read(), any_key_schema=True)  # a past build, as recorded
         except (CasError, PlanError) as exc:
             out.warn(
                 f"cannot read the plan of build {self.record.uuid} ({exc}); output paths are "

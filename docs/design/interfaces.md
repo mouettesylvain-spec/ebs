@@ -262,7 +262,11 @@ Key document (the only thing hashed):
   after `=`, `+`, `,`, `:` or an option prefix such as `-I`) naming an absolute or `~` path is
   rejected unless it lies under the toolchain's install roots or `planner.SYSTEM_PATHS`; so is a
   relative path leaving the work dir (`../x`). `http(s)://` and `ftp://` URLs are not paths;
-  `file://` URLs are. `decode` rejects an action whose stored key does not match its fields.
+  `file://` URLs are. `decode` rejects an action whose stored key does not match its fields. A plan of another key schema
+is refused too, except that `decode(data, any_key_schema=True)` (**CONTRACT CHANGE**, after the
+schema 2 bump) reads an *older* schema as recorded, keys not re-computed: only for commands that
+look at a past build (`ebs debug`, `reproduce`, `outputs`, the `plan --diff` baseline), never to
+run or cache. `diff_plans` then names `schema` first for every action whose keys differ.
 
 Plan file (`plan.json`, canonical JSON, stored in CAS; its digest is the build's plan digest):
 

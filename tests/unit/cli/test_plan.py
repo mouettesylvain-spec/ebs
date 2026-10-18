@@ -235,3 +235,29 @@ def test_diff_with_missing_plan_fails(site: Site) -> None:
 # R1
 def test_rehash_flag_is_accepted(site: Site) -> None:
     assert _plan_json(site, "--rehash")["totals"]["actions"] == 3
+
+
+# Review (key schema bump): a build recorded before an upgrade still reads. `ebs plan` names
+# the schema as why everything reruns; `ebs outputs` keeps the paths, `ebs debug` works.
+def test_build_of_an_older_key_schema(site: Site) -> None:
+    _build(site)
+    uuid = _plan_json(site)["baseline"]["build"]
+    path = site.proj / ".ebs" / "builds" / uuid / "build.json"
+    record = json.loads(path.read_text())
+    cas = FsCAS(site.root / "cas", "test")
+    with cas.open(Digest.parse(record["final_plan"])) as f:
+        doc = json.loads(f.read())
+    doc["key_schema"] -= 1
+    for i, action in enumerate(doc["actions"]):
+        action["key"] = "sha256:" + f"{i:064x}"  # keys this ebs cannot re-compute
+    record["final_plan"] = str(cas.put_bytes(json.dumps(doc).encode()))
+    path.write_text(json.dumps(record))
+
+    plan = _plan_json(site)
+    assert plan["baseline"]["build"] == uuid
+    assert {tuple(a["change"]["fields"]) for a in plan["actions"]} == {("schema",)}
+    outputs = site.invoke(["outputs", "--build", uuid, "--json"])
+    assert outputs.exit_code == ExitCode.OK, outputs.output
+    assert {r["path"] for r in json.loads(outputs.stdout)["outputs"]} >= {"out.txt"}
+    debug = site.invoke(["debug", "gen", "--build", uuid, "--json"])
+    assert debug.exit_code == ExitCode.OK, debug.output

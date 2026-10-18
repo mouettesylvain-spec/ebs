@@ -368,9 +368,9 @@ def _debug(value: object, path: str) -> DebugSpec:
     )
 
 
-def _spec(value: object, path: str) -> ActionSpec:
+def _spec(value: object, path: str, *, check_key: bool = True) -> ActionSpec:
     spec = _spec_fields(value, path)
-    if spec.key is not None and with_key(spec).key != spec.key:
+    if check_key and spec.key is not None and with_key(spec).key != spec.key:
         raise PlanError(
             f"invalid plan.json: {path}.key does not match the action's fields (the plan was "
             "edited or written by another key schema); re-plan the flow"
@@ -435,8 +435,12 @@ def _flow(value: object, path: str) -> FlowInfo:
     return FlowInfo(_get(doc, "path", path, _str), git)
 
 
-def from_json(doc: JsonValue) -> Plan:
-    """Inverse of `to_json`; PlanError for another format or key schema, or malformed fields."""
+def from_json(doc: JsonValue, *, any_key_schema: bool = False) -> Plan:
+    """Inverse of `to_json`; PlanError for another format or key schema, or malformed fields.
+
+    `any_key_schema` reads a plan of an older key schema as recorded (its stored keys are not
+    re-computed, which this ebs cannot do): for commands that look at a past build (`ebs debug`,
+    `reproduce`, `outputs`, the `plan --diff` baseline), never to run or cache anything."""
     root = _obj(doc, "$")
     version = root.get("v")
     if version != PLAN_FORMAT_VERSION:
@@ -445,11 +449,13 @@ def from_json(doc: JsonValue) -> Plan:
             f"version {PLAN_FORMAT_VERSION}); re-plan the flow with this ebs version"
         )
     schema = root.get("key_schema")
-    if schema != KEY_SCHEMA_VERSION:
+    old = any_key_schema and type(schema) is int and 1 <= schema < KEY_SCHEMA_VERSION
+    if schema != KEY_SCHEMA_VERSION and not old:
         raise PlanError(
             f"plan.json uses key schema {json.dumps(schema)} but this ebs computes keys with "
             f"schema {KEY_SCHEMA_VERSION}; re-plan the flow so keys match the cache"
         )
+    assert isinstance(schema, int)  # the current schema, or an older one (`old`)
     toolchains = {
         name: PlanToolchain(
             _get(_obj(tc, f"$.toolchains.{name}"), "module", f"$.toolchains.{name}", _str),
@@ -465,7 +471,8 @@ def from_json(doc: JsonValue) -> Plan:
         flow=_get(root, "flow", "$", _flow),
         toolchains=toolchains,
         actions=tuple(
-            _spec(v, f"$.actions[{i}]") for i, v in enumerate(_get(root, "actions", "$", _list))
+            _spec(v, f"$.actions[{i}]", check_key=not old)
+            for i, v in enumerate(_get(root, "actions", "$", _list))
         ),
         edges=tuple(
             _edge(v, f"$.edges[{i}]") for i, v in enumerate(_get(root, "edges", "$", _list))
@@ -476,10 +483,10 @@ def from_json(doc: JsonValue) -> Plan:
     )
 
 
-def decode(data: bytes) -> Plan:
-    """Parse plan.json bytes; PlanError if they are not a valid plan."""
+def decode(data: bytes, *, any_key_schema: bool = False) -> Plan:
+    """Parse plan.json bytes; PlanError if they are not a valid plan (`from_json`)."""
     try:
         doc = json.loads(data)
     except (ValueError, UnicodeDecodeError) as exc:
         raise PlanError(f"plan.json is not valid JSON: {exc}") from exc
-    return from_json(doc)
+    return from_json(doc, any_key_schema=any_key_schema)

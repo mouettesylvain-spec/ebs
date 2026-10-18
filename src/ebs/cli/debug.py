@@ -63,7 +63,7 @@ def load_target(services: SiteServices, action: str, build: str | None) -> Actio
     digest = record.final_plan or record.plan
     try:
         with cas.open(digest) as f:
-            plan = decode(f.read())
+            plan = decode(f.read(), any_key_schema=True)  # a past build: read as recorded
     except CasError as exc:
         raise CasError(
             f"the plan of build {record.uuid} ({digest}) is not in the CAS of domain "
