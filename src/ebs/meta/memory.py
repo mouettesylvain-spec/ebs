@@ -19,6 +19,7 @@ from ebs.meta._common import (
     aggregate_stats,
     attribution_digests,
     build_matches,
+    build_plans,
     cache_refs,
     check_blobs,
     check_build_filter,
@@ -27,6 +28,7 @@ from ebs.meta._common import (
     check_driver_owner,
     check_event_query,
     check_exportable,
+    check_final_plan,
     check_final_status,
     check_lease_ttl,
     check_pin,
@@ -307,13 +309,22 @@ class InMemoryMetadataStore:
                     return Digest.parse(content)
         return None
 
-    def finish_build(self, build: BuildId, status: BuildStatus) -> None:
+    def finish_build(
+        self, build: BuildId, status: BuildStatus, *, final_plan: Digest | None = None
+    ) -> None:
         check_final_status(status)
+        final_plan = check_final_plan(final_plan)
         with self._lock:
             b = self._build(build)
             if b.view.status != "running":
                 raise MetadataError(f"build {build} is already finished ({b.view.status})")
-            b.view = b.view.model_copy(update={"status": status, "finished_at": self._clock.now()})
+            b.view = b.view.model_copy(
+                update={
+                    "status": status,
+                    "finished_at": self._clock.now(),
+                    "final_plan_digest": final_plan,
+                }
+            )
             # A finished build holds no lease; a pin is a separate root.
             for lease in [i for i, x in self._leases.items() if x.build == build]:
                 del self._leases[lease]
@@ -508,7 +519,7 @@ class InMemoryMetadataStore:
         with self._lock:
             b = self._build(build)
             self._pins.setdefault(build, (by, reason, self._clock.now()))
-            roots = {str(b.view.plan_digest)}
+            roots = {str(d) for d in build_plans(b.view)}
             for payload in b.results.values():
                 roots |= {str(d) for d in attribution_digests(payload)}
             self._touch_rows(b.view.domain, roots)
@@ -816,7 +827,7 @@ class InMemoryMetadataStore:
                 b = self._builds[build_id]
                 if b.view.domain != domain:
                     continue
-                pinned.add(b.view.plan_digest)
+                pinned.update(build_plans(b.view))
                 for payload in b.results.values():
                     pinned.update(attribution_digests(payload))
             leased = {

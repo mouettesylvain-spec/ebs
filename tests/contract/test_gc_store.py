@@ -151,6 +151,17 @@ def test_pinned_build_without_results(g: G) -> None:
     assert g.store.gc_roots(D, g.clock.now()).pinned == {dg("plan")}
 
 
+# P1-09 follow-up: a pinned build also roots the final plan it finished with, so `ebs outputs`
+# and `plan --diff` of an old pinned build keep their paths after the TTL.
+def test_pinned_build_roots_final_plan(g: G) -> None:
+    b = build(g)
+    g.store.finish_build(b, "passed", final_plan=dg("final"))
+    g.store.pin_build(b, by="alice")
+    assert g.store.gc_roots(D, g.clock.now()).pinned == {dg("plan"), dg("final")}
+    g.store.unpin_build(b)
+    assert g.store.gc_roots(D, g.clock.now()).pinned == frozenset()
+
+
 def test_leases_expire(g: G) -> None:
     b = build(g)
     g.store.acquire_lease(D, b, [dg("a")], 60)

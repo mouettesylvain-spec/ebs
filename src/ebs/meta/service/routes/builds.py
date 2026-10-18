@@ -290,7 +290,11 @@ def finish_build(
     caller: Caller,
 ) -> Response:
     _write(deps, caller, build)
-    deps.store.finish_build(BuildId(build), finish.status)  # type: ignore[arg-type]
+    deps.store.finish_build(
+        BuildId(build),
+        finish.status,  # type: ignore[arg-type]
+        final_plan=finish.final_plan,
+    )
     deps.notify(build, deps.owner(build).domain)  # its streams end (P2-05 R2)
     return no_content()
 

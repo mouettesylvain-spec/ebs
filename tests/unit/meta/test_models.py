@@ -204,6 +204,7 @@ def test_digest_sql_pattern_matches_python_rule(value: str) -> None:
 
 DIGEST_COLUMNS = {
     ("builds", "plan_digest"),
+    ("builds", "final_plan_digest"),  # 0012
     ("actions", "key"),
     ("actions", "result_key"),
     ("actions", "toolchain"),  # P2-04

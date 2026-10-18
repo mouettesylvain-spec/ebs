@@ -396,6 +396,7 @@ class BuildView(BuildCreate):
     finished_at: AwareDatetime | None
     pinned: StrictBool
     action_counts: dict[ActionState, _NonNegative]
+    final_plan_digest: DigestField | None = None  # set by finish_build (revision 0012)
 
 
 ParamJson = StrictBool | StrictInt | StrictStr | list[StrictStr]
@@ -559,7 +560,12 @@ class MetadataStore(Protocol):
         driver reads it when the executor reports `done`, in every cache mode)."""
         ...
 
-    def finish_build(self, build: BuildId, status: BuildStatus) -> None: ...
+    def finish_build(
+        self, build: BuildId, status: BuildStatus, *, final_plan: Digest | None = None
+    ) -> None:
+        """Set the final status. `final_plan` is the plan as refined at the end (every key that
+        could be computed), stored in the CAS; a pinned build roots it with its plan."""
+        ...
 
     def record_release_imports(self, build: BuildId, imports: Sequence[ReleaseImport]) -> None:
         """Record which release each import alias of `build` used (P2-03 R5, for `used-by`),
@@ -711,6 +717,7 @@ class BuildFinish(BaseModel):
     model_config = _WIRE
 
     status: Annotated[StrictStr, Field(max_length=64)]
+    final_plan: DigestField | None = None
 
 
 class CreatedBuild(BaseModel):

@@ -600,10 +600,12 @@ class HttpMetadataStore:
         )
         return self._parse(r, OptionalResult, what).result
 
-    def finish_build(self, build: BuildId, status: BuildStatus) -> None:
+    def finish_build(
+        self, build: BuildId, status: BuildStatus, *, final_plan: Digest | None = None
+    ) -> None:
         what = f"finish_build {build}"
         try:
-            body = BuildFinish.model_validate({"status": status})
+            body = BuildFinish.model_validate({"status": status, "final_plan": final_plan})
         except ValidationError as exc:
             raise MetadataError(f"{what}: invalid status {status!r}: {exc}") from None
         self._call("POST", f"/builds/{int(build)}/finish", what, body=body, idempotent=False)

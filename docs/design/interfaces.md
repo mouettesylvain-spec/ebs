@@ -372,7 +372,8 @@ class MetadataStore(Protocol):
     def set_action_state(self, build: BuildId, action_id: str, state: ActionState, **fields: object) -> None: ...
     def record_result(self, build: BuildId, action_id: str, result: ResultManifest) -> None: ...  # also writes provenance edges; never changes state
     def get_result(self, build: BuildId, action_id: str) -> ResultManifest | None: ...  # P0-15: last recorded manifest
-    def finish_build(self, build: BuildId, status: BuildStatus) -> None: ...
+    def finish_build(self, build: BuildId, status: BuildStatus, *,
+                     final_plan: Digest | None = None) -> None: ...
     def get_build(self, build: BuildId) -> BuildView: ...
     def list_actions(self, build: BuildId, *, state: ActionState | None = None) -> list[ActionRow]: ...
     # access (P0), leases and GC (P1-09)
@@ -442,8 +443,12 @@ re-validated on write (values must also pass `canonical_json`).
   runner uses it to fetch the bytes of a `deterministic: false` input, whose id is derived from
   the producer key. `out` edges are never overwritten, so the first recorded bytes win.
 - `BuildStatus = running | passed | failed | infra_failed | cancelled`; `finish_build` takes a
-  final one, once. `BuildView` = `BuildCreate` fields + `id, status, created_at, finished_at,
-  pinned, action_counts` (per-state counts for `ebs status`).
+  final one, once, and optionally the digest of the final (refined) plan, stored and registered
+  in the CAS by the driver. `BuildView` = `BuildCreate` fields + `id, status, created_at,
+  finished_at, pinned, action_counts` (per-state counts for `ebs status`), `final_plan_digest`
+  (None until finished, or when the driver could not store it). **CONTRACT CHANGE (P1-09
+  follow-up, revision 0012):** `final_plan` / `final_plan_digest`, so a pin roots the plan that
+  `ebs outputs`, `plan --diff`, `debug` and `reproduce` read.
 - `Event` (§ 10) is defined in `ebs.meta.api`, because meta (L2) cannot import the driver (L4);
   `ebs.driver.events` re-exports it.
 - Toolchain registry (P1-07, migration `0004`). `ToolchainCreate = {id, name, module, version,
@@ -491,8 +496,8 @@ re-validated on write (values must also pass `canonical_json`).
   with direct database access, never over HTTP): `gc_policy(domain) -> DomainPolicy{ttl_days,
   quota_bytes, high_water, low_water}` (defaults without a `domains` row), `gc_blobs`,
   `gc_cache_entries` (`GcCacheEntry{key, last_access, outputs: content digests, log}`),
-  `gc_roots(domain, now) -> GcRoots{pinned, leased, released}` (pinned: plan, outputs and logs
-  of pinned builds; leased: live leases; released: release outputs, P2-02), `gc_tombstones`,
+  `gc_roots(domain, now) -> GcRoots{pinned, leased, released}` (pinned: plan, final plan,
+  outputs and logs of pinned builds; leased: live leases; released: release outputs, P2-02), `gc_tombstones`,
   `gc_attribution` (`GcAttribution{digest, build, project, step}` for every output and log of a
   recorded result), `register_blobs`, `gc_expire_leases(domain, now) -> int`,
   `gc_delete_cache_entries(domain, keys, *, unused_before) -> deleted keys` (re-checks
@@ -619,7 +624,7 @@ in JSON mode (`model_validate_json`):
 | `POST /builds/{b}/actions/{a}/state` | `set_action_state` | `StateChange` → 204 |
 | `PUT /builds/{b}/actions/{a}/result` | `record_result` | `ResultManifest` → 204 |
 | `GET /builds/{b}/actions/{a}/result` | `get_result` | → `OptionalResult` |
-| `POST /builds/{b}/finish` | `finish_build` | `BuildFinish` → 204 |
+| `POST /builds/{b}/finish` | `finish_build` | `BuildFinish{status, final_plan?}` → 204 |
 | `POST /builds/{b}/leases` | `acquire_lease` | `LeaseRequest{domain, digests, ttl_s}` → `CreatedLease` (P1-09) |
 | `POST /builds/{b}/leases/{id}/renew` | `renew_lease` | `LeaseRequest{digests, ttl_s}` → 204 |
 | `POST /builds/{b}/driver` | `claim_driver` | `DriverClaim{owner, ttl_s}` → `DriverLease` (P2-08) |
@@ -1183,6 +1188,7 @@ def run_build(plan: Plan, *, refiner: Refiner, cas: CAS, store: MetadataStore, e
               handle_sigint: bool = False, handle_sigterm: bool = False,
               owner: str | None = None) -> BuildOutcome: ...   # = start_build + drive_build
 # BuildOutcome(build, uuid, status, exit_code, states: {action_id: final state}, plan (refined), events_path)
+#   The refined plan is stored and passed to finish_build(final_plan=) (a CAS error: None, logged).
 # P2-08: start_build(plan, *, cas, store, workdir, user, cache_mode="read", ci_job=None, clock=None)
 #   -> StartedBuild(build, uuid, plan_digest): build record + queued actions + build_started/plan_ready.
 # drive_build(plan, started, *, refiner, cas, store, executor, workdir, config, clock, retry,

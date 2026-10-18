@@ -831,6 +831,11 @@ export interface components {
          * @description Body of `finish_build`; the store checks that `status` is final.
          */
         BuildFinish: {
+            /**
+             * Final Plan
+             * @default null
+             */
+            final_plan: string | null;
             /** Status */
             status: string;
         };
@@ -862,6 +867,8 @@ export interface components {
             created_at: string;
             /** Domain */
             domain: string;
+            /** Final Plan Digest */
+            final_plan_digest?: string | null;
             /** Finished At */
             finished_at: string | null;
             /** Flow Commit */

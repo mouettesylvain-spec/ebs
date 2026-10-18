@@ -442,3 +442,31 @@ def test_driver_lease_revision_round_trip(empty_db: URL) -> None:
     migrations.downgrade(url, "0010_action_provenance")
     assert not DRIVER_TABLES & _tables(empty_db)
     assert _tables(empty_db) >= P0_TABLES | P1_TABLES | RELEASE_TABLES | IMPORT_TABLES
+
+
+# P1-09 follow-up: revision 0012 adds builds.final_plan_digest (checked as a digest) and drops
+# it on the way back to 0011.
+def test_final_plan_revision_round_trip(empty_db: URL) -> None:
+    url = url_string(empty_db)
+    migrations.upgrade(url, "0011_driver_leases")
+    assert "final_plan_digest" not in _columns(empty_db, "builds")
+    migrations.upgrade(url, "0012_final_plan")
+    assert "final_plan_digest" in _columns(empty_db, "builds")
+    engine = sa.create_engine(empty_db, poolclass=sa.pool.NullPool)
+    try:
+        with engine.connect() as conn:
+            conn.execute(sa.text("INSERT INTO ebs.domains (name) VALUES ('t')"))
+            with pytest.raises(sa.exc.IntegrityError, match="final_plan_digest"):
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO ebs.builds (uuid, domain, project, plan_digest, flow_repo, "
+                        "flow_commit, flow_dirty, user_name, cache_mode, status, created_at, "
+                        "final_plan_digest) VALUES (gen_random_uuid(), 't', 'p', :d, '', '', "
+                        "false, 'u', 'write', 'running', now(), 'not a digest')"
+                    ),
+                    {"d": "sha256:" + "0" * 64},
+                )
+    finally:
+        engine.dispose()
+    migrations.downgrade(url, "0011_driver_leases")
+    assert "final_plan_digest" not in _columns(empty_db, "builds")

@@ -24,7 +24,8 @@ builds(id bigserial PK, uuid uuid unique, domain FK, project text, plan_digest t
        flow_repo text, flow_commit text, flow_dirty bool, user_name text, ci_job text null,
        cache_mode text check in ('off','read','write'),
        status text check in ('running','passed','failed','infra_failed','cancelled'),
-       created_at, finished_at (null iff running), pinned bool default false)
+       created_at, finished_at (null iff running), pinned bool default false,
+       final_plan_digest text null)  -- 0012: the refined plan at finish; a pin roots it
 
 actions(build_id FK, action_id text, step text, key text null, state text, attempts int,
         slurm_job_id text null, pending_reason text null, infra_reason text null,

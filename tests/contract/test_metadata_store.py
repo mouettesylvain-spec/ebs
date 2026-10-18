@@ -1264,3 +1264,23 @@ def test_leases_and_pins_touch(h: Harness) -> None:
     h.store.pin_build(build, by="alice")
     assert h.inspect.blob_last_access("test", dg("plan")) == h.clock.now()
     assert h.inspect.blob_last_access("test", dg("rep")) == h.clock.now()
+
+
+# P1-09 follow-up: the final plan is recorded with the build, and a pin touches it like the
+# plan (the GC roots are in test_gc_store.py).
+def test_finish_build_records_final_plan(h: Harness) -> None:
+    final = dg("final plan")
+    h.store.register_blobs(
+        "test", [BlobRef(digest=d, size=1, kind="file") for d in (dg("plan"), final)]
+    )
+    build = new_build(h, "a")
+    assert h.store.get_build(build).final_plan_digest is None
+    h.store.finish_build(build, "passed", final_plan=final)
+    assert h.store.get_build(build).final_plan_digest == final
+    h.clock.advance(2 * 3600)
+    h.store.pin_build(build, by="alice")
+    assert h.inspect.blob_last_access("test", final) == h.clock.now()
+
+    plain = new_build(h, "a")
+    h.store.finish_build(plain, "failed")  # no final plan: only the plan is rooted
+    assert h.store.get_build(plain).final_plan_digest is None

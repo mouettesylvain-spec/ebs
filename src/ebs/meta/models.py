@@ -118,7 +118,9 @@ builds = sa.Table(
     sa.Column("created_at", _TS, nullable=False),
     sa.Column("finished_at", _TS, nullable=True),
     sa.Column("pinned", sa.Boolean, nullable=False, server_default=sa.false()),
+    sa.Column("final_plan_digest", sa.Text, nullable=True),  # 0012: set by finish_build
     _digest_check("plan_digest"),
+    _digest_check("final_plan_digest"),
     _in_check("cache_mode", CacheMode),
     _in_check("status", BuildStatus),
     sa.CheckConstraint("(status = 'running') = (finished_at IS NULL)", name="finished_at_set"),
