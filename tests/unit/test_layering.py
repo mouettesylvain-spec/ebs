@@ -67,6 +67,9 @@ def test_copy_is_what_gets_analysed(ebs_copy: Path) -> None:
         ("meta/service/_violation.py", "import ebs.cli\n", "Nothing imports cli"),
         # P1-06: the runner reaches meta.client, so the client must not import the service.
         ("meta/client.py", "import ebs.meta.service\n", "runner does not import"),
+        # P3-08 R4: admin tools (FlexLM sync) are never reachable from a build.
+        ("driver/_violation.py", "import ebs.admin.flexlm_sync\n", "Package layering"),
+        ("runner/_violation.py", "import ebs.admin\n", "Package layering"),
     ],
 )
 def test_violation_detected(

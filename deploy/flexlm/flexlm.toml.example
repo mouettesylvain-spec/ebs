@@ -1,0 +1,13 @@
+# /etc/ebs/flexlm.toml for ebs-flexlm-sync (P3-08); see README.md.
+
+[flexlm]
+# lmutil = "lmutil"            # absolute path if not on the service's PATH
+# sacctmgr = "sacctmgr"
+# timeout_s = 10               # per lmstat / sacctmgr call; whole run < 50 s
+state_file = "/var/lib/ebs-flexlm/state.json"   # systemd StateDirectory=ebs-flexlm
+
+# One table per SLURM license server name: the `<server>` of `<feature>@<server>`, i.e.
+# [slurm].license_server of the build hosts (default "flexlm").
+[flexlm.servers.flexlm]
+license = "27000@licserver.example"   # lmstat -c; a triad is "p@h1,p@h2,p@h3"
+features = ["simfeat", "lintfeat"]    # each one a `sacctmgr add resource … server=flexlm`

@@ -1,0 +1,16 @@
+lmutil - synthetic lmstat output for ebs tests (not captured from a real server)
+Flexible License Manager status on Mon 10/20/2026 10:00
+
+[Detecting lmgrd processes...]
+License server status: 27000@lic1.example
+    License file(s) on lic1.example: /opt/licenses/site.lic:
+
+lic1.example: license server UP (MASTER) v11.19.6
+
+Vendor daemon status (on lic1.example):
+
+     vendora: The desired vendor daemon is down. (-97,121)
+Feature usage info:
+
+Users of simfeat:  (Total of 10 licenses issued;  Total of 0 licenses in use)
+

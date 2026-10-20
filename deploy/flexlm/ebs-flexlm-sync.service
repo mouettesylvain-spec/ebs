@@ -1,0 +1,33 @@
+# Push FlexLM licenses in use into SLURM remote-license LastConsumed (P3-08).
+#   install -m 644 ebs-flexlm-sync.service ebs-flexlm-sync.timer /etc/systemd/system/
+#   install -m 640 -g ebs-flexlm flexlm.toml.example /etc/ebs/flexlm.toml   # then edit it
+#   systemctl daemon-reload && systemctl enable --now ebs-flexlm-sync.timer
+# Install on one host with the SLURM client, MUNGE and lmutil (e.g. the slurmdbd host). The
+# ebs-flexlm account must be a SLURM operator (sacctmgr add user ebs-flexlm adminlevel=operator);
+# /opt/ebs is a virtualenv with `pip install ebs`. See README.md.
+
+[Unit]
+Description=Sync FlexLM license usage into SLURM LastConsumed
+Documentation=https://github.com/mouettesylvain-spec/ebs/blob/main/deploy/flexlm/README.md
+After=network-online.target munge.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ebs-flexlm
+Group=ebs-flexlm
+Environment=EBS_CONFIG=/etc/ebs/flexlm.toml
+ExecStart=/opt/ebs/bin/ebs-flexlm-sync
+# The warn-once memory: /var/lib/ebs-flexlm/state.json ([flexlm].state_file).
+StateDirectory=ebs-flexlm
+# Finish (or give up) before the next minute's run.
+TimeoutStartSec=50
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
