@@ -46,6 +46,7 @@ from ebs.flow.model import (
     InputDef,
     OutputDef,
     Resources,
+    SandboxMode,
     StepDef,
     and_constraints,
     input_texts,
@@ -92,6 +93,9 @@ SYSTEM_PATHS: tuple[str, ...] = (
     "/dev/stderr",
 )
 """Absolute paths an argv may name besides the toolchain's install roots (OS image, read-only)."""
+
+SANDBOX_AUTO_KIND_PREFIX = "questa."
+"""Step kinds sandboxed with `auto` when neither the step nor the flow sets `sandbox` (P3-01 R4)."""
 
 IMPORTS_DIR = "imports"
 """Imported releases are staged at `imports/<alias>/<release output>`."""
@@ -294,7 +298,9 @@ class _Run:
             project=self._flow.project,
             flow=info,
             toolchains={
-                name: PlanToolchain(tc.module, tc.id, tc.env)
+                name: PlanToolchain(
+                    tc.module, tc.id, tc.env, tuple(str(r) for r in tc.install_roots)
+                )
                 for name, tc in sorted(self._toolchains.items())
             },
             actions=tuple(actions),
@@ -460,6 +466,7 @@ class _Run:
             domain=self._flow.domain,
             key=None,
             runtime_env=dict(template.runtime_env),
+            sandbox=self._sandbox(step),
         )
         return with_key(spec)
 
@@ -512,6 +519,14 @@ class _Run:
                 )
             files[path] = self._render_str(inst, raw_content, f"config_files[{raw_path!r}]", where)
         return dict(sorted(files.items()))
+
+    def _sandbox(self, step: StepDef) -> SandboxMode:
+        """The step's `sandbox`, else the flow's, else `auto` for Questa kinds (P3-01 R4)."""
+        if step.sandbox is not None:
+            return step.sandbox
+        if self._flow.sandbox is not None:
+            return self._flow.sandbox
+        return "auto" if step.kind.startswith(SANDBOX_AUTO_KIND_PREFIX) else "staging"
 
     def _debug(self, step: StepDef, inst: StepInstance, where: str) -> DebugSpec:
         if step.debug is None:

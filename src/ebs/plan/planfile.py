@@ -15,16 +15,20 @@ Action layout (one object per action, in plan order):
      "outputs": [{"name", "path", "type", "deterministic", "optional"}],
      "config_files": {...}, "resources": {"cpus", "mem", "time"[, "max_parallel"][, "constraint"]
                     [, "retry_on_timeout"]},
-     "licenses": {...}, "debug": {"collect", "max_size", "on_success"}, "domain", "key"}
+     "licenses": {...}, "debug": {"collect", "max_size", "on_success"}, "domain", "key"
+     [, "sandbox"]}
 
 Resources are integers (count, bytes, seconds) or null. `max_parallel` (P1-02, a positive
 integer), `constraint` (P1-03, node features joined by `&`) and `retry_on_timeout` (P1-05, a
 boolean) are present only when set, so plans that do not use them encode exactly as before.
+Likewise an action's `sandbox` (P3-01) is present only when it is not `staging`, and a
+toolchain's `install_roots` only when it has some.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable
 from typing import TypeVar
@@ -33,7 +37,7 @@ from ebs.core.canon import canonical_json
 from ebs.core.digest import Digest, hash_bytes
 from ebs.core.errors import DigestError, PlanError
 from ebs.core.types import JsonValue
-from ebs.flow.model import CONSTRAINT_PATTERN, Resources
+from ebs.flow.model import CONSTRAINT_PATTERN, SANDBOX_MODES, Resources, SandboxMode
 from ebs.plan.keys import KEY_SCHEMA_VERSION, with_key
 from ebs.plan.types import (
     PLAN_FORMAT_VERSION,
@@ -136,6 +140,7 @@ def spec_to_json(spec: ActionSpec) -> JsonValue:
         },
         "domain": spec.domain,
         "key": _opt(spec.key),
+        **({} if spec.sandbox == "staging" else {"sandbox": spec.sandbox}),
     }
 
 
@@ -155,7 +160,12 @@ def to_json(plan: Plan) -> JsonValue:
         "domain": plan.domain,
         "project": plan.project,
         "toolchains": {
-            name: {"module": tc.module, "id": str(tc.id), "env": dict(tc.env)}
+            name: {
+                "module": tc.module,
+                "id": str(tc.id),
+                "env": dict(tc.env),
+                **({"install_roots": list(tc.install_roots)} if tc.install_roots else {}),
+            }
             for name, tc in plan.toolchains.items()
         },
         "actions": [spec_to_json(spec) for spec in plan.actions],
@@ -359,6 +369,27 @@ def _resources(value: object, path: str) -> Resources:
     )
 
 
+def _plan_toolchain(value: object, path: str) -> PlanToolchain:
+    doc = _obj(value, path)
+    roots = _strs(doc.get("install_roots", []), f"{path}.install_roots")
+    for i, root in enumerate(roots):
+        if not root.startswith("/") or os.path.normpath(root) != root:
+            raise _fail(f"{path}.install_roots[{i}]", "an absolute, normalized path", root)
+    return PlanToolchain(
+        _get(doc, "module", path, _str),
+        _get(doc, "id", path, _digest),
+        _get(doc, "env", path, _str_map),
+        roots,
+    )
+
+
+def _sandbox(value: object, path: str) -> SandboxMode:
+    for mode in SANDBOX_MODES:
+        if value == mode:
+            return mode
+    raise _fail(path, " or ".join(repr(m) for m in SANDBOX_MODES), value)
+
+
 def _debug(value: object, path: str) -> DebugSpec:
     doc = _obj(value, path)
     return DebugSpec(
@@ -406,6 +437,7 @@ def _spec_fields(value: object, path: str) -> ActionSpec:
         domain=_get(doc, "domain", path, _str),
         key=_get(doc, "key", path, _opt_digest),
         runtime_env=_get(doc, "runtime_env", path, _str_map),
+        sandbox=_sandbox(doc.get("sandbox", "staging"), f"{path}.sandbox"),
     )
 
 
@@ -457,11 +489,7 @@ def from_json(doc: JsonValue, *, any_key_schema: bool = False) -> Plan:
         )
     assert isinstance(schema, int)  # the current schema, or an older one (`old`)
     toolchains = {
-        name: PlanToolchain(
-            _get(_obj(tc, f"$.toolchains.{name}"), "module", f"$.toolchains.{name}", _str),
-            _get(_obj(tc, f"$.toolchains.{name}"), "id", f"$.toolchains.{name}", _digest),
-            _get(_obj(tc, f"$.toolchains.{name}"), "env", f"$.toolchains.{name}", _str_map),
-        )
+        name: _plan_toolchain(tc, f"$.toolchains.{name}")
         for name, tc in _get(root, "toolchains", "$", _obj).items()
     }
     return Plan(

@@ -137,8 +137,16 @@ def _sim_ids(regression: str) -> set[str]:
 
 @pytest.fixture
 def site(tmp_path: Path, pg_url: URL) -> Site:
-    # A short kill grace keeps the `hang` row (2 s time limit) quick.
-    return Site(tmp_path / "site", pg_url, extra_config="[runner]\nkill_grace_s = 1\n")
+    # A short kill grace keeps the `hang` row (2 s time limit) quick. Questa steps default to
+    # `sandbox: auto` (P3-01): where bwrap works the fake tools must be visible inside it.
+    return Site(
+        tmp_path / "site",
+        pg_url,
+        extra_config=(
+            "[runner]\nkill_grace_s = 1\n"
+            f"[sandbox]\nro_binds = [{json.dumps(str(FAKES_BIN.parent))}]\n"
+        ),
+    )
 
 
 @pytest.fixture

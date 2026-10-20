@@ -2448,6 +2448,20 @@
             "title": "Host",
             "type": "string"
           },
+          "sandbox": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\x00-\\x1f]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox"
+          },
           "slurm_job_id": {
             "anyOf": [
               {

@@ -146,8 +146,9 @@ forbidden_modules =
 # The runner runs on compute nodes with a minimal dependency set (overview.md): it reads a plan
 # (plan.types/keys/planfile), stages from the CAS, runs a rule's classify and posts through the
 # metadata store. Planning, sources, toolchain capture and the other L3/L4 packages stay out (P0-13).
+# It runs the tool through `ebs.sandbox` (P3-01), which is kept as minimal (contract below).
 [importlinter:contract:runner-imports-only-allowed]
-name = runner imports only core, config, flow, cas, plan (data), rules, meta store
+name = runner imports only core, config, flow, cas, plan data, rules, meta, sandbox
 type = forbidden
 source_modules =
     ebs.runner
@@ -157,10 +158,30 @@ forbidden_modules =
     ebs.sources
     ebs.toolchain
     ebs.exec
-    ebs.sandbox
     ebs.gc
     ebs.release
     ebs.cli
+
+# The sandbox builds argvs and probes the node: it needs only core and the flow's SandboxMode.
+[importlinter:contract:sandbox-minimal]
+name = sandbox imports only core and flow
+type = forbidden
+source_modules =
+    ebs.sandbox
+forbidden_modules =
+    ebs.config
+    ebs.domains
+    ebs.cas
+    ebs.sources
+    ebs.plan
+    ebs.rules
+    ebs.meta
+    ebs.toolchain
+    ebs.exec
+    ebs.runner
+    ebs.gc
+    ebs.release
+    ebs.ci
 
 [importlinter:contract:rules-plugins]
 name = rules import only core, flow and rules.api

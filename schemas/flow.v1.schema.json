@@ -576,6 +576,23 @@
           "default": {},
           "title": "Config Files",
           "type": "object"
+        },
+        "sandbox": {
+          "anyOf": [
+            {
+              "enum": [
+                "auto",
+                "bwrap",
+                "staging"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sandbox"
         }
       },
       "required": [
@@ -676,6 +693,23 @@
       "title": "Steps",
       "type": "object",
       "additionalProperties": false
+    },
+    "sandbox": {
+      "anyOf": [
+        {
+          "enum": [
+            "auto",
+            "bwrap",
+            "staging"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sandbox"
     }
   },
   "required": [

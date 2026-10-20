@@ -25,7 +25,16 @@ from ebs.plan.planfile import (
     spec_to_json,
     to_json,
 )
-from ebs.plan.types import ActionSpec, DebugSpec, FlowInfo, GitInfo, ImportInput, InputRef, Plan
+from ebs.plan.types import (
+    ActionSpec,
+    DebugSpec,
+    FlowInfo,
+    GitInfo,
+    ImportInput,
+    InputRef,
+    Plan,
+    PlanToolchain,
+)
 from tests.helpers.plan import ARCH_STEPS, RTL, arch_flow, planner, resources
 from tests.helpers.plan_strategies import specs, texts
 from tests.helpers.runner import shell_spec
@@ -167,6 +176,8 @@ def test_top_level_layout(cas: FsCAS, tmp_path: Path) -> None:
         "module": "questa/2025.2",
         "id": doc["actions"][0]["toolchain"]["id"],  # type: ignore[call-overload,index]
         "env": {"TOOL_HOME": "/opt/eda-tools/questa/2025.2"},
+        # P3-01: what a sandbox mounts read-only for the tool.
+        "install_roots": ["/opt/eda-tools/questa/2025.2"],
     }
 
 
@@ -192,6 +203,16 @@ def _plan_doc(cas: FsCAS, tmp_path: Path) -> dict[str, Any]:
         (lambda d: d.update(edges=[["a", "b"]]), r"edges"),
         (lambda d: d["toolchains"]["questa"].pop("env"), r"toolchains\.questa.*env"),
         (lambda d: d["toolchains"]["questa"]["env"].update(X=1), r"toolchains\.questa\.env"),
+        # P3-01: install roots are mounted as is, so they must be absolute and normalized.
+        (
+            lambda d: d["toolchains"]["questa"].update(install_roots=["/eda/../home"]),
+            r"install_roots\[0\]",
+        ),
+        (
+            lambda d: d["toolchains"]["questa"].update(install_roots=["eda/questa"]),
+            r"install_roots\[0\]",
+        ),
+        (lambda d: d["actions"][0].update(sandbox="docker"), r"actions\[0\]\.sandbox"),
         (lambda d: d["actions"][0]["argv"].append("-x"), r"actions\[0\]\.key does not match"),
         (
             lambda d: d["actions"][0]["inputs"][0].update(id=None),
@@ -236,3 +257,15 @@ def test_older_key_schema_read_as_recorded(cas: FsCAS, tmp_path: Path) -> None:
         doc["key_schema"] = bad
         with pytest.raises(PlanError, match="key schema"):
             decode(json.dumps(doc).encode(), any_key_schema=True)
+
+
+# P3-01: a toolchain without install roots encodes exactly as before (no `install_roots`).
+def test_install_roots_only_when_set() -> None:
+    tc = PlanToolchain("t/1", hash_bytes(b"tc"))
+    plan = Plan("x", "test", "demo", FlowInfo(), {"t": tc}, (), ())
+    doc = json.loads(encode(plan))
+    assert doc["toolchains"]["t"] == {"module": "t/1", "id": str(tc.id), "env": {}}
+    with_roots = dataclasses.replace(
+        plan, toolchains={"t": PlanToolchain("t/1", tc.id, {}, ("/eda",))}
+    )
+    assert decode(encode(with_roots)).toolchains["t"].install_roots == ("/eda",)

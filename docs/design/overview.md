@@ -58,6 +58,7 @@ L5  cli
   import `plan`.
 - `runner` must not import `driver`, `plan.planner` or `meta.service` (it runs on compute nodes
   with a minimal dependency set: it reads an ActionSpec and talks to CAS + metadata client).
+  It runs tools through `sandbox` (P3-01), which imports only `core` and `flow`.
 - `rules` plugins may import `core`, `flow`, `rules.api` only.
 - Nothing imports `cli`.
 
