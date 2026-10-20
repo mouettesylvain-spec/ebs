@@ -351,6 +351,7 @@ class RunnerInfo(BaseModel):
     version: _Name
     host: _Name
     slurm_job_id: _Name | None = None
+    sandbox: _Name | None = None  # P3-01 R5: staging | bwrap | apptainer; None before P3-01
 
 
 class ResultManifest(BaseModel):

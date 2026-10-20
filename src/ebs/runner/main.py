@@ -4,10 +4,10 @@ Lifecycle (architecture.md "Runner lifecycle on a node"): load the plan from the
 → create `<scratch>/<build>/<action-hash>/{work,home,tmp,logs}` (marked with the SLURM job id
 for the node epilog) → stage the declared inputs (large ones linked read-only from the CAS) and
 config files → verify every input digest (I10) → emit `running`, run the tool with a scrubbed
-env (I11) and a timeout, mirroring its output to the live log and renewing the build lease →
-classify → hash and upload outputs and log → post the ResultManifest (and the cache entry when
-the build writes the cache) → copy debug files to the debug area → delete the scratch
-directory, whatever happened (I16).
+env (I11) and a timeout inside the action's sandbox (P3-01: staging only, bwrap or apptainer),
+mirroring its output to the live log and renewing the build lease → classify → hash and upload
+outputs and log → post the ResultManifest (and the cache entry when the build writes the cache)
+→ copy debug files to the debug area → delete the scratch directory, whatever happened (I16).
 
 Exit codes: 0 result posted (passed or failed), 64 bad usage, 70 internal error, 75 infra
 failure (temporary; the driver retries), 76 input verification failed.
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import json
 import os
 import signal
@@ -34,8 +35,17 @@ from ebs.cas.fs import FsCAS
 from ebs.config import config_paths, load_config
 from ebs.core.clock import Clock, SystemClock
 from ebs.core.digest import Digest, hash_bytes
-from ebs.core.errors import CasError, ConfigError, DigestError, EbsError, MetadataError, PlanError
+from ebs.core.errors import (
+    CasError,
+    ConfigError,
+    DigestError,
+    EbsError,
+    MetadataError,
+    PlanError,
+    SandboxError,
+)
 from ebs.core.log import get_logger
+from ebs.flow.model import SandboxMode
 from ebs.meta.api import (
     LEASE_TTL_S,
     BuildId,
@@ -79,6 +89,8 @@ from ebs.runner.livelog import LiveLog
 from ebs.runner.result import make_manifest
 from ebs.runner.run import ToolRun, run_tool
 from ebs.runner.stage import Scratch, prepare_work, resolve_contents
+from ebs.sandbox.api import Mount, Sandbox, undeclared_read_hint
+from ebs.sandbox.detect import Detection, detect
 
 __all__ = [
     "EXIT_INFRA",
@@ -95,6 +107,7 @@ log = get_logger(__name__)
 
 _INFRA_REASONS: dict[str, InfraReason] = {"license": "license", "timeout": "timeout"}
 _INTERRUPTED_DEBUG_MAX: Final = 16 << 20  # after SIGTERM, cleanup must fit in SLURM's KillWait
+_LOG_HEAD: Final = 4096  # bytes of the tool log searched for a sandbox setup error
 
 Status = Literal["passed", "failed", "infra"]
 
@@ -139,6 +152,7 @@ class Runner:
         out: TextIO | None = None,
         err: TextIO | None = None,
         renew_lease: Callable[[], None] | None = None,
+        sandboxes: Callable[[SandboxMode], Detection] | None = None,
     ) -> None:
         self._cas = cas
         self._store = store
@@ -150,6 +164,9 @@ class Runner:
         self._out = out or sys.stdout
         self._err = err or sys.stderr
         self._renew_lease = renew_lease  # P1-09 wires the build lease; None until then
+        self._sandboxes = sandboxes or functools.partial(
+            detect, apptainer_image=settings.sandbox_apptainer_image
+        )
 
     def run(self, req: RunRequest) -> int:
         """Run the action; returns the exit code. Never raises (except BaseException)."""
@@ -194,6 +211,7 @@ class Runner:
                 f"{spec.resources.time!r}; the plan must hold seconds"
             )
 
+        sandbox = self._sandbox(spec)
         build_dir = "local" if req.build is None else str(req.build)
         job_id = self._caller_env.get("SLURM_JOB_ID") or None
         try:
@@ -236,8 +254,16 @@ class Runner:
                 if live is not None:
                     live.tick()
 
+            try:
+                argv = sandbox.wrap(
+                    spec.argv, self._mounts(plan, spec, scratch), env, os.path.abspath(scratch.work)
+                )
+            except SandboxError as exc:  # a path the sandbox cannot express: fix the config
+                raise UsageError(
+                    f"cannot run the action in the {sandbox.name} sandbox: {exc}"
+                ) from exc
             run = run_tool(
-                spec.argv,
+                argv,
                 cwd=scratch.work,
                 env=env,
                 log_path=log_path,
@@ -248,7 +274,7 @@ class Runner:
                 on_poll=poll,
             )
             code, attempt.status = self._finish(
-                req, spec, key, rule, cache_mode, run, scratch, log_path
+                req, spec, key, rule, cache_mode, run, scratch, log_path, sandbox
             )
             return code
         except InfraError as exc:
@@ -273,6 +299,7 @@ class Runner:
         run: ToolRun,
         scratch: Scratch,
         log_path: Path,
+        sandbox: Sandbox,
     ) -> tuple[int, Status]:
         # A program that cannot start is treated as infra, not FAILED: it usually means a node or
         # toolchain install problem (automount not ready, tool missing on this node), and a
@@ -287,9 +314,16 @@ class Runner:
                 reason="timeout",
             )
             raise _ran(timeout, run)
-        classification = rule.classify(
-            run.exit_code, log_tail(log_path), output_paths(spec, scratch.work)
-        )
+        setup_error = sandbox.setup_error(run.exit_code, _log_head(log_path))
+        if setup_error is not None:  # the tool never started: not a result of the tool
+            raise _ran(InfraError(f"the {sandbox.name} sandbox failed: {setup_error}"), run)
+        tail = log_tail(log_path)
+        classification = rule.classify(run.exit_code, tail, output_paths(spec, scratch.work))
+        hint = None
+        if classification.status != "passed":
+            hint = undeclared_read_hint(tail, sandbox=sandbox.name, step=spec.step)
+        if hint is not None:  # R3: before an infra raise too, so the driver's log shows it
+            self._err.write(f"ebs-runner: {spec.action_id}: hint: {hint}\n")
         if classification.status == "infra":
             reason = classification.reason or "other"
             infra = InfraError(
@@ -307,6 +341,8 @@ class Runner:
         summary = dict(rule.summarize(output_paths(spec, scratch.work), log_path))
         if collected.missing:
             summary["missing_output"] = ",".join(collected.missing)
+        if hint is not None:
+            summary["sandbox_hint"] = hint
         manifest = make_manifest(
             spec,
             key=key,
@@ -319,6 +355,7 @@ class Runner:
                 version=ebs.__version__,
                 host=self._host,
                 slurm_job_id=self._caller_env.get("SLURM_JOB_ID") or None,
+                sandbox=sandbox.name,
             ),
         )
         status: Status = "passed" if manifest.status == "passed" else "failed"
@@ -345,6 +382,30 @@ class Runner:
             raise InfraError(f"cannot post the result: {exc}") from exc
         log.info("result posted", action_id=spec.action_id, status=manifest.status)
         return EXIT_OK, status
+
+    # --- sandbox (P3-01) ----------------------------------------------------------------------
+
+    def _sandbox(self, spec: ActionSpec) -> Sandbox:
+        """The sandbox for the action's mode on this node; InfraError if it cannot have it."""
+        try:
+            found = self._sandboxes(spec.sandbox)
+        except SandboxError as exc:
+            raise InfraError(f"cannot run the action in its sandbox: {exc}") from exc
+        # stderr, not the logger: without a store the manifest is printed on stdout.
+        if found.warning is not None:
+            self._err.write(f"ebs-runner: {spec.action_id}: warning: {found.warning}\n")
+        return found.sandbox
+
+    def _mounts(self, plan: Plan, spec: ActionSpec, scratch: Scratch) -> list[Mount]:
+        """Toolchain install roots, site binds and the domain's CAS (large inputs are links
+        into it) read-only, then the action's scratch read-write, at the same paths inside."""
+        ro: list[str] = []
+        if spec.toolchain is not None:
+            ro += plan.toolchains[spec.toolchain.name].install_roots  # checked by toolchain_env
+        ro += self._settings.sandbox_ro_binds
+        ro.append(os.path.abspath(self._settings.cas_root_for(spec.domain) / spec.domain))
+        root = os.path.abspath(scratch.root)
+        return [*(Mount(p, p) for p in dict.fromkeys(ro)), Mount(root, root, writable=True)]
 
     # --- grid: running event, debug area, scratch ---------------------------------------------
 
@@ -576,6 +637,14 @@ class Runner:
             return self._store.get_build(build).cache_mode
         except MetadataError as exc:
             raise InfraError(f"cannot read build {build}: {exc}") from exc
+
+
+def _log_head(path: Path) -> str:
+    try:
+        with open(path, "rb") as f:
+            return f.read(_LOG_HEAD).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def _ran(error: InfraError, run: ToolRun) -> InfraError:

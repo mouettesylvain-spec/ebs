@@ -1,0 +1,31 @@
+4001  execve("/usr/bin/make", ["make", "-C", "flows/lint", "lint"], 0x7ffd5b1e3f08 /* 12 vars */) = 0
+4001  access("/etc/ld.so.preload", R_OK) = -1 ENOENT (No such file or directory)
+4001  openat(AT_FDCWD</scratch/repro-1000/lint-x1/work>, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3</etc/ld.so.cache>
+4001  chdir("flows/lint")               = 0
+4001  openat(AT_FDCWD</scratch/repro-1000/lint-x1/work/flows/lint>, "Makefile", O_RDONLY) = 3</scratch/repro-1000/lint-x1/work/flows/lint/Makefile>
+4001  newfstatat(AT_FDCWD</scratch/repro-1000/lint-x1/work/flows/lint>, "../../rtl/core/alu.sv", {st_mode=S_IFREG|0644, st_size=120, ...}, 0) = 0
+4001  stat("../../rtl/core/regs.sv", {st_mode=S_IFREG|0644, st_size=80, ...}) = 0
+4001  stat("../../rtl", {st_mode=S_IFDIR|0755, st_size=4096, ...}) = 0
+4001  openat(AT_FDCWD</scratch/repro-1000/lint-x1/work/flows/lint>, "/home/alice/.lintrc", O_RDONLY) = 4</home/alice/.lintrc>
+4001  openat(AT_FDCWD</scratch/repro-1000/lint-x1/work/flows/lint>, "/proj/cpu/common/defs.mk", O_RDONLY) = 4</proj/cpu/common/defs.mk>
+4001  openat(AT_FDCWD</scratch/repro-1000/lint-x1/work/flows/lint>, "../../common/rules.mk", O_RDONLY) = -1 ENOENT (No such file or directory)
+4001  openat(AT_FDCWD</scratch/repro-1000/lint-x1/work/flows/lint>, "../../RCS/rules.mk,v", O_RDONLY) = -1 ENOENT (No such file or directory)
+4001  openat(AT_FDCWD</scratch/repro-1000/lint-x1/work/flows/lint>, "reports/lint.txt", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 5</scratch/repro-1000/lint-x1/work/flows/lint/reports/lint.txt>
+4001  vfork( <unfinished ...>
+4002  execve("/eda/lintool-1.0/bin/lintool", ["lintool", "-batch"], 0x55d0c9e2a2c8 /* 12 vars */ <unfinished ...>
+4001  <... vfork resumed>)              = 4002
+4002  <... execve resumed>)             = 0
+4001  wait4(-1,  <unfinished ...>
+4002  openat(AT_FDCWD, "/eda/lintool-1.0/lib/rules.db", O_RDONLY) = 3
+4002  openat(AT_FDCWD, "reports/lint.txt", O_RDONLY) = 3
+4002  openat(AT_FDCWD, "/cas/test/blobs/sha256/ab/cd/abcd0123", O_RDONLY) = 3
+4002  openat(AT_FDCWD, "/home/alice/.lintrc", O_RDONLY) = 3
+4002  openat(AT_FDCWD, "/opt/vendor/patch.tcl", O_RDONLY) = 4
+4002  openat(AT_FDCWD, "/proc/self/status", O_RDONLY) = 3
+4002  openat(AT_FDCWD, "/scratch/repro-1000/lint-x1/home/.lintoolrc", O_RDONLY) = 3
+4002  exit_group(0)                     = ?
+4002  +++ exited with 0 +++
+4001  <... wait4 resumed>[{WIFEXITED(s) && WEXITSTATUS(s) == 0}], 0, NULL) = 4002
+4001  --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=4002, si_uid=1000, si_status=0, si_utime=0, si_stime=0} ---
+4001  exit_group(0)                     = ?
+4001  +++ exited with 0 +++

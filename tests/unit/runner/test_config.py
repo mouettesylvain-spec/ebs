@@ -53,6 +53,13 @@ def test_from_config() -> None:
         ({"cas": {"root": "/c"}, "debug": {"root": "debug"}}, r"\[debug\]\.root"),
         ({"cas": {"root": "/c"}, "debug": {"max_size": -1}}, r"\[debug\]\.max_size"),
         ({"cas": {"root": "/c"}, "runner": {"heartbeat_s": 0}}, r"heartbeat_s"),
+        # P3-01
+        ({"cas": {"root": "/c"}, "sandbox": {"bogus": 1}}, r"bogus"),
+        ({"cas": {"root": "/c"}, "sandbox": {"ro_binds": ["rel"]}}, r"ro_binds"),
+        ({"cas": {"root": "/c"}, "sandbox": {"ro_binds": ["/a/../b"]}}, r"ro_binds"),
+        ({"cas": {"root": "/c"}, "sandbox": {"ro_binds": "/a"}}, r"ro_binds"),
+        ({"cas": {"root": "/c"}, "sandbox": {"apptainer_image": "os.sif"}}, r"apptainer_image"),
+        ({"cas": {"root": "/c"}, "sandbox": {"apptainer_image": 3}}, r"apptainer_image"),
     ],
 )
 def test_invalid(config: dict[str, dict[str, object]], message: str) -> None:
@@ -81,3 +88,18 @@ def test_grid_settings() -> None:
     assert s.debug_root == Path("/debug")
     assert s.debug_max_size == 10 << 20
     assert s.heartbeat_s == 15
+
+
+# P3-01 R1: the Apptainer image and extra read-only binds come from [sandbox].
+def test_sandbox_section() -> None:
+    settings = RunnerSettings.from_config(
+        {
+            "cas": {"root": "/c"},
+            "sandbox": {"apptainer_image": "/img/os.sif", "ro_binds": ["/site/tools", "/mods"]},
+        },
+        {},
+    )
+    assert settings.sandbox_apptainer_image == "/img/os.sif"
+    assert settings.sandbox_ro_binds == ("/site/tools", "/mods")
+    default = RunnerSettings.from_config({"cas": {"root": "/c"}}, {})
+    assert (default.sandbox_apptainer_image, default.sandbox_ro_binds) == (None, ())

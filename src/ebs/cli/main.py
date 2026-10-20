@@ -12,6 +12,7 @@ from ebs import __version__
 from ebs.cli import (
     build,
     channel,
+    discover,
     domain,
     gc,
     lock,
@@ -89,6 +90,7 @@ app.command("status")(status.status_command)
 app.command("logs")(logs.logs_command)
 app.command("debug")(debug_cli.debug_command)
 app.command("reproduce")(reproduce.reproduce_command)
+app.command("discover")(discover.discover_command)
 app.command("outputs")(outputs.outputs_command)
 app.command("fetch")(outputs.fetch_command)
 app.command("gc")(gc.gc_command)

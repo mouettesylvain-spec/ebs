@@ -103,7 +103,11 @@ jobs:
       - run: uv sync --all-extras  # blake3 too: mypy and its tests import it
       - name: Slow unit tests
         run: uv run --extra dev pytest -m "unit and slow and not perf" -x -q
+      # P3-02: `ebs discover` is tested under real strace; EBS_REQUIRE_STRACE turns its skip into a failure.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends strace
       - name: Integration tests
+        env:
+          EBS_REQUIRE_STRACE: "1"
         run: uv run --extra dev pytest -m "integration and not perf" -x -q --ignore=tests/e2e --junitxml=junit-integration.xml
       - name: End-to-end tests
         run: uv run --extra dev pytest tests/e2e -x -q --junitxml=junit-e2e.xml

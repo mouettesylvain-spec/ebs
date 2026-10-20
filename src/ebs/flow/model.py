@@ -11,7 +11,7 @@ from __future__ import annotations
 import difflib
 import re
 from collections.abc import Callable, Mapping
-from typing import Annotated, Any, Literal, NoReturn
+from typing import Annotated, Any, Literal, NoReturn, TypeAlias
 
 from pydantic import (
     AfterValidator,
@@ -32,6 +32,7 @@ from pydantic_core import PydanticCustomError
 
 __all__ = [
     "NAME_PATTERN",
+    "SANDBOX_MODES",
     "SUPPORTED_VERSIONS",
     "DebugDef",
     "Flow",
@@ -41,6 +42,7 @@ __all__ = [
     "MatrixDef",
     "OutputDef",
     "Resources",
+    "SandboxMode",
     "StepDef",
     "ToolchainRef",
     "check_ref_syntax",
@@ -52,6 +54,12 @@ __all__ = [
 ]
 
 SUPPORTED_VERSIONS = (1,)
+
+SandboxMode: TypeAlias = Literal["auto", "bwrap", "staging"]
+"""How an action is isolated (P3-01): `staging` = v1 strict staging only, `bwrap` = bubblewrap
+(fails if the node cannot run it), `auto` = bubblewrap, else Apptainer, else staging-only with a
+warning (open decision D6). Never part of the action key."""
+SANDBOX_MODES: tuple[SandboxMode, ...] = ("auto", "bwrap", "staging")
 
 NAME_PATTERN = r"^[a-z][a-z0-9_]{0,62}$"
 """Step and output names (R4): lowercase letter, then up to 62 lowercase letters, digits or `_`."""
@@ -593,6 +601,7 @@ class StepDef(_Model):
     target: Template | None = None
     debug: DebugDef | None = None
     config_files: dict[ConfigFilePath, Template] = {}
+    sandbox: SandboxMode | None = None  # overrides the flow's `sandbox` (P3-01)
 
     @model_validator(mode="after")
     def _script_or_command(self) -> StepDef:
@@ -629,6 +638,7 @@ class Flow(_Model):
     imports: dict[Ident, ImportDef] = {}
     toolchains: dict[Ident, ToolchainRef] = {}
     steps: dict[StepName, StepDef] = {}
+    sandbox: SandboxMode | None = None  # unset: `auto` for questa.* kinds, else `staging`
 
     @model_validator(mode="after")
     def _toolchains_declared(self) -> Flow:

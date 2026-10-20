@@ -55,7 +55,7 @@ from ebs.runner.reproduce import (
 )
 from ebs.runner.run import ToolRun
 
-__all__ = ["reproduce_command", "salloc_argv"]
+__all__ = ["cli_error", "reproduce_command", "salloc_argv"]
 
 _MIB: Final = 1 << 20
 DIR_OPTION = typer.Option(
@@ -126,7 +126,7 @@ def salloc_argv(
     return [command("salloc"), *job_options(opts), command("srun"), "--pty", *inner]
 
 
-def _cli_error(exc: RunnerError) -> EbsError:
+def cli_error(exc: RunnerError) -> EbsError:
     """Runner errors as the CLI's: usage (exit 2) or infrastructure (exit 3)."""
     if isinstance(exc, RunnerUsageError):
         return UsageError(str(exc))
@@ -301,7 +301,7 @@ def reproduce_command(
             },
         )
     except RunnerError as exc:
-        raise _cli_error(exc) from exc
+        raise cli_error(exc) from exc
     doc: dict[str, Any] = {
         "v": 1,
         "uuid": str(record.uuid),

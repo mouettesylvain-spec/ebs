@@ -58,6 +58,7 @@ L5  cli
   import `plan`.
 - `runner` must not import `driver`, `plan.planner` or `meta.service` (it runs on compute nodes
   with a minimal dependency set: it reads an ActionSpec and talks to CAS + metadata client).
+  It runs tools through `sandbox` (P3-01), which imports only `core` and `flow`.
 - `rules` plugins may import `core`, `flow`, `rules.api` only.
 - Nothing imports `cli`.
 
@@ -183,6 +184,11 @@ release = ""
 
 [release.gates]                # P2-02: channel (or "name:channel") => gate flow project
 # stable = "cpu-gate"          # read by the CLI on a direct database, else by the service
+
+[release.signing]              # P3-03: `ebs release attest` / `verify-signature`
+# key = "~/.ssh/team-release"  # team SSH key (or its .pub, key in ssh-agent); --key overrides
+# allowed_signers = "/etc/ebs/allowed_signers"   # ssh-keygen ALLOWED SIGNERS; --allowed-signers
+# ssh_keygen = "ssh-keygen"    # OpenSSH >= 8.2; signatures use namespace "ebs-release"
 
 [ci]                           # P2-07: `ebs build --ci`
 # build_url = "https://ebs.example/builds/{uuid}"   # link in ebs-summary.md ({build}, {uuid})

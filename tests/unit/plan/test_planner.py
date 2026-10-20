@@ -391,6 +391,7 @@ def test_make_step(cas: FsCAS, tmp_path: Path) -> None:
         "vc_spyglass/2025.06",
         lint.toolchain.id,
         {"TOOL_HOME": str(TOOLS_ROOT / "vc_spyglass/2025.06")},  # the runner sets it (P0-13)
+        (str(TOOLS_ROOT / "vc_spyglass/2025.06"),),  # the sandbox mounts it (P3-01)
     )
 
 

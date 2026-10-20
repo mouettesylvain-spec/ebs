@@ -1,7 +1,9 @@
-"""Runner settings from ebs.toml: `[cas]`, `[scratch]`, `[debug]`, `[runner]`, `[rules]`."""
+"""Runner settings from ebs.toml: `[cas]`, `[scratch]`, `[debug]`, `[runner]`, `[rules]`,
+`[sandbox]`."""
 
 from __future__ import annotations
 
+import os
 import string
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -30,6 +32,7 @@ DEFAULT_KILL_GRACE_S: Final = 30.0
 DEFAULT_DEBUG_MAX_SIZE: Final = 2 << 30  # 2 GiB, for steps whose `debug.max_size` is unset
 DEFAULT_HEARTBEAT_S: Final = 60.0
 _RUNNER_KEYS: Final = frozenset({"passthrough_env", "max_log", "kill_grace_s", "heartbeat_s"})
+_SANDBOX_KEYS: Final = frozenset({"apptainer_image", "ro_binds"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +48,10 @@ class RunnerSettings:
     debug_max_size: int = DEFAULT_DEBUG_MAX_SIZE
     heartbeat_s: float = DEFAULT_HEARTBEAT_S  # lease renewal period while the tool runs
     domains: Domains = field(default_factory=lambda: Domains({}))  # P2-01: per-domain roots
+    # P3-01: extra host dirs a sandboxed tool sees read-only (e.g. the module tree), and the OS
+    # image for the Apptainer fallback (None: no Apptainer fallback).
+    sandbox_ro_binds: tuple[str, ...] = ()
+    sandbox_apptainer_image: str | None = None
 
     def cas_root_for(self, domain: str) -> Path:
         """The root holding `<domain>/` of the domain's CAS (`[[domains]]`, else [cas].root)."""
@@ -89,6 +96,24 @@ class RunnerSettings:
         ):
             raise ConfigError(f"[debug].root must be an absolute path, got {debug_root!r}")
         rules = config.get("rules", {})
+        sandbox = config.get("sandbox", {})
+        unknown = sorted(set(sandbox) - _SANDBOX_KEYS)
+        if unknown:
+            raise ConfigError(
+                f"unknown key(s) in [sandbox]: {', '.join(unknown)}; "
+                f"expected {', '.join(sorted(_SANDBOX_KEYS))}"
+            )
+        ro_binds = _strings(sandbox.get("ro_binds", ()), "[sandbox].ro_binds")
+        image = sandbox.get("apptainer_image")
+        for where, path in [("[sandbox].apptainer_image", image)] + [
+            ("[sandbox].ro_binds", p) for p in ro_binds
+        ]:
+            if path is not None and (
+                not isinstance(path, str)
+                or not path.startswith("/")
+                or os.path.normpath(path) != path
+            ):
+                raise ConfigError(f"{where} must be absolute, normalized paths, got {path!r}")
         return cls(
             cas_root=Path(root),
             scratch_dir=Path(scratch),
@@ -112,6 +137,8 @@ class RunnerSettings:
                 runner.get("heartbeat_s", DEFAULT_HEARTBEAT_S), "[runner].heartbeat_s"
             ),
             domains=Domains.from_config(config),
+            sandbox_ro_binds=ro_binds,
+            sandbox_apptainer_image=image if isinstance(image, str) else None,
         )
 
 
