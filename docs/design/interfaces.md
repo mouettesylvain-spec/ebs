@@ -373,6 +373,23 @@ Tree symlinks are created last and must resolve inside `dest`, else `CasError`. 
 also has `blob_path`, `tree_path`, `iter_objects() -> Iterator[(Digest, size, "file" | "tree")]`
 and `cleanup_tmp(max_age=24h, *, dry_run=False) -> int` (GC, P1-09; `dry_run` only counts).
 
+**S3 backend** (`ebs.cas.s3`, P3-07, extra `[s3]`): `S3CAS(client, domain, S3Settings, *,
+algo="sha256")` or `S3CAS.connect(settings, domain)` (boto3, standard AWS credential chain).
+`S3Settings(bucket, prefix="", endpoint_url=None, region=None, multipart_threshold=64 MiB,
+part_size=64 MiB, download_workers=8, conditional_put=True)`; `bucket` is one shared bucket
+(prefix per domain) or a template with `{domain}` (one bucket per domain). Buckets are created by
+the deployment. Keys mirror the fs layout below `prefix`:
+`<prefix>/<domain>/blobs/<algo>/<ab>/<cd>/<hex>` and `…/trees/…/<hex>.json` (`object_key(d,
+kind)`); there is no `tmp/` (a PUT or a completed multipart upload is atomic, I8). Objects above
+`multipart_threshold` are multipart uploads with a `ChecksumSHA256` per part, rehashed while
+uploading (a source that changes meanwhile is aborted, never stored under a stale digest);
+smaller ones are one PUT with `ChecksumSHA256`. Writes use `If-None-Match: *` (412 = another
+writer won, not an error); a 501 switches that store to HEAD-then-PUT. `local_path` is always
+None, so `materialize` downloads (`symlink`/`hardlink` modes raise `CasError`); blobs larger than
+one part are fetched as parallel ranged GETs (`download(d, fd)`, which `materialize` uses for any
+backend that has it). The CAS contract suite runs over `fs`, `s3-fake` (in-memory client, unit)
+and `s3` (a real S3-compatible server, integration); `fs_only` marks tests needing local paths.
+
 ## 6. Metadata — `ebs.meta.api`
 
 ```python
