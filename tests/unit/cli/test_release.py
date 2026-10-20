@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from ebs.core.errors import ExitCode
 from ebs.meta.api import OutputResult
+from tests.helpers.attest import released, team_key
 from tests.helpers.cli import Site, TestServices, write_site
 from tests.helpers.release import Action, finish, out
 
@@ -107,3 +109,64 @@ def test_release_export(tmp_path: Path) -> None:
     nowhere = site.invoke(["release", "export", "cpu", "1", "--domain", "test", "--to", "gone"])
     assert nowhere.exit_code == ExitCode.USAGE
     assert "not a member of 'gone'" in nowhere.output
+
+
+# P3-03 R2, R3: `ebs release attest` signs with the configured team key; `verify-signature`
+# checks the envelope and blobs with no metadata store at all.
+def test_release_attest_and_verify(tmp_path: Path) -> None:
+    key = team_key(tmp_path / "keys")
+    write_site(tmp_path, config_extra=f'[release.signing]\nkey = "{key.key}"\n')
+    site = Site(tmp_path, TestServices(tmp_path))
+    rel = released(site.services.cas("test"), tmp_path / "work", site.services.memory_store)
+    made = site.invoke(["release", "attest", "verif/cpu", "2026.10.1", "--domain", "test",
+                        "--json"])  # fmt: skip
+    assert made.exit_code == ExitCode.OK, made.output
+    doc = json.loads(made.stdout)
+    envelope = Path(doc["envelope"])
+    assert envelope == tmp_path / "proj" / "verif_cpu_2026.10.1.intoto.json"
+    assert doc["subjects"] == ["lint.report", "pack.srcs"]
+
+    offline = Site(tmp_path, TestServices(tmp_path, with_store=False))
+    args = ["release", "verify-signature", str(envelope),
+            "--allowed-signers", str(key.allowed_signers)]  # fmt: skip
+    ok = offline.invoke([*args, "--blob", str(rel.report), "--blob", str(rel.tree)])
+    assert ok.exit_code == ExitCode.OK, ok.output
+    assert f"verified verif/cpu 2026.10.1: signed by {key.principal}" in ok.stdout
+    assert "pack.srcs  matches" in ok.stdout
+    as_json = offline.invoke([*args, "--json"])
+    assert json.loads(as_json.stdout)["principals"] == [key.principal]
+
+    rel.report.write_bytes(b"1 violation\n")
+    changed = offline.invoke([*args, "--blob", str(rel.report), "--blob", str(rel.tree)])
+    assert changed.exit_code == ExitCode.USAGE
+    assert "subject lint.report" in changed.output
+    text = json.loads(envelope.read_text())
+    text["payload"] = text["payload"][:-8] + "AAAAAAA="
+    envelope.write_text(json.dumps(text))
+    forged = offline.invoke(args)
+    assert forged.exit_code == ExitCode.USAGE
+    assert "no signature" in forged.output
+
+    nokey = Site(tmp_path, TestServices(tmp_path))
+    nokey.services.memory_store = site.services.memory_store
+    (tmp_path / "config.toml").write_text(f'[cas]\nroot = "{tmp_path / "cas"}"\n')
+    missing = nokey.invoke(["release", "attest", "verif/cpu", "2026.10.1", "--domain", "test"])
+    assert missing.exit_code == ExitCode.USAGE
+    assert "[release.signing] key" in missing.output
+
+    # --key and -o override the defaults; allowed_signers comes from config when not given.
+    other = team_key(tmp_path / "other", principal="b-team@example.invalid")
+    made = nokey.invoke(["release", "attest", "verif/cpu", "2026.10.1", "--domain", "test",
+                         "--key", str(other.key), "-o", "out.json"])  # fmt: skip
+    assert made.exit_code == ExitCode.OK, made.output
+    written = tmp_path / "proj" / "out.json"
+    fingerprint = subprocess.run(["ssh-keygen", "-l", "-f", str(other.key)], capture_output=True,
+                                 check=True).stdout.split()[1].decode()  # fmt: skip
+    assert json.loads(written.read_text())["signatures"][0]["keyid"] == fingerprint
+    (tmp_path / "config.toml").write_text(
+        f'[release.signing]\nallowed_signers = "{other.allowed_signers}"\n'
+    )
+    configured = Site(tmp_path, TestServices(tmp_path, with_store=False))
+    ok = configured.invoke(["release", "verify-signature", str(written)])
+    assert ok.exit_code == ExitCode.OK, ok.output
+    assert "signed by b-team@example.invalid" in ok.stdout

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://slsa.dev/provenance/v1",
+  "title": "SLSA Provenance v1.0 predicate",
+  "type": "object",
+  "required": ["buildDefinition", "runDetails"],
+  "properties": {
+    "buildDefinition": {
+      "type": "object",
+      "required": ["buildType", "externalParameters"],
+      "properties": {
+        "buildType": {"type": "string", "minLength": 1},
+        "externalParameters": {"type": "object"},
+        "internalParameters": {"type": "object"},
+        "resolvedDependencies": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/ResourceDescriptor"}
+        }
+      }
+    },
+    "runDetails": {
+      "type": "object",
+      "required": ["builder"],
+      "properties": {
+        "builder": {
+          "type": "object",
+          "required": ["id"],
+          "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "version": {"type": "object", "additionalProperties": {"type": "string"}},
+            "builderDependencies": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/ResourceDescriptor"}
+            }
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "invocationId": {"type": "string"},
+            "startedOn": {"type": "string", "format": "date-time"},
+            "finishedOn": {"type": "string", "format": "date-time"}
+          }
+        },
+        "byproducts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/ResourceDescriptor"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "ResourceDescriptor": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "uri": {"type": "string", "minLength": 1},
+        "digest": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"pattern": "^[a-zA-Z0-9_]+$"},
+          "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]+$"}
+        },
+        "content": {"type": "string"},
+        "downloadLocation": {"type": "string"},
+        "mediaType": {"type": "string"},
+        "annotations": {"type": "object"}
+      },
+      "anyOf": [
+        {"required": ["uri"]},
+        {"required": ["digest"]},
+        {"required": ["content"]}
+      ],
+      "additionalProperties": false
+    }
+  }
+}
