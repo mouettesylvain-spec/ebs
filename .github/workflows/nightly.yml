@@ -53,6 +53,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv sync --all-extras
       - run: uv run --extra dev pytest -m grid -q
+      # P3-01: the bubblewrap tests skip where user namespaces are off; on the grid they must run.
+      - run: EBS_REQUIRE_SANDBOX=1 uv run --extra dev pytest tests/integration/sandbox -q
 
   vendor:
     if: inputs.vendor

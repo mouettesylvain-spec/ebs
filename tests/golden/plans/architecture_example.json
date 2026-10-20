@@ -74,6 +74,7 @@
     "version": "1"
    },
    "runtime_env": {},
+   "sandbox": "auto",
    "step": "compile",
    "toolchain": {
     "id": "sha256:e36038013798a8e7b6c0bed4cd85530db7add6c5e276847e0e0cfd871db6af08",
@@ -155,6 +156,7 @@
     "version": "1"
    },
    "runtime_env": {},
+   "sandbox": "auto",
    "step": "compile",
    "toolchain": {
     "id": "sha256:e36038013798a8e7b6c0bed4cd85530db7add6c5e276847e0e0cfd871db6af08",
@@ -224,6 +226,7 @@
     "version": "1"
    },
    "runtime_env": {},
+   "sandbox": "auto",
    "step": "elab",
    "toolchain": {
     "id": "sha256:e36038013798a8e7b6c0bed4cd85530db7add6c5e276847e0e0cfd871db6af08",
@@ -297,6 +300,7 @@
     "version": "1"
    },
    "runtime_env": {},
+   "sandbox": "auto",
    "step": "sim",
    "toolchain": {
     "id": "sha256:e36038013798a8e7b6c0bed4cd85530db7add6c5e276847e0e0cfd871db6af08",
@@ -370,6 +374,7 @@
     "version": "1"
    },
    "runtime_env": {},
+   "sandbox": "auto",
    "step": "sim",
    "toolchain": {
     "id": "sha256:e36038013798a8e7b6c0bed4cd85530db7add6c5e276847e0e0cfd871db6af08",
@@ -443,6 +448,7 @@
     "version": "1"
    },
    "runtime_env": {},
+   "sandbox": "auto",
    "step": "sim",
    "toolchain": {
     "id": "sha256:e36038013798a8e7b6c0bed4cd85530db7add6c5e276847e0e0cfd871db6af08",
@@ -594,6 +600,9 @@
     "TOOL_HOME": "/opt/eda-tools/questa/2025.2"
    },
    "id": "sha256:e36038013798a8e7b6c0bed4cd85530db7add6c5e276847e0e0cfd871db6af08",
+   "install_roots": [
+    "/opt/eda-tools/questa/2025.2"
+   ],
    "module": "questa/2025.2"
   },
   "spyglass": {
@@ -601,6 +610,9 @@
     "TOOL_HOME": "/opt/eda-tools/vc_spyglass/2025.06"
    },
    "id": "sha256:338021bcfac6c046fcbca0597350347f31e747fbb0045366866faf4bbdce1cc5",
+   "install_roots": [
+    "/opt/eda-tools/vc_spyglass/2025.06"
+   ],
    "module": "vc_spyglass/2025.06"
   }
  },

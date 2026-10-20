@@ -1604,6 +1604,8 @@ export interface components {
         RunnerInfo: {
             /** Host */
             host: string;
+            /** Sandbox */
+            sandbox?: string | null;
             /** Slurm Job Id */
             slurm_job_id?: string | null;
             /** Version */

@@ -95,6 +95,8 @@ nightly:grid:
   tags: [slurm]
   script:
     - uv run pytest -m grid -q
+    # P3-01: the bubblewrap tests skip where user namespaces are off; on the grid they must run.
+    - EBS_REQUIRE_SANDBOX=1 uv run pytest tests/integration/sandbox -q
 
 nightly:vendor:
   extends: .nightly

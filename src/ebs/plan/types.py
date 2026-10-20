@@ -13,7 +13,7 @@ from types import MappingProxyType
 from typing import Literal, TypeAlias
 
 from ebs.core.digest import Digest
-from ebs.flow.model import Resources
+from ebs.flow.model import Resources, SandboxMode
 
 __all__ = [
     "ActionDiff",
@@ -204,6 +204,7 @@ class ActionSpec:
     domain: str  # NOT in key: the action cache is keyed by (domain, key)
     key: Digest | None  # None while any input id is None
     runtime_env: Mapping[str, str] = field(default_factory=dict)  # NOT in key; runner expands
+    sandbox: SandboxMode = "staging"  # NOT in key (P3-01 R5): how the runner isolates the tool
 
     def __post_init__(self) -> None:
         for name in ("params", "env", "config_files", "licenses", "runtime_env"):
@@ -247,12 +248,14 @@ class PlanToolchain:
 
     `env` is HOME-normalized (values hold a literal `$HOME`, see `ebs.toolchain.env`); the runner
     substitutes the action's scratch home. It is already hashed into `id`, so it adds nothing to
-    the key.
+    the key. `install_roots` (absolute paths, fingerprinted into `id`) are what a sandbox mounts
+    read-only for the tool (P3-01).
     """
 
     module: str
     id: Digest
     env: Mapping[str, str] = field(default_factory=dict)
+    install_roots: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "env", _ro(self.env))
