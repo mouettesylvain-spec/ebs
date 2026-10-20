@@ -52,6 +52,11 @@ REVIEWED: Final[dict[str, str]] = {
     "pins.domain": NAME, "pins.pinned_by": NAME, "pins.reason": TEXT,
     "driver_leases.owner": NAME,  # host:pid:token (P2-08)
     "gc_locks.domain": NAME, "gc_locks.owner": NAME,  # host:pid:token (0013)
+    # P3-06: what a pilot needs to find and match an action, never its inputs
+    "pilot_queue.domain": NAME, "pilot_queue.pool": DIGEST, "pilot_queue.action_id": NAME,
+    "pilot_queue.plan": DIGEST, "pilot_queue.licenses": META, "pilot_queue.features": META,
+    "pilot_queue.state": ENUM, "pilot_queue.pilot": NAME, "pilot_queue.node": NAME,
+    "pilot_queue.infra_reason": ENUM, "pilot_queue.exclude": META,
     "releases.domain": NAME, "releases.name": NAME, "releases.version": NAME,
     "releases.outputs": META, "releases.notes": TEXT, "releases.allow_failed": TEXT,
     "releases.attestation": META, "releases.signature": META, "releases.created_by": NAME,

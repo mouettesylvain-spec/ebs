@@ -826,11 +826,11 @@ def _merge_resources(step: Resources, toolchain: Resources | None, where: str) -
     values: dict[str, int | str | bool | None] = {
         "constraint": and_constraints(toolchain.constraint if toolchain else None, step.constraint)
     }
-    for attr in ("cpus", "mem", "time", "max_parallel", "retry_on_timeout"):
+    for attr in ("cpus", "mem", "time", "max_parallel", "retry_on_timeout", "execution"):
         value = getattr(step, attr)
         if value is None and toolchain is not None:
             value = getattr(toolchain, attr)
-        if isinstance(value, str):
+        if isinstance(value, str) and attr != "execution":  # execution: a keyword, not a ref
             raise PlanError(
                 f"{where}: toolchain default resources.{attr} {value!r} must be a literal; "
                 "references are resolved per step, so set it on the step instead"

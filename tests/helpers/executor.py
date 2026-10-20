@@ -20,6 +20,7 @@ from tests.helpers.runner import DOMAIN, shell_spec
 from tests.helpers.wait import wait_until
 
 PLAN = hash_bytes(b"plan")
+PILOT_ARGV = (sys.executable, "-m", "ebs.exec.pilot.worker")  # P3-06: a pilot from this venv
 TERMINAL = {"done", "infra_failed", "cancelled"}
 
 

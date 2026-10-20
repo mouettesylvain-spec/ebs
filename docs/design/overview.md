@@ -27,7 +27,7 @@ src/ebs/
   rules/       RulePlugin protocol, registry (entry points), shell, make, tcl,
                questa/ (compile, opt, sim), later vcs/, spyglass/ …                  (P0/P1/P4)
   exec/        Executor protocol, local executor, slurm/ (cli adapter, executor,
-               arrays, licenses, fake)                                                (P0/P1)
+               arrays, licenses, fake), pilot/ (queue, ebs-pilot worker, executor)   (P0/P1/P3)
   runner/      ebs-runner entry point: stage, env, run, hash+upload, debug, cleanup   (P0/P1)
   driver/      scheduler loop, cache policy, retries, events, build records           (P0/P1)
   gc/          access tracking, roots, leases, mark & sweep, quota                    (P1)
@@ -192,6 +192,17 @@ release = ""
 
 [ci]                           # P2-07: `ebs build --ci`
 # build_url = "https://ebs.example/builds/{uuid}"   # link in ebs-summary.md ({build}, {uuid})
+
+[pilot]                        # P3-06: pilot jobs pulling actions from a queue (`ebs-pilot`)
+max_pilots = 50                # pilot jobs of one shape (allocation) alive at once
+idle_s = 60                    # a pilot without work exits; it holds its -L licenses while idle
+walltime_s = 14400             # SLURM time limit of a pilot (raised for longer actions)
+lease_ttl_s = 60               # visibility timeout of a leased action; renewed every third
+poll_s = 1.0                   # how often an idle pilot asks for work
+kill_grace_s = 30              # SIGTERM -> SIGKILL of a withdrawn action's runner
+max_pilot_failures = 3         # pilots of a shape failing in a row: its waiting actions fail
+threshold = 200                # resources.execution = auto: pilots for batches larger than this
+short_s = 30                   # ... or for steps whose actions usually run shorter than this
 
 [driver]                       # P2-08: the SLURM job of `ebs build --detach` (1 CPU)
 partition = ""                 # empty: [slurm].default_partition

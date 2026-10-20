@@ -36,6 +36,8 @@ from ebs.meta.api import (
     InfraReason,
     MetadataBackend,
     OutputResult,
+    PilotSlot,
+    QueueItem,
     ResourceUsage,
     ResultManifest,
     RunnerInfo,
@@ -1300,3 +1302,208 @@ def test_finish_build_records_final_plan(h: Harness) -> None:
     plain = new_build(h, "a")
     h.store.finish_build(plain, "failed")  # no final plan: only the plan is rooted
     assert h.store.get_build(plain).final_plan_digest is None
+
+
+# --- P3-06: pilot queues ------------------------------------------------------------------------
+
+
+def q_item(action_id: str, **fields: Any) -> QueueItem:
+    return QueueItem(action_id=action_id, plan=dg("plan"), **fields)
+
+
+def q_slot(pilot: str = "100_0", **fields: Any) -> PilotSlot:
+    return PilotSlot(**{"pilot": pilot, "cpus": 1, "time_left_s": 3600, **fields})
+
+
+# P3-06 R1, R2: lease, renew and finish an item; an unrenewed lease is lost, never run twice.
+def test_pilot_queue_lease_cycle(h: Harness) -> None:
+    pool = uuid4()
+    build = new_build(h, "a")
+    ids = h.store.queue_put("test", pool, [q_item("a", build=build), q_item("b")])
+    assert len(set(ids)) == 2
+    assert h.store.queue_lease("test", uuid4(), q_slot(), 60) is None  # pools are separate
+    assert h.store.queue_lease("other", pool, q_slot(), 60) is None  # and scoped by domain
+    lease = h.store.queue_lease("test", pool, q_slot("100_0", node="n1"), 60)
+    assert lease is not None
+    assert (lease.item, lease.action_id, lease.plan, lease.build) == (
+        ids[0],
+        "a",
+        dg("plan"),
+        build,
+    )
+    assert lease.expires_at == h.clock.now() + timedelta(seconds=60)
+    first, second = h.store.queue_status("test", pool, ids)
+    assert (first.state, first.pilot, first.node) == ("leased", "100_0", "n1")
+    assert second.state == "queued"
+    h.clock.advance(50)
+    assert h.store.queue_renew("test", pool, ids[0], "100_0", 60)
+    assert not h.store.queue_renew("test", pool, ids[0], "100_1", 60)  # not that pilot's
+    h.clock.advance(50)  # 100 s after the lease, 50 after its renewal: still live
+    assert h.store.queue_status("test", pool, ids[:1])[0].state == "leased"
+    assert not h.store.queue_finish("test", pool, ids[0], "100_1", 0)
+    assert h.store.queue_finish("test", pool, ids[0], "100_0", 75, "preempted")
+    assert not h.store.queue_finish("test", pool, ids[0], "100_0", 0)  # once
+    done = h.store.queue_status("test", pool, ids[:1])[0]
+    assert (done.state, done.exit_code, done.infra_reason) == ("done", 75, "preempted")
+
+    lease = h.store.queue_lease("test", pool, q_slot("100_1"), 60)
+    assert lease is not None
+    assert lease.item == ids[1]
+    assert h.store.queue_lease("test", pool, q_slot("100_2"), 60) is None  # nothing left
+    h.clock.advance(60)  # exactly the TTL: the pilot is presumed dead
+    lost = h.store.queue_status("test", pool, ids[1:])[0]
+    assert (lost.state, lost.pilot) == ("lost", "100_1")
+    assert not h.store.queue_renew("test", pool, ids[1], "100_1", 60)
+    assert not h.store.queue_finish("test", pool, ids[1], "100_1", 0)
+    assert h.store.queue_lease("test", pool, q_slot("100_2"), 60) is None  # never re-leased
+
+
+# P3-06 R2: a renewal after the TTL fails even before anyone asked for the status.
+def test_pilot_queue_late_renewal(h: Harness) -> None:
+    pool = uuid4()
+    (item,) = h.store.queue_put("test", pool, [q_item("a")])
+    assert h.store.queue_lease("test", pool, q_slot(), 30) is not None
+    h.clock.advance(31)
+    assert not h.store.queue_renew("test", pool, item, "100_0", 30)
+    assert h.store.queue_status("test", pool, [item])[0].state == "lost"
+
+
+# P3-06 R3: a pilot leases only what fits its allocation, oldest first.
+def test_pilot_queue_matching(h: Harness) -> None:
+    pool = uuid4()
+    items = [
+        q_item("big", cpus=4),
+        q_item("mem", mem_mb=8192),
+        q_item("lic", licenses={"simlic": 2}),
+        q_item("feat", features=("avx512", "bigmem")),
+        q_item("long", time_s=7200),
+        q_item("small", cpus=2, mem_mb=1024, time_s=60, licenses={"simlic": 1}),
+    ]
+    ids = dict(
+        zip([i.action_id for i in items], h.store.queue_put("test", pool, items), strict=True)
+    )
+    slot = q_slot(
+        cpus=2, mem_mb=4096, time_left_s=3600, licenses={"simlic": 1}, features=("avx512",)
+    )
+    lease = h.store.queue_lease("test", pool, slot, 60)
+    assert lease is not None
+    assert lease.action_id == "small"
+    assert h.store.queue_lease("test", pool, slot, 60) is None
+    wide = q_slot(
+        "100_1",
+        cpus=8,
+        time_left_s=3600,
+        licenses={"simlic": 2, "other": 1},
+        features=("avx512", "bigmem", "ssd"),
+    )
+    got = []
+    while (lease := h.store.queue_lease("test", pool, wide, 60)) is not None:
+        got.append(lease.action_id)
+    assert got == ["big", "mem", "lic", "feat"]  # mem: the slot has no memory limit
+    entries = h.store.queue_status("test", pool, [ids["long"]])
+    assert entries[0].state == "queued"
+    shunned = q_item("shunned", exclude=("n1",))
+    (shunned_id,) = h.store.queue_put("test", pool, [shunned])
+    assert h.store.queue_lease("test", pool, q_slot("100_3", node="n1"), 60) is None
+    lease = h.store.queue_lease("test", pool, q_slot("100_3", node="n2"), 60)
+    assert lease is not None
+    assert lease.item == shunned_id
+    long_enough = q_slot("100_2", time_left_s=7200)
+    lease = h.store.queue_lease("test", pool, long_enough, 60)
+    assert lease is not None
+    assert lease.action_id == "long"
+
+
+# P3-06 R5 (cancel): queued and leased items are cancelled, final ones keep their state.
+def test_pilot_queue_cancel(h: Harness) -> None:
+    pool = uuid4()
+    ids = h.store.queue_put("test", pool, [q_item("a"), q_item("b"), q_item("c")])
+    assert h.store.queue_lease("test", pool, q_slot("100_0"), 60) is not None
+    assert h.store.queue_lease("test", pool, q_slot("100_1"), 60) is not None
+    assert h.store.queue_finish("test", pool, ids[1], "100_1", 0)
+    h.store.queue_cancel("test", pool, ids)
+    states = [e.state for e in h.store.queue_status("test", pool, ids)]
+    assert states == ["cancelled", "done", "cancelled"]
+    assert not h.store.queue_renew("test", pool, ids[0], "100_0", 60)  # its pilot stops
+    assert not h.store.queue_finish("test", pool, ids[0], "100_0", 0)
+    assert h.store.queue_lease("test", pool, q_slot("100_2"), 60) is None
+    h.store.queue_cancel("test", pool, [])  # nothing to do
+
+
+def test_pilot_queue_errors(h: Harness) -> None:
+    pool = uuid4()
+    (item,) = h.store.queue_put("test", pool, [q_item("a")])
+    with pytest.raises(MetadataError, match="queue item"):
+        h.store.queue_status("test", uuid4(), [item])  # another pool's
+    with pytest.raises(MetadataError, match="queue item"):
+        h.store.queue_status("other", pool, [item])  # another domain's
+    with pytest.raises(MetadataError, match="queue item"):
+        h.store.queue_status("test", pool, [item + 1000])
+    for bad in (0, 86_401):
+        with pytest.raises(MetadataError, match="ttl_s"):
+            h.store.queue_lease("test", pool, q_slot(), bad)
+    with pytest.raises(MetadataError):
+        h.store.queue_put("bad domain!", pool, [q_item("a")])
+    with pytest.raises(MetadataError):
+        h.store.queue_put("test", pool, [QueueItem.model_construct(action_id="", plan=dg("p"))])
+    assert h.store.queue_put("test", pool, []) == []
+
+
+# P3-06 R1: a large regression is queued through more than one HTTP batch.
+def test_pilot_queue_large_put(h: Harness) -> None:
+    pool = uuid4()
+    ids = h.store.queue_put("test", pool, [q_item(f"t[{i}]") for i in range(1200)])
+    assert len(set(ids)) == 1200
+    entries = h.store.queue_status("test", pool, ids)
+    assert [e.action_id for e in entries] == [f"t[{i}]" for i in range(1200)]
+
+
+# P3-06 R1: concurrent pilots never lease the same item (PostgreSQL: SKIP LOCKED).
+def test_pilot_queue_concurrent_leases(h: Harness) -> None:
+    pool = uuid4()
+    ids = h.store.queue_put("test", pool, [q_item(f"t[{i}]") for i in range(40)])
+    got: list[int] = []
+    lock = threading.Lock()
+    errors: list[BaseException] = []
+
+    def pilot(n: int) -> None:
+        try:
+            while (lease := h.store.queue_lease("test", pool, q_slot(f"100_{n}"), 60)) is not None:
+                with lock:
+                    got.append(lease.item)
+        except BaseException as exc:  # surfaced below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=pilot, args=(n,)) for n in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    assert sorted(got) == sorted(ids)
+
+
+# P3-06 R3: the edges of the matching rule (the SQL must agree with slot_fits).
+def test_pilot_queue_matching_edges(h: Harness) -> None:
+    pool = uuid4()
+    h.store.queue_put("test", pool, [q_item("cov", licenses={"cov": 1})])
+    assert h.store.queue_lease("test", pool, q_slot(licenses={"simlic": 1}), 60) is None
+    pool = uuid4()
+    h.store.queue_put("test", pool, [q_item("exact", mem_mb=1024), q_item("any")])
+    slot = q_slot(mem_mb=1024)
+    first = h.store.queue_lease("test", pool, slot, 60)
+    second = h.store.queue_lease("test", pool, slot, 60)
+    assert first is not None
+    assert second is not None
+    assert (first.action_id, second.action_id) == ("exact", "any")
+
+
+# P3-06 R2: at exactly the TTL the lease is gone for renew and finish too, as for status.
+def test_pilot_queue_expiry_boundary(h: Harness) -> None:
+    pool = uuid4()
+    a, b = h.store.queue_put("test", pool, [q_item("a"), q_item("b")])
+    assert h.store.queue_lease("test", pool, q_slot("100_0"), 60) is not None
+    assert h.store.queue_lease("test", pool, q_slot("100_1"), 60) is not None
+    h.clock.advance(60)
+    assert not h.store.queue_renew("test", pool, a, "100_0", 60)
+    assert not h.store.queue_finish("test", pool, b, "100_1", 0)

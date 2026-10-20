@@ -27,6 +27,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Final, Literal, Protocol, TypeVar
 from urllib.parse import quote, unquote, urlsplit
+from uuid import UUID
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
@@ -41,6 +42,11 @@ from ebs.meta._common import (
     check_driver_owner,
     check_lease_ttl,
     check_pin,
+    check_queue,
+    check_queue_exit,
+    check_queue_ids,
+    check_queue_items,
+    check_slot,
     check_toolchain,
     check_walk,
     revalidate,
@@ -80,13 +86,25 @@ from ebs.meta.api import (
     ExportRequest,
     GateCheck,
     GateQuery,
+    InfraReason,
     LeaseId,
     LeaseRequest,
     OptionalDigest,
+    OptionalQueueLease,
     OptionalResult,
+    PilotSlot,
     PinRequest,
     ProvenanceGraph,
     ProvenanceQuery,
+    QueueEntries,
+    QueueEntry,
+    QueueFinish,
+    QueueIds,
+    QueueItem,
+    QueueLease,
+    QueueLeaseRequest,
+    QueuePut,
+    QueueRenew,
     RegisterOutcome,
     ReleaseCreate,
     ReleaseId,
@@ -792,6 +810,86 @@ class HttpMetadataStore:
             body=DriverRelease(owner=owner),
             idempotent=True,
         )
+
+    # --- pilot queues (P3-06) ----------------------------------------------------------------
+
+    def _queue_path(self, domain: str, pool: UUID, what: str) -> str:
+        check_queue(domain, pool, what)
+        return f"/domains/{_q(domain)}/pilot-queues/{pool}"
+
+    def queue_put(self, domain: str, pool: UUID, items: Sequence[QueueItem]) -> list[int]:
+        """Over HTTP a put larger than `BATCH_MAX` is several requests, each all or nothing."""
+        path = self._queue_path(domain, pool, "queue_put")
+        checked = check_queue_items(items)
+        what = f"queue_put in pool {pool}"
+        ids: list[int] = []
+        for chunk in _chunks(checked, BATCH_MAX):
+            # Not idempotent: a repeated put would queue the actions twice.
+            body = QueuePut(items=chunk)
+            r = self._call("POST", f"{path}/items", what, body=body, idempotent=False)
+            ids += self._parse(r, QueueIds, what).ids
+        return ids
+
+    def queue_lease(
+        self, domain: str, pool: UUID, slot: PilotSlot, ttl_s: int
+    ) -> QueueLease | None:
+        path = self._queue_path(domain, pool, "queue_lease")
+        slot = check_slot(slot, ttl_s)
+        what = f"queue_lease in pool {pool}"
+        # Not idempotent: a repeat could lease a second item (the first would be lost).
+        body = QueueLeaseRequest(slot=slot, ttl_s=ttl_s)
+        r = self._call("POST", f"{path}/lease", what, body=body, idempotent=False)
+        return self._parse(r, OptionalQueueLease, what).lease
+
+    def queue_renew(self, domain: str, pool: UUID, item: int, pilot: str, ttl_s: int) -> bool:
+        path = self._queue_path(domain, pool, "queue_renew")
+        check_queue_ids([item], "queue_renew")
+        check_lease_ttl(ttl_s)
+        what = f"queue_renew of item {item}"
+        body = QueueRenew(pilot=pilot, ttl_s=ttl_s)
+        r = self._call("POST", f"{path}/items/{int(item)}/renew", what, body=body, idempotent=True)
+        return self._parse(r, Changed, what).changed
+
+    def queue_finish(
+        self,
+        domain: str,
+        pool: UUID,
+        item: int,
+        pilot: str,
+        exit_code: int,
+        infra_reason: InfraReason | None = None,
+    ) -> bool:
+        path = self._queue_path(domain, pool, "queue_finish")
+        check_queue_ids([item], "queue_finish")
+        check_queue_exit(exit_code, infra_reason)
+        what = f"queue_finish of item {item}"
+        body = QueueFinish(pilot=pilot, exit_code=exit_code, infra_reason=infra_reason)
+        # A repeat after a lost reply answers False; the exit was recorded by the first.
+        r = self._call("POST", f"{path}/items/{int(item)}/finish", what, body=body, idempotent=True)
+        return self._parse(r, Changed, what).changed
+
+    def queue_status(self, domain: str, pool: UUID, items: Sequence[int]) -> list[QueueEntry]:
+        path = self._queue_path(domain, pool, "queue_status")
+        ids = check_queue_ids(items, "queue_status")
+        what = f"queue_status in pool {pool}"
+        entries: list[QueueEntry] = []
+        for chunk in _chunks(ids, BATCH_MAX):
+            body = QueueIds(ids=chunk)
+            r = self._call("POST", f"{path}/status", what, body=body, idempotent=True)
+            entries += self._parse(r, QueueEntries, what).entries
+        return entries
+
+    def queue_cancel(self, domain: str, pool: UUID, items: Sequence[int]) -> None:
+        path = self._queue_path(domain, pool, "queue_cancel")
+        ids = check_queue_ids(items, "queue_cancel")
+        for chunk in _chunks(ids, BATCH_MAX):
+            self._call(
+                "POST",
+                f"{path}/cancel",
+                f"queue_cancel in pool {pool}",
+                body=QueueIds(ids=chunk),
+                idempotent=True,
+            )
 
     def pin_build(self, build: BuildId, *, by: str, reason: str = "") -> None:
         # The service records the authenticated caller as the pin's author, not `by`.
