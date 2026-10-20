@@ -1238,6 +1238,34 @@ def detect(mode: SandboxMode, *, which=shutil.which, probe=run_probe,
 - Config `[sandbox]`: `ro_binds` (absolute paths, e.g. the environment-modules tree) and
   `apptainer_image` (absolute path); other keys are a ConfigError.
 
+### 9b. Discover — `ebs.sandbox.discover` (P3-02)
+
+```python
+strace_argv(strace, log, argv) -> list[str]   # strace -f -y -qq -s 65535 -e trace=file,process,fchdir -o LOG -- argv
+parse_strace(text, *, cwd) -> list[Access]    # Access(pid, syscall, path, ok, directory, write, process)
+classify(path, layout: Layout) -> Category    # input | toolchain | system | scratch | undeclared
+analyze(accesses, layout, *, exists=os.path.isfile) -> Report   # Report.reads: first Read per path
+propose_inputs(raw, sources, report, layout, *, partial=False) -> Proposal  # inputs, unused, added, outside
+render_patch(step, action_id, proposal) -> str                  # YAML fragment `steps: {S: {inputs: …}}`
+```
+
+Pure (no I/O beyond the injected `exists`). Paths are absolute and lexically normalized;
+`-y` annotations give dirfd and cwd paths, else each pid's cwd/fd table/program is tracked across
+chdir, fchdir, open and fork. Reads are successful opens (not write-only, not `O_PATH`), execs and
+stat/access/readlink calls on non-directories, plus a failed read inside the work dir of a file
+the flow directory has, outside the action's output paths (`Read.missing`: the step needs a file
+that was not staged). `Layout`: work, scratch,
+flow_dir, file input and tree input logical paths (config files count as inputs), `staged` roots
+(the domain CAS: large inputs link there), `toolchain` roots (install roots + `[sandbox].ro_binds`)
+and `system` (`SYSTEM_PATHS`: what bwrap shows of the OS, plus `/sys`); work, scratch and
+flow_dir are real paths and `aliases` maps their symlinked spellings (`$HOME`, `$TMPDIR`, a flow
+path written in a Makefile) to them. The proposal keeps an
+input with a `${…}` reference as written, replaces a literal one by the files read through it
+collapsed per directory (`dir/*.ext`, `dir/*`, or the lone path; hidden files and glob
+characters kept exact), drops one none of whose files was read, and adds undeclared files from
+the flow directory as `discovered` (`discovered_2`… if taken). With `partial` (the tool failed or
+timed out) every declared input is kept as written.
+
 ## 10. Driver events — `ebs.driver.events`
 
 The `Event` model is defined in `ebs.meta.api` (§ 6) and re-exported here.
@@ -1730,6 +1758,21 @@ the outer command prints the salloc line on stderr and the inner one the documen
 code is 0 once the sandbox is built, whatever the tool gave, except that `--run` exits 1 when
 `identical` is false (an output differs from, or is missing in, the reproduction); `--salloc`
 passes the inner command's exit code on. **CONTRACT CHANGE (P1-10 follow-up).**
+
+**`ebs discover STEP [--row COLUMN=VALUE]… [-f FLOW] [--audit] [--write] [--keep] [--json]`**
+(P3-02; § 9b). Plans the flow (refined through cache hits), takes the first instance of STEP
+whose matrix row has every `--row` value (a warning names it when several match; exit 2 when
+none does or an input comes from an action that has not run), stages it with `build_sandbox`
+(strict staging, no bwrap; nothing is posted) and runs its argv under `strace_argv` with the
+runner's timeout. Needs `strace` on PATH (else exit 3, as when strace writes no trace). Prints the
+counts per category, the undeclared reads with their first reader, and the patch; a non-zero
+exit of the tool is a warning. `--write` replaces the step's `inputs:` in the flow file
+(ruamel round-trip; the new flow must load, else nothing changes). `--audit` exits 1 when there
+are undeclared reads or the tool failed or timed out (an incomplete trace; then the proposal is
+`partial`). The scratch is removed unless `--keep`. `--json`: `{"v": 1, "flow",
+"step", "action_id", "exit_code", "timed_out", "dir" (with --keep, else null), "counts":
+{category: n}, "undeclared": [{"path", "pid", "process", "syscall", "missing"}], "proposal":
+{"inputs", "unused", "added", "outside"}, "patch", "written"}`.
 
 **`ebs rules list --json`**: `{"v": 1, "rules": [{"kind", "version", "impl"}]}`, sorted by kind.
 

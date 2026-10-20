@@ -71,7 +71,7 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P3-06 | Pilot worker pool | P1-02 | 1 | todo |
 | P3-07 | S3 CAS backend | P0-09 | 1 | todo |
 | P3-08 | FlexLM `LastConsumed` sync | P1-03 | 1 | todo |
-| P3-02 | `ebs discover` (strace) | P3-01 | 2 | todo |
+| P3-02 | `ebs discover` (strace) | P3-01 | 2 | review |
 | P3-04 | Sign-off bundles and `ebs verify` | P3-03, P2-03 | 2 | todo |
 | P3-05 | Revalidation jobs and comparators | P3-04 | 3 | todo |
 | P3-09 | Phase 3 acceptance | all P3 | 4 | todo |
