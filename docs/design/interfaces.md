@@ -598,6 +598,24 @@ re-validated on write (values must also pass `canonical_json`).
   every blob and manifest through `dst`'s atomic write path, children before manifests,
   registers them in the target domain, then `record_export`; `access: DomainAccess` must accept
   both domains, by default `UnixGroupAccess(cas_root)`: owner or group of `<cas_root>/<domain>`).
+- `ebs.release.attest` (L3, P3-03): `provenance_statement(release, build, plan, imports:
+  [ImportDep{alias, name, version, release: Digest}]) -> dict` (in-toto Statement v1,
+  `predicateType` `https://slsa.dev/provenance/v1`; subjects `<action id>.<output>` with
+  `{algo: hex}` of the content digest, sorted; `externalParameters{flow{path, repository,
+  commit, dirty}, project, release{name, version, domain}, params, lock?}`;
+  `resolvedDependencies` `imports.<alias>` (release digest), `toolchains.<name>` (id), `flow`
+  (`gitCommit`); `runDetails{builder.id "ebs@<plan ebs_version>", metadata{invocationId = build
+  UUID, startedOn, finishedOn}}`), `params_digest(plan)` (digest of `{action id: params}`),
+  `import_deps(store, build)`.
+- `ebs.release.sign` (L3, P3-03): DSSE `Envelope{payload_type, payload, signatures:
+  [Signature{keyid, sig}]}` (`to_json`/`from_json`), `pae(type, payload)` (DSSE v1),
+  `sign_statement(statement, SshSigner(SshKeygen(program, run), key)) -> Envelope` (canonical
+  JSON payload, `ssh-keygen -Y sign -n ebs-release`), `verify_envelope(envelope, keygen,
+  allowed_signers) -> Verified{statement, principals, subjects}` (≥ 1 signature verified with
+  `-Y find-principals` + `-Y verify`; the statement is parsed from the verified payload only),
+  `check_subjects(statement, blobs) -> {subject: path}` (files, tree directories or manifests;
+  every subject matched, no stray blob), `verify_offline(envelope_file, allowed_signers, blobs,
+  *, keygen)`, `SigningSettings.from_section([release])` (`[release.signing]`).
 
 ```python
 class ResultManifest(BaseModel):          # frozen
@@ -1711,6 +1729,15 @@ be in the release's domain and have `passed` (checked by the CLI), else exit 2 w
 is checked against the channel's gate policy, and without one is recorded as the move's gate
 (`{flow: <its project>, build}`) on a direct database. Through the HTTP service only `gate_build`
 is sent; the stored gate is whatever the service's own policy decides.
+**`ebs release attest NAME VERSION [--domain D] [--key FILE] [-o FILE] [--json]`** (P3-03;
+`ebs.release.attest`, `ebs.release.sign`): reads the release, its build and plan (CAS), signs
+the SLSA provenance with `--key` or `[release.signing] key` and writes the DSSE envelope to `-o`,
+default `./<name with / -> _>_<version>.intoto.json` (`--json`: `{v: 1, envelope, subjects,
+keyid}`). **`ebs release verify-signature ENVELOPE [--allowed-signers FILE] [--blob PATH…]
+[--json]`** needs no store or network: the signature (allowed signers from the flag or
+`[release.signing] allowed_signers`), then each blob (file, tree directory, or tree manifest,
+reported as "manifest only") against the subjects; `--json` `{v: 1, verified, release,
+principals, statement, blobs, manifest_only}`. Any verification failure or missing key exits 2.
 
 **`ebs why TARGET [--domain D] [--build B] [--depth N] [--json | --dot]`**, **`ebs used-by NAME
 VERSION`**, **`ebs tests NAME VERSION [--latest] [--junit FILE]`** (P2-04; `ebs.release.provenance`,

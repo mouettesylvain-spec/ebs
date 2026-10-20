@@ -60,6 +60,7 @@ def finish(
     status: BuildStatus | None = "passed",
     flow_repo: str = "",
     flow_commit: str = "",
+    plan_digest: Digest | None = None,
 ) -> BuildId:
     """A build of `project` with `actions` (id -> outputs); `status` None leaves it running."""
     build = store.create_build(
@@ -67,7 +68,7 @@ def finish(
             uuid=uuid4(),
             domain=domain,
             project=project,
-            plan_digest=hash_bytes(b"plan"),
+            plan_digest=plan_digest or hash_bytes(b"plan"),
             flow_repo=flow_repo,
             flow_commit=flow_commit,
             flow_dirty=False,

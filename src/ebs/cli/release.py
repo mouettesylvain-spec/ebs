@@ -3,12 +3,16 @@
 `create NAME VERSION --build B --output step.output[selector]…` releases outputs of a finished
 build (`ebs.release.releases`). `yank` withdraws a release without deleting it. `export --to D`
 copies a release's objects into domain D's CAS and records it there (`ebs.release.export`).
+`attest` writes the release's SLSA provenance as a DSSE envelope signed with the team key
+(`[release.signing] key`); `verify-signature` checks one offline, with an allowed-signers file
+and optionally the released blobs (P3-03).
 Commands other than `create` work in `--domain`, by default the domain of the latest build
 recorded in this directory.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -19,8 +23,11 @@ from ebs.cli._records import find_build
 from ebs.cli.plan import JSON_OPTION
 from ebs.core.errors import ConfigError, ReleaseError
 from ebs.meta.api import BuildId, MetadataBackend, ReleaseView
+from ebs.plan.planfile import decode
+from ebs.release.attest import import_deps, provenance_statement
 from ebs.release.export import UnixGroupAccess, export_release
 from ebs.release.releases import create_release
+from ebs.release.sign import SigningSettings, SshKeygen, SshSigner, sign_statement, verify_offline
 
 __all__ = ["DOMAIN_OPTION", "app", "default_domain", "find_release", "release_store"]
 
@@ -226,3 +233,113 @@ def export_command(
             f"exported {rel.name} {rel.version} to domain {to!r} (release {exported.id}, "
             f"{len(exported.outputs)} output(s) copied)"
         )
+
+
+KEY_OPTION = typer.Option(
+    None, "--key", metavar="FILE", help="Signing key; default: [release.signing] key."
+)
+OUT_OPTION = typer.Option(
+    None,
+    "--out",
+    "-o",
+    metavar="FILE",
+    help="Where to write the envelope; default: ./<name>_<version>.intoto.json.",
+)
+ENVELOPE_ARGUMENT = typer.Argument(..., metavar="ENVELOPE", help="The .intoto.json file.")
+ALLOWED_SIGNERS_OPTION = typer.Option(
+    None,
+    "--allowed-signers",
+    metavar="FILE",
+    help="Trusted keys (ssh-keygen ALLOWED SIGNERS); default: [release.signing].",
+)
+BLOB_OPTION = typer.Option(
+    [],
+    "--blob",
+    metavar="PATH",
+    help="A released file, tree directory or tree manifest to check; repeat.",
+)
+
+
+def _signing(services: SiteServices) -> SigningSettings:
+    return SigningSettings.from_section(services.config().get("release", {}))
+
+
+@app.command("attest")
+@handle_errors
+def attest_command(
+    ctx: typer.Context,
+    name: str = NAME_ARGUMENT,
+    version: str = VERSION_ARGUMENT,
+    domain: str | None = DOMAIN_OPTION,
+    key: Path | None = KEY_OPTION,
+    out_file: Path | None = OUT_OPTION,
+    json_mode: bool = JSON_OPTION,
+) -> None:
+    """Write the release's signed SLSA provenance (a DSSE envelope of an in-toto statement)."""
+    services: SiteServices = ctx.obj
+    out = make_output(services.environ, json_mode=json_mode, tty=services.is_tty())
+    store = release_store(services)
+    rel = find_release(store, default_domain(services, domain), name, version)
+    build = store.get_build(rel.build)
+    with services.cas(rel.domain).open(build.final_plan_digest or build.plan_digest) as f:
+        plan = decode(f.read(), any_key_schema=True)
+    statement = provenance_statement(rel, build, plan, import_deps(store, build.id))
+    conf = _signing(services)
+    signer = SshSigner(SshKeygen(conf.ssh_keygen), services.cwd / conf.require_key(key))
+    envelope = sign_statement(statement, signer)
+    default = Path(f"{rel.name.replace('/', '_')}_{rel.version}.intoto.json")
+    target = services.cwd / (out_file or default)
+    target.write_text(envelope.to_json())
+    keyid = envelope.signatures[0].keyid
+    if json_mode:
+        out.emit({"v": 1, "envelope": str(target), "subjects": sorted(rel.outputs), "keyid": keyid})
+    else:
+        out.line(
+            f"attested {rel.name} {rel.version}: {len(rel.outputs)} subject(s), signed by "
+            f"{keyid or signer.key} -> {target}"
+        )
+
+
+def _attested_release(statement: dict[str, Any]) -> str:
+    try:
+        rel = statement["predicate"]["buildDefinition"]["externalParameters"]["release"]
+        return f"{rel['name']} {rel['version']}"
+    except (KeyError, TypeError):
+        return "(no release named)"
+
+
+@app.command("verify-signature")
+@handle_errors
+def verify_signature_command(
+    ctx: typer.Context,
+    envelope: Path = ENVELOPE_ARGUMENT,
+    allowed_signers: Path | None = ALLOWED_SIGNERS_OPTION,
+    blobs: list[Path] = BLOB_OPTION,
+    json_mode: bool = JSON_OPTION,
+) -> None:
+    """Verify a release attestation offline: its signature, and the blobs against its subjects."""
+    services: SiteServices = ctx.obj
+    out = make_output(services.environ, json_mode=json_mode, tty=services.is_tty())
+    conf = _signing(services)
+    cwd = services.cwd
+    verified = verify_offline(
+        cwd / envelope, cwd / conf.require_allowed_signers(allowed_signers),
+        [cwd / b for b in blobs], keygen=SshKeygen(conf.ssh_keygen),
+    )  # fmt: skip
+    label = _attested_release(verified.statement)
+    if json_mode:
+        out.emit({"v": 1, "verified": True, "release": label,
+                  "principals": list(verified.principals), "statement": verified.statement,
+                  "blobs": {n: str(p) for n, p in sorted(verified.subjects.items())},
+                  "manifest_only": list(verified.manifest_only)})  # fmt: skip
+        return
+    out.line(f"verified {label}: signed by {', '.join(verified.principals)}")
+    for subject, path in sorted(verified.subjects.items()):
+        note = (
+            "  (tree manifest only: its files were not checked; pass the directory)"
+            if subject in verified.manifest_only
+            else ""
+        )
+        out.line(f"  {subject}  matches {path}{note}")
+    if not blobs:
+        out.line("  (no --blob given: the released bytes were not checked)")
