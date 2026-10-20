@@ -117,6 +117,10 @@ Model details (P0-04):
   the action key.
 - The planner parses a resolved resource string with `ebs.flow.model.parse_memory` / `parse_duration`.
 - `model_dump()` emits the YAML spelling again (`8G`, `30m`, `from`, `zip`), so the result re-validates.
+- `sandbox` (P3-01) on `Flow` and on `StepDef`: `SandboxMode = Literal["auto", "bwrap",
+  "staging"]` or None (`ebs.flow.model.SANDBOX_MODES`). The planner takes the step's, else the
+  flow's, else `auto` for kinds starting with `questa.` (`ebs.plan.planner.SANDBOX_AUTO_KIND_PREFIX`)
+  and `staging` for the rest, into `ActionSpec.sandbox`. Not in the action key.
 - `ebs.flow.model.check_ref_syntax(s) -> str | None` validates the grammar below without resolving anything.
 
 ### Interpolation grammar (`ebs.flow.interp`)
@@ -204,6 +208,7 @@ class ActionSpec:
     domain: str
     key: Digest | None                  # None while any input id is None
     runtime_env: Mapping[str, str] = {} # NOT in key; the rule's runtime env, expanded by the runner
+    sandbox: SandboxMode = "staging"    # NOT in key (P3-01): auto | bwrap | staging
 
 def action_key_document(spec: ActionSpec) -> JsonValue: ...   # exactly the fields below
 def compute_key(spec: ActionSpec) -> Digest: ...              # raises if an input id is None
@@ -218,7 +223,7 @@ the id except for a whole `deterministic: false` release output; not in the key)
 name, version, channel, release, outputs: {name: ImportedOutput(id, digest, type)})` and
 `PlanLock(digest, imports: {alias: ImportPin})` (P2-03, what `ebs.release.lock.plan_lock` builds), `OutputSpec(name, path, type: "file"|"dir", deterministic, optional)`,
 `DebugSpec(collect, max_size: bytes | None, on_success)`, `FlowInfo(path, git: GitInfo | None)`,
-`GitInfo(repo, commit, dirty)`, `PlanToolchain(module, id, env)`, `Plan(ebs_version, domain, project,
+`GitInfo(repo, commit, dirty)`, `PlanToolchain(module, id, env, install_roots=())`, `Plan(ebs_version, domain, project,
 flow, toolchains, actions, edges, lock, key_schema, v)` with `Plan.action(id)`,
 `ActionSpec.input(path)` / `.output(name)`, and `ActionDiff(action_id, status, changed, pending)`
 with status `added | removed | unchanged | changed | unknown`.
@@ -236,6 +241,11 @@ stages the file as an executable copy (`CAS.materialize(executable=True)`).
 § 13); the runner applies it with `$HOME` replaced by the action's scratch home. It is already
 hashed into the toolchain id, so it changes no action key; plan.json `toolchains` entries are
 `{"module", "id", "env"}`.
+**CONTRACT CHANGE (P3-01):** `PlanToolchain.install_roots` (absolute paths, already fingerprinted
+into the id) is what a sandbox mounts read-only for the tool; plan.json writes
+`"install_roots": [...]` only when non-empty. An action's `"sandbox"` member is written only when
+it is not `staging`. Neither is in the key, so no key schema change; plans that use neither
+encode exactly as before.
 
 Key document (the only thing hashed):
 
@@ -610,7 +620,7 @@ class ResultManifest(BaseModel):          # frozen
     log: Digest | None                    # full combined log blob
     summary: dict[str, str | int]         # rule-specific (e.g. sim: uvm_errors, first_error)
     resources: ResourceUsage              # max_rss_kb, cpu_s, wall_s (whole numbers: canon has no floats)
-    runner: RunnerInfo                    # version, host, slurm_job_id (not part of cache identity)
+    runner: RunnerInfo                    # version, host, slurm_job_id, sandbox (not part of cache identity)
 ```
 
 Infrastructure failures never produce a ResultManifest; they produce an `InfraFailure` event.
@@ -1104,7 +1114,7 @@ Lifecycle and guarantees: architecture.md "Runner lifecycle on a node". P0-13 de
   `--keep-scratch` keeps the scratch dir and prints `scratch kept at <path>` on stderr. Without
   `--build` nothing is posted and the ResultManifest is printed as JSON on stdout. `--array-map`
   picks `actions[$SLURM_ARRAY_TASK_ID]` of the map (exit 64 if the map is missing, for another
-  plan, or has no such task). Config: `[cas].root`, `[scratch].dir`, `[runner]`, `[rules]`,
+  plan, or has no such task). Config: `[cas].root`, `[scratch].dir`, `[runner]`, `[rules]`, `[sandbox]` (§ 9a),
   `[metadata]` (only with `--build`), via `ebs.config.load_config`.
 - Exit 64 also for: a plan not in the CAS or of another domain, an unknown action id, an
   action whose key or input ids are unset (the driver must refine the plan), a rule kind or
@@ -1177,6 +1187,56 @@ P1-04 (grid) details:
   None = a nondeterministic producer's result is not recorded), `prepare_work(spec, cas, work,
   contents, *, copy_threshold)` (stage, write config files, verify: I10),
   `toolchain_env(plan, spec)`, `remove_tree(path)`. The runner itself goes through them.
+
+### 9a. Sandbox — `ebs.sandbox` (P3-01)
+
+```python
+# ebs.sandbox.api
+@dataclass(frozen=True) class Mount: src: str; dst: str; writable: bool = False
+class Sandbox(Protocol):
+    name: str                                            # staging | bwrap | apptainer (property)
+    def wrap(argv, mounts: Sequence[Mount], env: Mapping[str, str], cwd: str) -> list[str]
+    def setup_error(exit_code: int, log_head: str) -> str | None   # the sandbox's own failure
+def undeclared_read_hint(log_tail: str, *, sandbox: str, step: str) -> str | None
+# ebs.sandbox.staging.StagingSandbox()        v1: argv unchanged
+# ebs.sandbox.bwrap.BwrapSandbox(binary)
+# ebs.sandbox.apptainer.ApptainerSandbox(binary, image)
+# ebs.sandbox.detect
+def detect(mode: SandboxMode, *, which=shutil.which, probe=run_probe,
+           apptainer_image: str | None = None) -> Detection   # Detection(sandbox, reason, warning)
+```
+
+- Selection (open decision D6, default confirmed): `staging` never probes; `bwrap` uses
+  bubblewrap if `bwrap --unshare-all --share-net --die-with-parent --ro-bind / / true` succeeds,
+  else raises `SandboxError`; `auto` tries bubblewrap, then Apptainer (`apptainer exec
+  --containall --no-mount bind-paths <image> true`, only with `[sandbox].apptainer_image`), then staging only with a
+  `warning`. `reason` always says why.
+- bwrap profile: `--unshare-all --share-net --die-with-parent --clearenv`, `--ro-bind /usr`,
+  `--ro-bind-try` of `/lib /lib32 /lib64 /libx32 /bin /sbin` and of `/etc/{passwd, group, hosts,
+  resolv.conf, nsswitch.conf, ld.so.cache, ld.so.conf, ld.so.conf.d, alternatives, localtime}`,
+  `/var/lib/sss/pipes` and `/run/nscd` (LDAP/SSSD user lookups), `--tmpfs /tmp`, `--proc
+  /proc`, `--dev /dev`, then the mounts in order (`--ro-bind` / `--bind`), `--setenv` per variable
+  (sorted), `--chdir cwd`, `--`, argv. Mount and cwd paths must be absolute and normalized.
+  `setup_error`: exit 1 with a first log line `bwrap: …`.
+- Apptainer (>= 1.1): `exec --containall --cleanenv --no-home --no-mount bind-paths --bind src:dst:ro|rw … --pwd cwd <image>
+  /usr/bin/env -i K=V … argv`; paths with `:` or `,` are refused. `setup_error`: exit 255 with
+  a first line `FATAL:…`.
+- Runner: `Runner(..., sandboxes: Callable[[SandboxMode], Detection] | None)` (default `detect`
+  with `[sandbox].apptainer_image`). Mounts, all at the same path inside: the action toolchain's
+  `install_roots`, `[sandbox].ro_binds`, the domain's CAS dir (`<cas root>/<domain>`, since large
+  inputs are links into it) read-only, then the action's scratch root read-write; cwd `work/`.
+  The whole domain CAS dir is visible, so a tool that knows a digest could read any blob of its
+  own domain (never another domain's). Site files the tool reads by absolute path (e.g. an
+  `LM_LICENSE_FILE` naming a license *file*, the modules tree) must be listed in `ro_binds`.
+  An unavailable `bwrap` or a `setup_error` is an infra failure (exit 75, nothing cached); a
+  mount `wrap` cannot express (`SandboxError`) is a usage error (exit 64). The
+  fallback warning goes to stderr. When the rule's classification is not `passed`,
+  `undeclared_read_hint` on the log tail (a file-not-found line under a real sandbox) is written
+  to stderr as `ebs-runner: <action>: hint: …` and, for a failed result, put in
+  `summary.sandbox_hint`. **CONTRACT CHANGE:** `RunnerInfo.sandbox` (`staging | bwrap |
+  apptainer`; None in older manifests) records the sandbox used (R5).
+- Config `[sandbox]`: `ro_binds` (absolute paths, e.g. the environment-modules tree) and
+  `apptainer_image` (absolute path); other keys are a ConfigError.
 
 ## 10. Driver events — `ebs.driver.events`
 

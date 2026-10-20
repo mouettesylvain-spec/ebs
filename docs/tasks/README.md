@@ -66,7 +66,7 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 
 | ID | Task | Depends on | Wave | Status |
 | --- | --- | --- | --- | --- |
-| P3-01 | bubblewrap sandbox (+ Apptainer fallback) | P1-04 | 1 | todo |
+| P3-01 | bubblewrap sandbox (+ Apptainer fallback) | P1-04 | 1 | review |
 | P3-03 | SLSA attestations and signing | P2-02 | 1 | todo |
 | P3-06 | Pilot worker pool | P1-02 | 1 | todo |
 | P3-07 | S3 CAS backend | P0-09 | 1 | todo |

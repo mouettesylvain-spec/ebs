@@ -12,7 +12,7 @@ from uuid import uuid4
 from ebs.cas.fs import FsCAS
 from ebs.core.clock import FakeClock
 from ebs.core.digest import Digest, hash_bytes
-from ebs.flow.model import Resources
+from ebs.flow.model import Resources, SandboxMode
 from ebs.meta.api import ActionRow, BuildCreate, BuildId, CacheMode, Event, ResultManifest
 from ebs.meta.memory import InMemoryMetadataStore
 from ebs.plan.keys import with_key
@@ -33,6 +33,7 @@ from ebs.rules.registry import RuleRegistry
 from ebs.rules.shell import BASH_ARGV, SCRIPT_PATH, ShellRule
 from ebs.runner.config import RunnerSettings
 from ebs.runner.main import Runner, RunRequest
+from ebs.sandbox.detect import Detection
 
 DOMAIN = "test"
 HOST = "node-test"
@@ -159,6 +160,7 @@ class Harness:
     caller_env: dict[str, str] = field(default_factory=dict)
     settings_overrides: dict[str, object] = field(default_factory=dict)
     renew_lease: Callable[[], None] | None = None
+    sandboxes: Callable[[SandboxMode], Detection] | None = None  # None: real detection (P3-01)
     out: io.StringIO = field(default_factory=io.StringIO)
     err: io.StringIO = field(default_factory=io.StringIO)
 
@@ -174,6 +176,7 @@ class Harness:
             out=self.out,
             err=self.err,
             renew_lease=self.renew_lease,
+            sandboxes=self.sandboxes,
         )
 
     def run(

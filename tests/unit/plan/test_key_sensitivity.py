@@ -216,6 +216,8 @@ EXCLUDED: dict[str, Mutation] = {
     "inputs.source": _input_sources,
     "outputs.deterministic_optional": _flip_outputs,
     "key": lambda s, d: _replace(s, key=hash_bytes(b"stale")),
+    # P3-01 R5: the sandbox only changes where the tool may look, never what it is given.
+    "sandbox": lambda s, d: _replace(s, sandbox=d.draw(st.sampled_from(["auto", "bwrap"]))),
 }
 
 
@@ -246,7 +248,9 @@ def test_scheduling_fields_not_in_key_document(spec: ActionSpec) -> None:
         return set()
 
     found = keys(action_key_document(spec))
-    assert not found & {"account", "qos", "constraint", "licenses", "resources", "partition"}
+    assert not found & {
+        "account", "qos", "constraint", "licenses", "resources", "partition", "sandbox"
+    }  # fmt: skip
 
 
 @given(spec=specs())
