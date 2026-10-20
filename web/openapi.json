@@ -1334,6 +1334,26 @@
         "title": "OptionalDigest",
         "type": "object"
       },
+      "OptionalQueueLease": {
+        "additionalProperties": false,
+        "properties": {
+          "lease": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QueueLease"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "lease"
+        ],
+        "title": "OptionalQueueLease",
+        "type": "object"
+      },
       "OptionalResult": {
         "additionalProperties": false,
         "properties": {
@@ -1434,6 +1454,84 @@
           "wait_s"
         ],
         "title": "PendingWait",
+        "type": "object"
+      },
+      "PilotSlot": {
+        "additionalProperties": false,
+        "description": "What one pilot offers when it asks for work (P3-06 R3): its allocation, the walltime it\nhas left for an action, and the licenses and node features its job was granted.",
+        "properties": {
+          "cpus": {
+            "minimum": 1,
+            "title": "Cpus",
+            "type": "integer"
+          },
+          "features": {
+            "default": [],
+            "items": {
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9_.-]+$",
+              "type": "string"
+            },
+            "title": "Features",
+            "type": "array"
+          },
+          "licenses": {
+            "patternProperties": {
+              "^[A-Za-z0-9_.-]+(@[A-Za-z0-9_.-]+)?$": {
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "title": "Licenses",
+            "type": "object"
+          },
+          "mem_mb": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mem Mb"
+          },
+          "node": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\x00-\\x1f]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Node"
+          },
+          "pilot": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\x00-\\x1f]+$",
+            "title": "Pilot",
+            "type": "string"
+          },
+          "time_left_s": {
+            "minimum": 0,
+            "title": "Time Left S",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pilot",
+          "cpus",
+          "time_left_s"
+        ],
+        "title": "PilotSlot",
         "type": "object"
       },
       "PinRequest": {
@@ -1828,6 +1926,399 @@
           "yanked"
         ],
         "title": "ProvenanceRelease",
+        "type": "object"
+      },
+      "QueueEntries": {
+        "additionalProperties": false,
+        "description": "Response of `queue_status`.",
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/QueueEntry"
+            },
+            "title": "Entries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "entries"
+        ],
+        "title": "QueueEntries",
+        "type": "object"
+      },
+      "QueueEntry": {
+        "additionalProperties": false,
+        "description": "Where one queue item stands; `exit_code` and `infra_reason` are the runner's (`done`).",
+        "properties": {
+          "action_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[^\\x00-\\x1f]+$",
+            "title": "Action Id",
+            "type": "string"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "maximum": 255.0,
+                "minimum": -128.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "infra_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "oom",
+                  "timeout",
+                  "node_fail",
+                  "preempted",
+                  "license",
+                  "runner_crash",
+                  "input_verification",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Infra Reason"
+          },
+          "item": {
+            "title": "Item",
+            "type": "integer"
+          },
+          "node": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\x00-\\x1f]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node"
+          },
+          "pilot": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\x00-\\x1f]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pilot"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "leased",
+              "done",
+              "lost",
+              "cancelled"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item",
+          "action_id",
+          "state"
+        ],
+        "title": "QueueEntry",
+        "type": "object"
+      },
+      "QueueFinish": {
+        "additionalProperties": false,
+        "description": "Body of `queue_finish`.",
+        "properties": {
+          "exit_code": {
+            "maximum": 255,
+            "minimum": -128,
+            "title": "Exit Code",
+            "type": "integer"
+          },
+          "infra_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "oom",
+                  "timeout",
+                  "node_fail",
+                  "preempted",
+                  "license",
+                  "runner_crash",
+                  "input_verification",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Infra Reason"
+          },
+          "pilot": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\x00-\\x1f]+$",
+            "title": "Pilot",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pilot",
+          "exit_code"
+        ],
+        "title": "QueueFinish",
+        "type": "object"
+      },
+      "QueueIds": {
+        "additionalProperties": false,
+        "description": "Body of `queue_status` and `queue_cancel`, and the response of `queue_put`.",
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 500,
+            "title": "Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "title": "QueueIds",
+        "type": "object"
+      },
+      "QueueItem": {
+        "additionalProperties": false,
+        "description": "One action for the pilots of a pool: what the runner needs to find it, and what it needs\nof a pilot's allocation (`slot_fits`). `features` are the node features of its constraint.",
+        "properties": {
+          "action_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[^\\x00-\\x1f]+$",
+            "title": "Action Id",
+            "type": "string"
+          },
+          "build": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Build"
+          },
+          "cpus": {
+            "default": 1,
+            "minimum": 1,
+            "title": "Cpus",
+            "type": "integer"
+          },
+          "exclude": {
+            "default": [],
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\x00-\\x1f]+$",
+              "type": "string"
+            },
+            "title": "Exclude",
+            "type": "array"
+          },
+          "features": {
+            "default": [],
+            "items": {
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9_.-]+$",
+              "type": "string"
+            },
+            "title": "Features",
+            "type": "array"
+          },
+          "licenses": {
+            "patternProperties": {
+              "^[A-Za-z0-9_.-]+(@[A-Za-z0-9_.-]+)?$": {
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "title": "Licenses",
+            "type": "object"
+          },
+          "mem_mb": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mem Mb"
+          },
+          "plan": {
+            "pattern": "^(sha256|blake3):[0-9a-f]{64}$",
+            "title": "Plan",
+            "type": "string"
+          },
+          "time_s": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Time S"
+          }
+        },
+        "required": [
+          "action_id",
+          "plan"
+        ],
+        "title": "QueueItem",
+        "type": "object"
+      },
+      "QueueLease": {
+        "additionalProperties": false,
+        "description": "An item a pilot leased: run it, renew the lease before `expires_at`, then finish it.",
+        "properties": {
+          "action_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[^\\x00-\\x1f]+$",
+            "title": "Action Id",
+            "type": "string"
+          },
+          "build": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Build"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "item": {
+            "title": "Item",
+            "type": "integer"
+          },
+          "plan": {
+            "pattern": "^(sha256|blake3):[0-9a-f]{64}$",
+            "title": "Plan",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item",
+          "action_id",
+          "plan",
+          "build",
+          "expires_at"
+        ],
+        "title": "QueueLease",
+        "type": "object"
+      },
+      "QueueLeaseRequest": {
+        "additionalProperties": false,
+        "description": "Body of `queue_lease`.",
+        "properties": {
+          "slot": {
+            "$ref": "#/components/schemas/PilotSlot"
+          },
+          "ttl_s": {
+            "maximum": 86400,
+            "minimum": 1,
+            "title": "Ttl S",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "slot",
+          "ttl_s"
+        ],
+        "title": "QueueLeaseRequest",
+        "type": "object"
+      },
+      "QueuePut": {
+        "additionalProperties": false,
+        "description": "Body of `queue_put`: at most `BATCH_MAX` items (the client splits larger puts).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/QueueItem"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "QueuePut",
+        "type": "object"
+      },
+      "QueueRenew": {
+        "additionalProperties": false,
+        "description": "Body of `queue_renew`.",
+        "properties": {
+          "pilot": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\x00-\\x1f]+$",
+            "title": "Pilot",
+            "type": "string"
+          },
+          "ttl_s": {
+            "maximum": 86400,
+            "minimum": 1,
+            "title": "Ttl S",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pilot",
+          "ttl_s"
+        ],
+        "title": "QueueRenew",
         "type": "object"
       },
       "RegisterOutcome": {
@@ -7075,6 +7566,809 @@
         "summary": "Resolve Output",
         "tags": [
           "cache"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain}/pilot-queues/{pool}/cancel": {
+      "post": {
+        "operationId": "queue_cancel_api_v1_domains__domain__pilot_queues__pool__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "pool",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pool",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueIds"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Queue Cancel",
+        "tags": [
+          "pilot"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain}/pilot-queues/{pool}/items": {
+      "post": {
+        "operationId": "queue_put_api_v1_domains__domain__pilot_queues__pool__items_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "pool",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pool",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueuePut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueIds"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Queue Put",
+        "tags": [
+          "pilot"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain}/pilot-queues/{pool}/items/{item}/finish": {
+      "post": {
+        "operationId": "queue_finish_api_v1_domains__domain__pilot_queues__pool__items__item__finish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "pool",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pool",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item",
+            "required": true,
+            "schema": {
+              "title": "Item",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueFinish"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Changed"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Queue Finish",
+        "tags": [
+          "pilot"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain}/pilot-queues/{pool}/items/{item}/renew": {
+      "post": {
+        "operationId": "queue_renew_api_v1_domains__domain__pilot_queues__pool__items__item__renew_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "pool",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pool",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item",
+            "required": true,
+            "schema": {
+              "title": "Item",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueRenew"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Changed"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Queue Renew",
+        "tags": [
+          "pilot"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain}/pilot-queues/{pool}/lease": {
+      "post": {
+        "operationId": "queue_lease_api_v1_domains__domain__pilot_queues__pool__lease_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "pool",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pool",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueLeaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OptionalQueueLease"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Queue Lease",
+        "tags": [
+          "pilot"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain}/pilot-queues/{pool}/status": {
+      "post": {
+        "operationId": "queue_status_api_v1_domains__domain__pilot_queues__pool__status_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "pool",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pool",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueIds"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueEntries"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Queue Status",
+        "tags": [
+          "pilot"
         ]
       }
     },

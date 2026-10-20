@@ -11,7 +11,7 @@ from __future__ import annotations
 import difflib
 import re
 from collections.abc import Callable, Mapping
-from typing import Annotated, Any, NoReturn
+from typing import Annotated, Any, Literal, NoReturn
 
 from pydantic import (
     AfterValidator,
@@ -420,6 +420,12 @@ MaxParallel = Annotated[
 """Tasks of one job array running at once (SLURM `--array=…%N`); a literal (P1-02)."""
 
 
+Execution = Literal["auto", "direct", "pilot"]
+"""How the driver submits a step's actions (P3-06): `direct` (sbatch, job arrays), `pilot` (a pool
+of pilot jobs pulling from a queue), or `auto` (pilots when its actions usually run under
+`[pilot].short_s` or the batch has more than `[pilot].threshold` actions)."""
+
+
 # --- models ------------------------------------------------------------------------------------
 
 
@@ -450,6 +456,8 @@ class Resources(_Model):
     constraint: Constraint | None = None  # node features (SLURM --constraint), ANDed (P1-03)
     # P1-05: retry after a time-limit kill (usually a hang, so not by default; [retry] default)
     retry_on_timeout: StrictBool | None = None
+    # P3-06: pilot jobs or one job per action; None means auto (pilots for short or many actions)
+    execution: Execution | None = None
 
 
 class ToolchainRef(_Model):

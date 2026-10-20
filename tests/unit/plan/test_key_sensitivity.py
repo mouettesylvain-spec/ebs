@@ -203,6 +203,13 @@ EXCLUDED: dict[str, Mutation] = {
     "resources.retry_on_timeout": lambda s, d: _replace(
         s, resources=resources(None, None, None, retry_on_timeout=d.draw(st.booleans()))
     ),
+    # P3-06 R4: pilot or direct submission never reaches the key.
+    "resources.execution": lambda s, d: _replace(
+        s,
+        resources=resources(
+            None, None, None, execution=d.draw(st.sampled_from(["auto", "direct", "pilot"]))
+        ),
+    ),
     "debug": lambda s, d: _replace(s, debug=DebugSpec(("*.log",), 1 << 20, True)),
     "inputs.writable": _input_writable,  # P1-04: how an input is staged, not its content
     "domain": lambda s, d: _replace(s, domain="other-nda"),
@@ -246,7 +253,15 @@ def test_scheduling_fields_not_in_key_document(spec: ActionSpec) -> None:
         return set()
 
     found = keys(action_key_document(spec))
-    assert not found & {"account", "qos", "constraint", "licenses", "resources", "partition"}
+    assert not found & {
+        "account",
+        "qos",
+        "constraint",
+        "licenses",
+        "resources",
+        "partition",
+        "execution",
+    }
 
 
 @given(spec=specs())

@@ -115,6 +115,9 @@ Model details (P0-04):
   its time limit is retried (`ReasonRetry`); None defers to `[retry].retry_on_timeout`. A
   toolchain's value is a default the step overrides. plan.json writes it only when set. Not in
   the action key.
+- `Resources.execution` (P3-06) is `Execution = Literal["auto", "direct", "pilot"]` or None
+  (= `auto`): how the driver submits the step (`ebs.driver.execution`, § 8). A toolchain's value is
+  a default the step overrides. plan.json writes it only when set. Not in the action key.
 - The planner parses a resolved resource string with `ebs.flow.model.parse_memory` / `parse_duration`.
 - `model_dump()` emits the YAML spelling again (`8G`, `30m`, `from`, `zip`), so the result re-validates.
 - `ebs.flow.model.check_ref_syntax(s) -> str | None` validates the grammar below without resolving anything.
@@ -393,6 +396,14 @@ class MetadataStore(Protocol):
     # driver lease (P2-08)
     def claim_driver(self, build: BuildId, owner: str, ttl_s: int) -> DriverLease: ...
     def release_driver(self, build: BuildId, owner: str) -> None: ...
+    # pilot queues (P3-06; class PilotQueueStore, part of MetadataBackend)
+    def queue_put(self, domain: str, pool: UUID, items: Sequence[QueueItem]) -> list[int]: ...
+    def queue_lease(self, domain: str, pool: UUID, slot: PilotSlot, ttl_s: int) -> QueueLease | None: ...
+    def queue_renew(self, domain: str, pool: UUID, item: int, pilot: str, ttl_s: int) -> bool: ...
+    def queue_finish(self, domain: str, pool: UUID, item: int, pilot: str, exit_code: int,
+                     infra_reason: InfraReason | None = None) -> bool: ...
+    def queue_status(self, domain: str, pool: UUID, items: Sequence[int]) -> list[QueueEntry]: ...
+    def queue_cancel(self, domain: str, pool: UUID, items: Sequence[int]) -> None: ...
     # events
     def emit(self, event: Event) -> None: ...
     # toolchain registry (P1-07)
@@ -489,6 +500,23 @@ re-validated on write (values must also pass `canonical_json`).
   `ebs.gc.leases.LeaseKeeper` leases the plan and every known input id at build start, adds
   cache-hit and produced outputs, logs and refined plans, and renews every `ttl / 3`
   (`LEASE_TTL_S = 900`); lease errors are logged, never fatal.
+- Pilot queues (P3-06), **CONTRACT CHANGE (P3-06):** `PilotQueueStore`, implemented by every
+  backend. A pool is a UUID drawn by one `PilotExecutor`, in one domain; items get store ids.
+  `QueueItem{action_id, plan, build?, cpus>=1, mem_mb?, time_s?, licenses{name: n}, features
+  (sorted node features)}`; `PilotSlot{pilot, node?, cpus, mem_mb? (None: no limit),
+  time_left_s, licenses, features}`. `queue_lease` takes the oldest `queued` item of the pool
+  for which `slot_fits(slot, item)` holds (every count within the slot, features a subset,
+  `time_s or 0 <= time_left_s`; PostgreSQL evaluates the same rule in SQL, `SELECT ... FOR
+  UPDATE SKIP LOCKED`, so concurrent pilots never share an item), sets it `leased` until
+  `now + ttl_s` and returns `QueueLease{item, action_id, plan, build, expires_at}`.
+  `queue_renew`/`queue_finish` act only on `pilot`'s live lease and return False otherwise
+  (cancelled, lost or someone else's): the pilot then stops its runner / drops its report.
+  `queue_status` turns leases past their TTL into `lost` first and returns `QueueEntry{item,
+  action_id, state, pilot, node, exit_code, infra_reason}` in order; an id of another pool or
+  domain raises. `queue_cancel` moves `queued`/`leased` items to `cancelled`. States:
+  `QueueState = queued | leased | done | lost | cancelled` (`FINAL_QUEUE_STATES`: the last
+  three); `QUEUE_LEASE_TTL_S = 60`. Over HTTP a put or status of more than `BATCH_MAX` items is
+  several requests (a put: each all or nothing).
 - Driver lease (P2-08 R3), **CONTRACT CHANGE (P2-08):** one live driver per build.
   `claim_driver(build, owner, ttl_s)` atomically takes the lease when the build has none, it
   expired, or `owner` already holds it (a renewal), setting it to expire at `now + ttl_s`, and
@@ -646,6 +674,12 @@ in JSON mode (`model_validate_json`):
 | `POST /builds/{b}/leases/{id}/renew` | `renew_lease` | `LeaseRequest{digests, ttl_s}` → 204 |
 | `POST /builds/{b}/driver` | `claim_driver` | `DriverClaim{owner, ttl_s}` → `DriverLease` (P2-08) |
 | `POST /builds/{b}/driver/release` | `release_driver` | `DriverRelease{owner}` → 204 |
+| `POST /domains/{d}/pilot-queues/{pool}/items` | `queue_put` | `QueuePut{items}` → `QueueIds` (P3-06, `queue_write`) |
+| `POST /domains/{d}/pilot-queues/{pool}/lease` | `queue_lease` | `QueueLeaseRequest{slot, ttl_s}` → `OptionalQueueLease` |
+| `POST /domains/{d}/pilot-queues/{pool}/items/{i}/renew` | `queue_renew` | `QueueRenew{pilot, ttl_s}` → `Changed` |
+| `POST /domains/{d}/pilot-queues/{pool}/items/{i}/finish` | `queue_finish` | `QueueFinish{pilot, exit_code, infra_reason?}` → `Changed` |
+| `POST /domains/{d}/pilot-queues/{pool}/status` | `queue_status` | `QueueIds{ids}` → `QueueEntries` (`read`) |
+| `POST /domains/{d}/pilot-queues/{pool}/cancel` | `queue_cancel` | `QueueIds{ids}` → 204 |
 | `PUT /builds/{b}/pin` | `pin_build` (by = caller) | `PinRequest{reason}` → 204 |
 | `DELETE /builds/{b}/pin` | `unpin_build` | → `Changed` |
 | `POST /builds/{b}/events` | `emit` | `Event` → 204 |
@@ -1071,6 +1105,67 @@ render_jobscript(argv) -> str                         # fixed template, every va
   the last 60 s (`retry_after_s` = until the oldest call leaves the window), or when the jobs in
   flight plus the batch would exceed `max_pending_jobs` (`retry_after_s = poll_min_s`). Neither
   applies when nothing is in flight / no call is in the window, so an oversized batch runs alone.
+
+Pilot executor (P3-06, `ebs.exec.pilot`):
+
+```python
+PilotSettings(max_pilots=50, idle_s=60.0, walltime_s=14400, lease_ttl_s=60, poll_s=1.0,
+              kill_grace_s=30.0, max_pilot_failures=3, threshold=200, short_s=30)
+PilotSettings.from_config(config) -> PilotSettings     # [pilot]; ConfigError names the key
+PilotExecutor(*, cli: SlurmCli, store: PilotStore, domain: str, settings: SlurmSettings,
+              pilot: PilotSettings | None = None, pilot_argv=("ebs-pilot",), runner_argv=("ebs-runner",),
+              env=None, clock=None, project=None, build_kind="dev", pool: UUID | None = None)
+    .submit / .poll / .cancel                         # the Executor protocol; name = "pilot"
+    .close()                                          # scancel the pilots still alive
+    .pool: UUID;  .pilot_refs() -> list[JobRef];  .query_pilots() -> dict[JobRef, SlurmJobInfo]
+# ebs.exec.pilot.queue
+queue_item(spec, *, plan, build) -> QueueItem         # cpus default 1, memory in MiB (rounded up)
+allocation_for(actions, *, walltime_s, os_constraint) -> Allocation(cpus, mem_mb, licenses, features,
+              walltime_s)                             # largest request; walltime >= longest time + 2 x grace
+Allocation.slot(pilot, *, node, elapsed_s) -> PilotSlot   # time left = walltime - JOB_TIME_GRACE_S - elapsed
+# ebs.exec.pilot.worker: `ebs-pilot` (console script)
+pilot_arguments(pilot_argv, PilotConfig) -> list[str] # --domain --pool --cpus [--mem-mb] [--license N=n]...
+              # [--feature F]... --walltime-s --idle-s --lease-ttl-s --poll-s --kill-grace-s --log-dir -- runner...
+PilotWorker(store, PilotConfig, *, pilot, node, clock=None, spawn=spawn_runner, env=None).run() -> int
+```
+
+- `submit` puts the batch in the pool (one `queue_put`) and tops up the pilots of its shape
+  (allocation + `exclude_nodes`) to `min(waiting actions, max_pilots)` with ONE sbatch: a job
+  array, throttle = its size, `--licenses` = the allocation's licenses (held per pilot job, also
+  while idle: keep `idle_s` short), cpus/mem/constraint of the allocation, `--time` = its
+  walltime, job name `ebs:<build uuid[:8]|local>:pilot`, logs `.../slurm/pilot-%A_%a.out`, runner
+  output `.../slurm/pilot/<pilot>/<item>.out`. If the sbatch fails, the batch is withdrawn from
+  the queue and `submit` raises ExecutorError. Handles are `JobHandle("pilot", "<item id>", action)`.
+- A pilot loops lease -> `ebs-runner --plan --action --domain [--build]` -> report, renewing its
+  lease every `ttl / 3`; a refused renewal (cancelled, or lost while the store was unreachable)
+  stops the runner (SIGTERM, SIGKILL after `kill_grace_s`). It exits after `idle_s` without work
+  (a store error counts as idle), when no action fits the walltime left, or on SIGTERM (the
+  runner gets it too; its exit is still reported).
+- `poll`: one `queue_status` for the unfinished handles, plus, at most every
+  `[slurm].poll_min_s`, one `SlurmCli.query` of the pilots, which also starts pilots where
+  actions wait and pilots ended. `queued` => pending (reason: `licenses`/`priority`/`other` if a
+  pilot of the shape waits for it, else `resources`); `leased` => running (node); `done` =>
+  `status_for_exit(exit_code, infra_reason)` (node); `lost` => `infra_failed("node_fail")` (R2:
+  the driver's retry re-queues it); `cancelled` => cancelled. After `max_pilot_failures` pilots
+  of a shape in a row ended other than `done`, its waiting actions are withdrawn and reported
+  `infra_failed("other")`; the next submit of that shape starts fresh pilots.
+- `cancel` withdraws the actions (one `queue_cancel`) and scancels the pilots of every shape left
+  without unfinished actions.
+
+Execution choice (P3-06 R4, `ebs.driver.execution`):
+
+```python
+choose_execution(mode: Execution, *, count, expected_runtime_s, threshold, short_s) -> "direct" | "pilot"
+expected_runtime_s(wall_s) -> int | None              # upper median; None below MIN_SAMPLES (5)
+RoutingExecutor(direct, pilot, *, history: {step: [wall_s]}, threshold, short_s)   # an Executor
+    .name = direct.name;  .direct;  .pilot;  .adopt(build, handles)   # adopt: the direct executor's
+```
+
+`auto` => pilot when the batch has more than `threshold` actions or the step's expected runtime
+(`UsageLog.wall_by_step()`, the work dir's usage log) is under `short_s`; else direct. The choice
+is made on a step's first batch and kept for its later ones (retries). `ebs build --executor
+slurm` gets a `RoutingExecutor` over a `SlurmExecutor` and a `PilotExecutor` (closed at the end).
+Pilot actions record no job id, so a resumed driver (P2-08) runs them again.
 
 `LocalExecutor(log_dir=, runner_argv=("ebs-runner",), max_parallel=None, env=None)` (P0-14) runs
 runner subprocesses on this machine: at most `max_parallel` slots (default `os.cpu_count()`), an

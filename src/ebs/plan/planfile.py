@@ -14,12 +14,13 @@ Action layout (one object per action, in plan order):
                          | {"type": "import", "name", "path", "content"}}],
      "outputs": [{"name", "path", "type", "deterministic", "optional"}],
      "config_files": {...}, "resources": {"cpus", "mem", "time"[, "max_parallel"][, "constraint"]
-                    [, "retry_on_timeout"]},
+                    [, "retry_on_timeout"][, "execution"]},
      "licenses": {...}, "debug": {"collect", "max_size", "on_success"}, "domain", "key"}
 
 Resources are integers (count, bytes, seconds) or null. `max_parallel` (P1-02, a positive
-integer), `constraint` (P1-03, node features joined by `&`) and `retry_on_timeout` (P1-05, a
-boolean) are present only when set, so plans that do not use them encode exactly as before.
+integer), `constraint` (P1-03, node features joined by `&`), `retry_on_timeout` (P1-05, a
+boolean) and `execution` (P3-06: "auto", "direct" or "pilot") are present only when set, so plans
+that do not use them encode exactly as before.
 """
 
 from __future__ import annotations
@@ -27,13 +28,13 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from typing import TypeVar
+from typing import TypeVar, get_args
 
 from ebs.core.canon import canonical_json
 from ebs.core.digest import Digest, hash_bytes
 from ebs.core.errors import DigestError, PlanError
 from ebs.core.types import JsonValue
-from ebs.flow.model import CONSTRAINT_PATTERN, Resources
+from ebs.flow.model import CONSTRAINT_PATTERN, Execution, Resources
 from ebs.plan.keys import KEY_SCHEMA_VERSION, with_key
 from ebs.plan.types import (
     PLAN_FORMAT_VERSION,
@@ -127,6 +128,7 @@ def spec_to_json(spec: ActionSpec) -> JsonValue:
             **({} if res.max_parallel is None else {"max_parallel": res.max_parallel}),
             **({} if res.constraint is None else {"constraint": res.constraint}),
             **({} if res.retry_on_timeout is None else {"retry_on_timeout": res.retry_on_timeout}),
+            **({} if res.execution is None else {"execution": res.execution}),
         },
         "licenses": dict(spec.licenses),
         "debug": {
@@ -348,14 +350,26 @@ def _resources(value: object, path: str) -> Resources:
     retry_on_timeout = None
     if "retry_on_timeout" in doc:
         retry_on_timeout = _bool(doc["retry_on_timeout"], f"{path}.retry_on_timeout")
+    execution = doc.get("execution")
+    if execution is not None and execution not in get_args(Execution):
+        raise _fail(f"{path}.execution", "one of auto, direct, pilot", execution)
     return Resources.model_construct(
-        _fields_set={"cpus", "mem", "time", "max_parallel", "constraint", "retry_on_timeout"},
+        _fields_set={
+            "cpus",
+            "mem",
+            "time",
+            "max_parallel",
+            "constraint",
+            "retry_on_timeout",
+            "execution",
+        },
         cpus=_get(doc, "cpus", path, _opt_int),
         mem=_get(doc, "mem", path, _opt_int),
         time=_get(doc, "time", path, _opt_int),
         max_parallel=max_parallel,
         constraint=constraint,
         retry_on_timeout=retry_on_timeout,
+        execution=execution,
     )
 
 

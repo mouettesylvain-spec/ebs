@@ -26,8 +26,11 @@ from ebs.config import Config, config_paths, load_config
 from ebs.core.clock import Clock, SystemClock
 from ebs.core.errors import ConfigError, ExecutorError, MetadataError, SourceError, ToolchainError
 from ebs.domains import Domains, current_groups, group_id
+from ebs.driver.execution import RoutingExecutor
+from ebs.driver.resources_tuning import UsageLog, usage_path
 from ebs.exec.api import Executor
 from ebs.exec.local import LocalExecutor
+from ebs.exec.pilot.executor import PilotExecutor, PilotSettings
 from ebs.exec.slurm.accounts import BuildKind
 from ebs.exec.slurm.cli import SlurmCli
 from ebs.exec.slurm.executor import SlurmExecutor, SlurmSettings
@@ -320,6 +323,14 @@ class SiteServices:
         found = shutil.which("ebs-runner", path=self.environ.get("PATH"))
         return (found or "ebs-runner",)
 
+    def pilot_argv(self) -> Sequence[str]:
+        """How a pilot job starts `ebs-pilot` (P3-06), found like `ebs-runner`."""
+        beside = Path(sys.executable).parent / "ebs-pilot"
+        if beside.exists():
+            return (str(beside),)
+        found = shutil.which("ebs-pilot", path=self.environ.get("PATH"))
+        return (found or "ebs-pilot",)
+
     def ebs_argv(self) -> Sequence[str]:
         """How to start this `ebs` again (e.g. inside `salloc`, P1-10)."""
         beside = Path(sys.executable).parent / "ebs"
@@ -357,17 +368,45 @@ class SiteServices:
         `project` and `build_kind` pick the SLURM account and QOS (P1-03 R3; `--ci` passes
         "ci"); the local executor has neither and gets the domain per batch."""
         if name == "slurm":
-            yield SlurmExecutor(
+            # P3-06: each step goes to SLURM directly or to a pilot pool (`resources.execution`).
+            settings, store = self.slurm_settings(), self.store(required=True)
+            assert store is not None  # required
+            job_env: dict[str, str] = {k: self.environ[k] for k in _JOB_ENV if k in self.environ}
+            direct = SlurmExecutor(
                 cli=self.slurm_cli(),
                 cas=self.cas(domain),
-                settings=self.slurm_settings(),
-                store=self.store(required=True),
+                settings=settings,
+                store=store,
                 runner_argv=self.runner_argv(),
-                env={k: self.environ[k] for k in _JOB_ENV if k in self.environ},
+                env=job_env,
                 clock=self.clock,
                 project=project,
                 build_kind=build_kind,
             )
+            pilot_settings = PilotSettings.from_config(self.config())
+            pilots = PilotExecutor(
+                cli=self.slurm_cli(),
+                store=store,
+                domain=domain,
+                settings=settings,
+                pilot=pilot_settings,
+                pilot_argv=self.pilot_argv(),
+                runner_argv=self.runner_argv(),
+                env=job_env,
+                clock=self.clock,
+                project=project,
+                build_kind=build_kind,
+            )
+            try:
+                yield RoutingExecutor(
+                    direct,
+                    pilots,
+                    history=UsageLog(usage_path(self.cwd)).wall_by_step(),
+                    threshold=pilot_settings.threshold,
+                    short_s=pilot_settings.short_s,
+                )
+            finally:
+                pilots.close()
             return
         if name != "local":
             raise ExecutorError(f"unknown executor {name!r}; available: {', '.join(EXECUTORS)}")

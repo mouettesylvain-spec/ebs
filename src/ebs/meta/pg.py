@@ -7,17 +7,19 @@ from the injected clock, not from the database, so behaviour is testable with a 
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, ClassVar, Final
+from uuid import UUID
 
 import psycopg
 import sqlalchemy as sa
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import make_url
 
@@ -40,16 +42,22 @@ from ebs.meta._common import (
     check_final_status,
     check_lease_ttl,
     check_pin,
+    check_queue,
+    check_queue_exit,
+    check_queue_ids,
+    check_queue_items,
     check_release,
     check_release_imports,
     check_result,
     check_run,
     check_set_channel,
+    check_slot,
     check_stats_window,
     check_toolchain,
     check_walk,
     edge_models,
     edge_rows,
+    missing_queue_items,
     month_name,
     month_start,
     next_month,
@@ -85,9 +93,14 @@ from ebs.meta.api import (
     GcLock,
     GcRoots,
     GcRun,
+    InfraReason,
     LeaseId,
+    PilotSlot,
     ProvenanceAction,
     ProvenanceGraph,
+    QueueEntry,
+    QueueItem,
+    QueueLease,
     RegisterOutcome,
     ReleaseCreate,
     ReleaseId,
@@ -117,6 +130,7 @@ from ebs.meta.models import (
     gc_runs,
     lease_objects,
     leases,
+    pilot_queue,
     pins,
     provenance_edges,
     release_imports,
@@ -968,6 +982,206 @@ class PgMetadataStore:
                 sa.delete(driver_leases).where(
                     driver_leases.c.build_id == build, driver_leases.c.owner == owner
                 )
+            )
+
+    # --- pilot queues (P3-06) ----------------------------------------------------------------
+
+    def queue_put(self, domain: str, pool: UUID, items: Sequence[QueueItem]) -> list[int]:
+        check_queue(domain, pool, "queue_put")
+        checked = check_queue_items(items)
+        if not checked:
+            return []
+        now = self._clock.now()
+        rows = [
+            {
+                "domain": domain,
+                "pool": pool,
+                "action_id": i.action_id,
+                "plan": str(i.plan),
+                "build_id": i.build,
+                "cpus": i.cpus,
+                "mem_mb": i.mem_mb,
+                "time_s": i.time_s,
+                "licenses": dict(i.licenses),
+                "features": list(i.features),
+                "exclude": list(i.exclude),
+                "state": "queued",
+                "queued_at": now,
+            }
+            for i in checked
+        ]
+        q = pilot_queue
+        with self._tx(f"queue_put in pool {pool}") as conn:
+            self._ensure_domain(conn, domain)
+            result = conn.execute(
+                sa.insert(q).returning(q.c.id, sort_by_parameter_order=True), rows
+            )
+            return [int(r.id) for r in result]
+
+    def queue_lease(
+        self, domain: str, pool: UUID, slot: PilotSlot, ttl_s: int
+    ) -> QueueLease | None:
+        check_queue(domain, pool, "queue_lease")
+        slot = check_slot(slot, ttl_s)
+        now = self._clock.now()
+        q = pilot_queue
+        # The SQL form of `slot_fits`: the contract suite checks both backends agree.
+        licenses_fit = sa.text(
+            "NOT EXISTS (SELECT 1 FROM jsonb_each_text(ebs.pilot_queue.licenses) AS l(name, n) "
+            "WHERE l.n::bigint > COALESCE((CAST(:slot_licenses AS jsonb) ->> l.name)::bigint, 0))"
+        ).bindparams(slot_licenses=json.dumps(dict(slot.licenses)))
+        conditions = [
+            q.c.domain == domain,
+            q.c.pool == pool,
+            q.c.state == "queued",
+            q.c.cpus <= slot.cpus,
+            sa.func.coalesce(q.c.time_s, 0) <= slot.time_left_s,
+            q.c.features.contained_by(sa.literal(list(slot.features), type_=JSONB)),
+            licenses_fit,
+        ]
+        if slot.mem_mb is not None:
+            conditions.append(sa.or_(q.c.mem_mb.is_(None), q.c.mem_mb <= slot.mem_mb))
+        if slot.node is not None:
+            conditions.append(~q.c.exclude.contains(sa.literal([slot.node], type_=JSONB)))
+        with self._tx(f"queue_lease in pool {pool}") as conn:
+            found = conn.execute(
+                sa.select(q.c.id)
+                .where(*conditions)
+                .order_by(q.c.id)
+                .limit(1)
+                .with_for_update(skip_locked=True)  # concurrent pilots take different rows
+            ).first()
+            if found is None:
+                return None
+            row = conn.execute(
+                sa.update(q)
+                .where(q.c.id == found.id)
+                .values(
+                    state="leased",
+                    pilot=slot.pilot,
+                    node=slot.node,
+                    expires_at=now + timedelta(seconds=ttl_s),
+                )
+                .returning(q.c.id, q.c.action_id, q.c.plan, q.c.build_id, q.c.expires_at)
+            ).one()
+        return QueueLease(
+            item=int(row.id),
+            action_id=row.action_id,
+            plan=Digest.parse(row.plan),
+            build=None if row.build_id is None else BuildId(row.build_id),
+            expires_at=row.expires_at,
+        )
+
+    def _live_lease(
+        self, domain: str, pool: UUID, item: int, pilot: str
+    ) -> list[sa.ColumnElement[bool]]:
+        q = pilot_queue
+        return [
+            q.c.id == item,
+            q.c.domain == domain,
+            q.c.pool == pool,
+            q.c.state == "leased",
+            q.c.pilot == pilot,
+            q.c.expires_at > self._clock.now(),
+        ]
+
+    def queue_renew(self, domain: str, pool: UUID, item: int, pilot: str, ttl_s: int) -> bool:
+        check_queue(domain, pool, "queue_renew")
+        check_queue_ids([item], "queue_renew")
+        check_lease_ttl(ttl_s)
+        q = pilot_queue
+        with self._tx(f"queue_renew of item {item}") as conn:
+            renewed = conn.execute(
+                sa.update(q)
+                .where(*self._live_lease(domain, pool, item, pilot))
+                .values(expires_at=self._clock.now() + timedelta(seconds=ttl_s))
+                .returning(q.c.id)
+            ).first()
+        return renewed is not None
+
+    def queue_finish(
+        self,
+        domain: str,
+        pool: UUID,
+        item: int,
+        pilot: str,
+        exit_code: int,
+        infra_reason: InfraReason | None = None,
+    ) -> bool:
+        check_queue(domain, pool, "queue_finish")
+        check_queue_ids([item], "queue_finish")
+        check_queue_exit(exit_code, infra_reason)
+        q = pilot_queue
+        with self._tx(f"queue_finish of item {item}") as conn:
+            done = conn.execute(
+                sa.update(q)
+                .where(*self._live_lease(domain, pool, item, pilot))
+                .values(
+                    state="done", exit_code=exit_code, infra_reason=infra_reason, expires_at=None
+                )
+                .returning(q.c.id)
+            ).first()
+        return done is not None
+
+    def queue_status(self, domain: str, pool: UUID, items: Sequence[int]) -> list[QueueEntry]:
+        check_queue(domain, pool, "queue_status")
+        ids = check_queue_ids(items, "queue_status")
+        if not ids:
+            return []
+        q = pilot_queue
+        mine = [q.c.id.in_(ids), q.c.domain == domain, q.c.pool == pool]
+        with self._tx(f"queue_status in pool {pool}") as conn:
+            conn.execute(
+                sa.update(q)
+                .where(*mine, q.c.state == "leased", q.c.expires_at <= self._clock.now())
+                .values(state="lost", expires_at=None)
+            )
+            rows = {
+                int(r.id): r
+                for r in conn.execute(
+                    sa.select(
+                        q.c.id,
+                        q.c.action_id,
+                        q.c.state,
+                        q.c.pilot,
+                        q.c.node,
+                        q.c.exit_code,
+                        q.c.infra_reason,
+                    ).where(*mine)
+                )
+            }
+        missing = [i for i in ids if i not in rows]
+        if missing:
+            raise missing_queue_items(missing, pool)
+        return [
+            QueueEntry(
+                item=i,
+                action_id=rows[i].action_id,
+                state=rows[i].state,
+                pilot=rows[i].pilot,
+                node=rows[i].node,
+                exit_code=rows[i].exit_code,
+                infra_reason=rows[i].infra_reason,
+            )
+            for i in ids
+        ]
+
+    def queue_cancel(self, domain: str, pool: UUID, items: Sequence[int]) -> None:
+        check_queue(domain, pool, "queue_cancel")
+        ids = check_queue_ids(items, "queue_cancel")
+        if not ids:
+            return
+        q = pilot_queue
+        with self._tx(f"queue_cancel in pool {pool}") as conn:
+            conn.execute(
+                sa.update(q)
+                .where(
+                    q.c.id.in_(ids),
+                    q.c.domain == domain,
+                    q.c.pool == pool,
+                    q.c.state.in_(("queued", "leased")),
+                )
+                .values(state="cancelled", expires_at=None)
             )
 
     def pin_build(self, build: BuildId, *, by: str, reason: str = "") -> None:

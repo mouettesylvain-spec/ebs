@@ -441,6 +441,15 @@ def test_toolchain_defaults_merge_with_step(cas: FsCAS, tmp_path: Path) -> None:
     (action,) = p.plan(flow({"s": step}, toolchains=toolchains), base=tmp_path).actions
     assert action.resources.retry_on_timeout is False
 
+    # P3-06 R4: execution (pilot or direct) is a toolchain default the step may override.
+    assert action.resources.execution is None
+    toolchains["questa"]["resources"] = {"execution": "pilot"}
+    (action,) = p.plan(flow({"s": step}, toolchains=toolchains), base=tmp_path).actions
+    assert action.resources.execution == "pilot"
+    step["resources"] = {"execution": "direct"}
+    (action,) = p.plan(flow({"s": step}, toolchains=toolchains), base=tmp_path).actions
+    assert action.resources.execution == "direct"
+
 
 # P1-03 R1: the step overrides the toolchain per feature, also when a server is pinned.
 @pytest.mark.parametrize(

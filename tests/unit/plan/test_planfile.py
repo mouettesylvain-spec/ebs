@@ -236,3 +236,23 @@ def test_older_key_schema_read_as_recorded(cas: FsCAS, tmp_path: Path) -> None:
         doc["key_schema"] = bad
         with pytest.raises(PlanError, match="key schema"):
             decode(json.dumps(doc).encode(), any_key_schema=True)
+
+
+# P3-06 R4: execution is written only when set, read back, and is not in the key.
+def test_execution_only_when_set() -> None:
+    spec = with_key(dataclasses.replace(shell_spec("true\n"), resources=resources(2, None, 60)))
+    plain = spec_to_json(spec)
+    assert isinstance(plain, dict)
+    assert plain["resources"] == {"cpus": 2, "mem": None, "time": 60}
+    for value in ("auto", "direct", "pilot"):
+        chosen = dataclasses.replace(spec, resources=resources(2, None, 60, execution=value))
+        doc = spec_to_json(chosen)
+        assert isinstance(doc, dict)
+        assert doc["resources"] == {"cpus": 2, "mem": None, "time": 60, "execution": value}
+        assert spec_from_json(json.loads(canonical_json(doc))) == chosen
+        assert with_key(dataclasses.replace(chosen, key=None)).key == spec.key
+    for bad_value in ("sometimes", 1, True):
+        bad = json.loads(canonical_json(spec_to_json(chosen)))
+        bad["resources"]["execution"] = bad_value
+        with pytest.raises(PlanError, match="execution"):
+            spec_from_json(bad)

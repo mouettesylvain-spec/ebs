@@ -27,12 +27,13 @@ from pydantic import (
     StrictBool,
     StrictInt,
     StrictStr,
+    StringConstraints,
     WithJsonSchema,
 )
 
 from ebs.core.digest import Digest
 from ebs.core.errors import DigestError, MetadataError
-from ebs.flow.model import NAME_PATTERN
+from ebs.flow.model import LICENSE_PATTERN, NAME_PATTERN
 
 __all__ = [
     "API_PREFIX",
@@ -43,13 +44,16 @@ __all__ = [
     "DRIVER_LEASE_TTL_S",
     "EVENT_PAGE_MAX",
     "EVENT_TYPE_PATTERN",
+    "FEATURE_PATTERN",
     "FINAL_BUILD_STATUSES",
+    "FINAL_QUEUE_STATES",
     "IMPORT_ALIAS_PATTERN",
     "LEASE_TTL_S",
     "LOG_CHUNK_MAX",
     "MAX_LEASE_TTL_S",
     "PROVENANCE_DEPTH_MAX",
     "PROVENANCE_START_MAX",
+    "QUEUE_LEASE_TTL_S",
     "RELEASE_NAME_PATTERN",
     "STATS_WINDOW_MAX_DAYS",
     "TERMINAL_STATES",
@@ -112,11 +116,14 @@ __all__ = [
     "MetadataBackend",
     "MetadataStore",
     "OptionalDigest",
+    "OptionalQueueLease",
     "OptionalResult",
     "OutputResult",
     "ParamJson",
     "PendingReason",
     "PendingWait",
+    "PilotQueueStore",
+    "PilotSlot",
     "PinRequest",
     "ProvenanceAction",
     "ProvenanceEdge",
@@ -124,6 +131,16 @@ __all__ = [
     "ProvenanceQuery",
     "ProvenanceRelease",
     "ProvenanceStore",
+    "QueueEntries",
+    "QueueEntry",
+    "QueueFinish",
+    "QueueIds",
+    "QueueItem",
+    "QueueLease",
+    "QueueLeaseRequest",
+    "QueuePut",
+    "QueueRenew",
+    "QueueState",
     "RegisterOutcome",
     "ReleaseCreate",
     "ReleaseId",
@@ -152,6 +169,7 @@ __all__ = [
     "check_domain",
     "check_transition",
     "release_output_name",
+    "slot_fits",
 ]
 
 DIGEST_SQL_PATTERN: Final = "^(sha256|blake3):[0-9a-f]{64}$"
@@ -1278,7 +1296,220 @@ class ProvenanceStore(Protocol):
         ...
 
 
-class MetadataBackend(MetadataStore, ReleaseStore, ProvenanceStore, Protocol):
+# --- pilot queue (P3-06) -------------------------------------------------------------------------
+
+QUEUE_LEASE_TTL_S: Final = 60
+"""Visibility timeout of a leased queue item: a pilot renews it every third of it while its
+runner works; a pilot silent for longer is presumed dead and its item is `lost`."""
+
+QueueState = Literal["queued", "leased", "done", "lost", "cancelled"]
+"""`queued` waits for a pilot; `leased` runs on one; `done` has the runner's exit code; `lost`:
+its pilot stopped renewing the lease (an infrastructure failure, retried by the driver);
+`cancelled`: the executor withdrew it (a leased one's pilot stops its runner)."""
+
+FINAL_QUEUE_STATES: Final[frozenset[str]] = frozenset({"done", "lost", "cancelled"})
+
+FEATURE_PATTERN: Final = r"^[A-Za-z0-9_.-]+$"
+"""One SLURM node feature (a constraint is features joined by `&`)."""
+
+_LicenseName = Annotated[StrictStr, StringConstraints(pattern=LICENSE_PATTERN)]
+_Positive = Annotated[StrictInt, Field(ge=1)]
+_Feature = Annotated[StrictStr, StringConstraints(pattern=FEATURE_PATTERN, max_length=256)]
+_ExitCode = Annotated[StrictInt, Field(ge=-128, le=255)]  # negative: killed by that signal
+
+
+def _sorted_features(value: tuple[str, ...]) -> tuple[str, ...]:
+    if list(value) != sorted(set(value)):
+        raise ValueError("must be sorted and unique")
+    return value
+
+
+_Features = Annotated[tuple[_Feature, ...], AfterValidator(_sorted_features)]
+_Nodes = Annotated[tuple[_Name, ...], AfterValidator(_sorted_features)]
+
+
+class QueueItem(BaseModel):
+    """One action for the pilots of a pool: what the runner needs to find it, and what it needs
+    of a pilot's allocation (`slot_fits`). `features` are the node features of its constraint."""
+
+    model_config = _FROZEN
+
+    action_id: ActionId
+    plan: DigestField
+    build: BuildId | None = None  # None: the runner prints its result instead of posting it
+    cpus: _Positive = 1
+    mem_mb: _Positive | None = None
+    time_s: _Positive | None = None
+    licenses: dict[_LicenseName, _Positive] = Field(default_factory=dict)
+    features: _Features = ()
+    exclude: _Nodes = ()  # P1-05: nodes it must not run on (a pilot there never leases it)
+
+
+class PilotSlot(BaseModel):
+    """What one pilot offers when it asks for work (P3-06 R3): its allocation, the walltime it
+    has left for an action, and the licenses and node features its job was granted."""
+
+    model_config = _FROZEN
+
+    pilot: _Name  # the pilot's SLURM job id (array task), as it reports itself
+    node: _Name | None = None
+    cpus: _Positive
+    mem_mb: _Positive | None = None  # None: the job has no memory limit
+    time_left_s: _NonNegative
+    licenses: dict[_LicenseName, _Positive] = Field(default_factory=dict)
+    features: _Features = ()
+
+
+def slot_fits(slot: PilotSlot, item: QueueItem) -> bool:
+    """Whether a pilot with `slot` may run `item` (R3): every resource and license count it
+    asks for is within the allocation, its node features are the pilot's, the pilot's node is
+    not excluded, and its time limit (if any) fits the walltime left. Every store backend
+    leases by exactly this rule."""
+    if item.cpus > slot.cpus or (item.time_s or 0) > slot.time_left_s:
+        return False
+    if item.mem_mb is not None and slot.mem_mb is not None and item.mem_mb > slot.mem_mb:
+        return False
+    if any(slot.licenses.get(name, 0) < count for name, count in item.licenses.items()):
+        return False
+    if slot.node is not None and slot.node in item.exclude:
+        return False
+    return set(item.features) <= set(slot.features)
+
+
+class QueueLease(BaseModel):
+    """An item a pilot leased: run it, renew the lease before `expires_at`, then finish it."""
+
+    model_config = _FROZEN
+
+    item: StrictInt
+    action_id: ActionId
+    plan: DigestField
+    build: BuildId | None
+    expires_at: AwareDatetime
+
+
+class QueueEntry(BaseModel):
+    """Where one queue item stands; `exit_code` and `infra_reason` are the runner's (`done`)."""
+
+    model_config = _FROZEN
+
+    item: StrictInt
+    action_id: ActionId
+    state: QueueState
+    pilot: _Name | None = None
+    node: _Name | None = None
+    exit_code: _ExitCode | None = None
+    infra_reason: InfraReason | None = None
+
+
+class PilotQueueStore(Protocol):
+    """Per-build action queues that pilot jobs pull from (P3-06, interfaces.md § 6).
+
+    A pool is one executor's queue (a UUID it draws), in one domain; items are numbered by the
+    store. Leasing takes the oldest queued item that fits the pilot's slot, and concurrent
+    pilots never lease the same item (PostgreSQL: `FOR UPDATE SKIP LOCKED`). A lease not renewed
+    within its TTL is `lost`: renewing or finishing it then returns False, and the pilot stops
+    its runner. Every method is one short transaction.
+    """
+
+    def queue_put(self, domain: str, pool: UUID, items: Sequence[QueueItem]) -> list[int]:
+        """Queue `items`, all or nothing; their ids, in order."""
+        ...
+
+    def queue_lease(
+        self, domain: str, pool: UUID, slot: PilotSlot, ttl_s: int
+    ) -> QueueLease | None:
+        """Lease the oldest queued item of the pool that fits `slot` until `now + ttl_s`, or
+        None if there is none."""
+        ...
+
+    def queue_renew(self, domain: str, pool: UUID, item: int, pilot: str, ttl_s: int) -> bool:
+        """Extend `pilot`'s live lease of `item` to `now + ttl_s`; False if it is not (any more)
+        leased by `pilot`: it was cancelled or lost, so stop the runner."""
+        ...
+
+    def queue_finish(
+        self,
+        domain: str,
+        pool: UUID,
+        item: int,
+        pilot: str,
+        exit_code: int,
+        infra_reason: InfraReason | None = None,
+    ) -> bool:
+        """Record the runner's exit for `pilot`'s live lease of `item` (state `done`); False,
+        changing nothing, if `pilot` no longer holds it."""
+        ...
+
+    def queue_status(self, domain: str, pool: UUID, items: Sequence[int]) -> list[QueueEntry]:
+        """The entries of `items`, in order; leases past their TTL become `lost` first. An id
+        not in the pool raises MetadataError."""
+        ...
+
+    def queue_cancel(self, domain: str, pool: UUID, items: Sequence[int]) -> None:
+        """Cancel the items that are not final yet; final ones keep their state."""
+        ...
+
+
+class QueuePut(BaseModel):
+    """Body of `queue_put`: at most `BATCH_MAX` items (the client splits larger puts)."""
+
+    model_config = _WIRE
+
+    items: Annotated[list[QueueItem], Field(min_length=1, max_length=BATCH_MAX)]
+
+
+class QueueIds(BaseModel):
+    """Body of `queue_status` and `queue_cancel`, and the response of `queue_put`."""
+
+    model_config = _WIRE
+
+    ids: Annotated[list[StrictInt], Field(max_length=BATCH_MAX)]
+
+
+class QueueLeaseRequest(BaseModel):
+    """Body of `queue_lease`."""
+
+    model_config = _WIRE
+
+    slot: PilotSlot
+    ttl_s: Annotated[StrictInt, Field(ge=1, le=MAX_LEASE_TTL_S)]
+
+
+class OptionalQueueLease(BaseModel):
+    model_config = _WIRE
+
+    lease: QueueLease | None
+
+
+class QueueRenew(BaseModel):
+    """Body of `queue_renew`."""
+
+    model_config = _WIRE
+
+    pilot: _Name
+    ttl_s: Annotated[StrictInt, Field(ge=1, le=MAX_LEASE_TTL_S)]
+
+
+class QueueFinish(BaseModel):
+    """Body of `queue_finish`."""
+
+    model_config = _WIRE
+
+    pilot: _Name
+    exit_code: _ExitCode
+    infra_reason: InfraReason | None = None
+
+
+class QueueEntries(BaseModel):
+    """Response of `queue_status`."""
+
+    model_config = _WIRE
+
+    entries: list[QueueEntry]
+
+
+class MetadataBackend(MetadataStore, ReleaseStore, ProvenanceStore, PilotQueueStore, Protocol):
     """What every store backend implements (PostgreSQL, in-memory, HTTP): `open_metadata_store`
     returns one."""
 

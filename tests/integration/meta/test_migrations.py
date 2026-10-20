@@ -35,6 +35,7 @@ IMPORT_TABLES = {"release_imports"}  # P2-03 (revision 0009)
 DRIVER_TABLES = {"driver_leases"}  # P2-08 (revision 0011)
 GC_LOCK_TABLES = {"gc_locks"}  # P1-09 follow-up (revision 0013)
 P2_TABLES = RELEASE_TABLES | IMPORT_TABLES | DRIVER_TABLES | GC_LOCK_TABLES
+P3_TABLES = {"pilot_queue"}  # P3-06 (revision 0014)
 GOOD = "sha256:" + "a" * 64
 
 
@@ -61,7 +62,7 @@ def test_upgrade_downgrade(empty_db: URL) -> None:
     url = url_string(empty_db)
     assert _tables(empty_db) == set()
     migrations.upgrade(url)
-    assert _tables(empty_db) == P0_TABLES | P1_TABLES | P2_TABLES
+    assert _tables(empty_db) == P0_TABLES | P1_TABLES | P2_TABLES | P3_TABLES
     migrations.downgrade(url)
     engine = sa.create_engine(empty_db, poolclass=sa.pool.NullPool)
     try:
@@ -70,7 +71,7 @@ def test_upgrade_downgrade(empty_db: URL) -> None:
     finally:
         engine.dispose()
     migrations.upgrade(url)  # the round trip leaves nothing behind that blocks a re-upgrade
-    assert _tables(empty_db) == P0_TABLES | P1_TABLES | P2_TABLES
+    assert _tables(empty_db) == P0_TABLES | P1_TABLES | P2_TABLES | P3_TABLES
 
 
 # R1: a deployment may pre-create schema `ebs`, and a role named `ebs` then has it first in its
@@ -482,3 +483,14 @@ def test_gc_lock_revision_round_trip(empty_db: URL) -> None:
     assert "gc_locks" in _tables(empty_db)
     migrations.downgrade(url, "0012_final_plan")
     assert "gc_locks" not in _tables(empty_db)
+
+
+# P3-06: revision 0014 adds the pilot queue and downgrades back to 0013.
+def test_pilot_queue_revision_round_trip(empty_db: URL) -> None:
+    url = url_string(empty_db)
+    migrations.upgrade(url, "0013_gc_locks")
+    assert "pilot_queue" not in _tables(empty_db)
+    migrations.upgrade(url, "0014_pilot_queue")
+    assert "pilot_queue" in _tables(empty_db)
+    migrations.downgrade(url, "0013_gc_locks")
+    assert "pilot_queue" not in _tables(empty_db)
