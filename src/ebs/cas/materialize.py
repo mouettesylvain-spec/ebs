@@ -1,6 +1,7 @@
 """Place CAS objects on local scratch: copies, hard links or read-only symlinks (R7).
 
-Generic over any `CAS`: backends without local paths (S3 later) always copy from `open()`.
+Generic over any `CAS`: backends without local paths (S3) always copy, through their
+`download()` when they have one (parallel ranged GETs), else from `open()`.
 Tree manifests read back from a CAS were never checked against a filesystem, so their symlinks
 are untrusted: targets that would leave `dest` (directly or through a chain of the tree's own
 links) are rejected before any link exists, symlinks are created last, nothing is ever written
@@ -14,7 +15,7 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, get_args
+from typing import Final, Protocol, get_args, runtime_checkable
 
 from ebs.cas.api import CAS, DEFAULT_COPY_THRESHOLD, MaterializeMode, ObjectKind
 from ebs.core.digest import Digest
@@ -35,6 +36,13 @@ _COPY_MODES: Final[dict[tuple[bool, bool], int]] = {
     (True, False): 0o644,
     (True, True): 0o755,
 }
+
+
+@runtime_checkable
+class _Downloads(Protocol):
+    """A remote backend's fast path: write a blob's bytes into the empty file open as `fd`."""
+
+    def download(self, d: Digest, fd: int) -> None: ...
 
 
 @dataclass
@@ -230,6 +238,16 @@ def _link(hard: bool, local: Path, dest: Path) -> None:
 
 def _copy(ctx: _Ctx, d: Digest, dest: Path, executable: bool) -> None:
     final = _COPY_MODES[ctx.writable, executable]
+    if isinstance(ctx.cas, _Downloads):
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        if dest == ctx.dest:
+            ctx.created = True  # removed again if the download fails
+        try:
+            ctx.cas.download(d, fd)
+            os.fchmod(fd, final)
+        finally:
+            os.close(fd)
+        return
     with ctx.cas.open(d) as src:
         # O_EXCL | O_NOFOLLOW: never replace or write through anything already at dest.
         fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
