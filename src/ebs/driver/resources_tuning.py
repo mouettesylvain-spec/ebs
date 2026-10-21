@@ -118,6 +118,14 @@ class UsageLog:
             out.setdefault(sample.step, []).append(sample.max_rss_kb)
         return {step: values[-self._max_samples :] for step, values in out.items()}
 
+    def wall_by_step(self) -> dict[str, list[int]]:
+        """Wall time (s) of the most recent `max_samples` runs per step, oldest first (P3-06:
+        the driver's pilot-or-direct choice)."""
+        out: dict[str, list[int]] = {}
+        for sample in self.samples():
+            out.setdefault(sample.step, []).append(sample.wall_s)
+        return {step: values[-self._max_samples :] for step, values in out.items()}
+
     def _compact(self) -> None:
         with self.path.open("rb") as f:
             count = sum(1 for _ in f)

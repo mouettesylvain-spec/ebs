@@ -16,6 +16,8 @@ from ebs.cli.build import CacheChoice, ExecutorChoice
 from ebs.core.errors import ExitCode
 from ebs.driver.cache_policy import CACHE_MODES
 from ebs.driver.events import read_events
+from ebs.driver.execution import RoutingExecutor
+from ebs.exec.pilot.executor import PilotExecutor
 from ebs.exec.slurm.executor import SlurmExecutor
 from ebs.meta.api import BuildId
 from ebs.meta.client import TOKEN_ENV
@@ -183,12 +185,16 @@ def test_slurm_executor_job_env(site: Site, tmp_path: Path) -> None:
     with SiteServices.open_executor(
         services, "slurm", domain="test", log_dir=tmp_path, project="demo"
     ) as ex:
-        assert isinstance(ex, SlurmExecutor)
-        assert ex._env == {
-            "PATH": "/usr/bin",
-            "EBS_CONFIG": str(tmp_path / "config.toml"),
-            TOKEN_ENV: "secret-token",
-        }
+        # P3-06: steps go to SLURM directly or through pilots; both job kinds get that env.
+        assert isinstance(ex, RoutingExecutor)
+        assert isinstance(ex.direct, SlurmExecutor)
+        assert isinstance(ex.pilot, PilotExecutor)
+        for jobs in (ex.direct, ex.pilot):
+            assert jobs._env == {
+                "PATH": "/usr/bin",
+                "EBS_CONFIG": str(tmp_path / "config.toml"),
+                TOKEN_ENV: "secret-token",
+            }
 
 
 class _StubSbatch:

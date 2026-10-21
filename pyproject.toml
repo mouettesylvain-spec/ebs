@@ -51,6 +51,7 @@ dev = [
 [project.scripts]
 ebs = "ebs.cli.main:app"
 ebs-runner = "ebs.runner.main:main"
+ebs-pilot = "ebs.exec.pilot.worker:main"
 
 # Rule plugins: name = step kind, value = factory called with RuleSettings (ebs.rules.registry).
 [project.entry-points."ebs.rules"]

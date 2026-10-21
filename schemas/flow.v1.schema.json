@@ -371,6 +371,23 @@
           ],
           "default": null,
           "title": "Retry On Timeout"
+        },
+        "execution": {
+          "anyOf": [
+            {
+              "enum": [
+                "auto",
+                "direct",
+                "pilot"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Execution"
         }
       },
       "title": "Resources",
@@ -481,7 +498,8 @@
             "time": null,
             "max_parallel": null,
             "constraint": null,
-            "retry_on_timeout": null
+            "retry_on_timeout": null,
+            "execution": null
           }
         },
         "licenses": {
@@ -630,7 +648,8 @@
             "time": null,
             "max_parallel": null,
             "constraint": null,
-            "retry_on_timeout": null
+            "retry_on_timeout": null,
+            "execution": null
           }
         }
       },
