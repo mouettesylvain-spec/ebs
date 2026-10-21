@@ -5,7 +5,8 @@
 #   L3 exec, runner, sandbox, gc, release, ci, toolchain (registry) · L4 driver, meta.service · L5 cli
 #
 # Within L2, plan sits above sources and rules: the planner drives both, and neither may import
-# plan (P0-08). Siblings separated by ':' may import each other.
+# plan (P0-08). Siblings separated by ':' may import each other; '|' siblings may not (L4 admin
+# tools such as the FlexLM sync, P3-08, are never reachable from a build).
 #
 # `meta` and `toolchain` span several layers, so they are not in the layers contract (import-linter
 # rejects overlapping layers); the forbidden contracts below pin their parts instead. Modules named
@@ -20,7 +21,7 @@ name = Package layering (L0 core ... L5 cli)
 type = layers
 layers =
     ebs.cli
-    ebs.driver
+    ebs.driver | ebs.admin
     ebs.exec : ebs.runner : ebs.sandbox : ebs.gc : ebs.release : ebs.ci
     ebs.plan
     ebs.sources : ebs.rules
@@ -52,6 +53,7 @@ forbidden_modules =
     ebs.gc
     ebs.release
     ebs.driver
+    ebs.admin
     ebs.meta.service
     ebs.cli
 
@@ -106,6 +108,7 @@ forbidden_modules =
     ebs.gc
     ebs.release
     ebs.driver
+    ebs.admin
     ebs.cli
 
 [importlinter:contract:toolchain-is-l3]
@@ -115,6 +118,7 @@ source_modules =
     ebs.toolchain
 forbidden_modules =
     ebs.driver
+    ebs.admin
     ebs.meta.service
     ebs.cli
 
@@ -140,6 +144,7 @@ source_modules =
     ebs.runner
 forbidden_modules =
     ebs.driver
+    ebs.admin
     ebs.plan.planner
     ebs.meta.service
 
@@ -201,6 +206,7 @@ forbidden_modules =
     ebs.gc
     ebs.release
     ebs.driver
+    ebs.admin
     ebs.cli
 
 [importlinter:contract:nothing-imports-cli]

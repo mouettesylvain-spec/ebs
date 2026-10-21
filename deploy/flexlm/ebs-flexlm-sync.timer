@@ -1,0 +1,12 @@
+# FlexLM -> SLURM LastConsumed every minute (P3-08): systemctl enable --now ebs-flexlm-sync.timer
+
+[Unit]
+Description=Sync FlexLM license usage into SLURM every minute
+
+[Timer]
+OnCalendar=minutely
+AccuracySec=5s
+Unit=ebs-flexlm-sync.service
+
+[Install]
+WantedBy=timers.target

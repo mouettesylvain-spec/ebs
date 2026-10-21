@@ -34,6 +34,7 @@ src/ebs/
   release/     releases, channels, flow.lock, provenance queries, attestations,
                sign-off bundles, revalidation                                         (P2/P3)
   sandbox/     staging-only (v1), bubblewrap, apptainer fallback, strace discover     (P1/P3)
+  admin/       admin-account tools outside builds: ebs-flexlm-sync                    (P3)
   cli/         Typer app; one module per command group                                (P0+)
 web/           React + TypeScript dashboard                                           (P2)
 deploy/        compose files, Ansible role, SLURM epilog, cron units                  (P0+)
@@ -50,7 +51,7 @@ L0  core
 L1  config, domains, flow, cas, toolchain(fingerprint only)
 L2  sources, plan, rules, meta(store/models)
 L3  exec, runner, sandbox, gc, release, toolchain(registry)
-L4  driver, meta(service)
+L4  driver, meta(service), admin (independent of driver)
 L5  cli
 ```
 
@@ -61,6 +62,9 @@ L5  cli
   It runs tools through `sandbox` (P3-01), which imports only `core` and `flow`.
 - `rules` plugins may import `core`, `flow`, `rules.api` only.
 - Nothing imports `cli`.
+- No build-path package (driver and below) imports `admin` (P3-08): its tools run as admin
+  accounts from systemd timers,
+  never inside a build.
 
 ## Dependencies (allowed list)
 
@@ -181,6 +185,16 @@ os_constraint = ""             # node feature of the OS image, e.g. "rhel9" (--c
 default = ""
 ci = ""                        # `ebs build --ci`
 release = ""
+
+[flexlm]                       # P3-08: `ebs-flexlm-sync` only, on the admin host (deploy/flexlm)
+# lmutil = "lmutil"
+# sacctmgr = "sacctmgr"
+# timeout_s = 10               # per lmstat / sacctmgr call; whole run < 50 s
+state_file = "/var/lib/ebs-flexlm/state.json"   # warn-once memory; unset: warn every run
+
+[flexlm.servers.flexlm]        # one per SLURM license server name (`<feature>@flexlm`)
+license = "27000@licserver.example"   # `lmutil lmstat -a -c`
+features = ["simfeat"]                 # each a remote license (`sacctmgr add resource`)
 
 [release.gates]                # P2-02: channel (or "name:channel") => gate flow project
 # stable = "cpu-gate"          # read by the CLI on a direct database, else by the service

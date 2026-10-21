@@ -1,0 +1,34 @@
+lmutil - synthetic lmstat output for ebs tests (not captured from a real server)
+Flexible License Manager status on Mon 10/20/2026 10:00
+
+[Detecting lmgrd processes...]
+License server status: 27000@lic1.example
+    License file(s) on lic1.example: /opt/licenses/site.lic:
+
+lic1.example: license server UP (MASTER) v11.19.6
+
+Vendor daemon status (on lic1.example):
+
+     vendora: UP v11.19.6
+Feature usage info:
+
+Users of simfeat:  (Total of 10 licenses issued;  Total of 3 licenses in use)
+
+  "simfeat" v2025.020, vendor: vendora, expiry: 31-dec-2026
+  floating license
+
+    user1 host-a /dev/pts/1 (v2025.020) (lic1.example/27000 101), start Mon 10/20 9:00
+    user2 host-b /dev/pts/4 (v2025.020) (lic1.example/27000 202), start Mon 10/20 9:12
+    user3 host-c /dev/pts/2 (v2025.020) (lic1.example/27000 303), start Mon 10/20 9:40
+
+Users of lintfeat:  (Total of 1 license issued;  Total of 0 licenses in use)
+
+Users of gui_feat:  (Total of 4 licenses issued;  Total of 1 license in use)
+
+  "gui_feat" v2025.020, vendor: vendora, expiry: 31-dec-2026
+  floating license
+
+    user4 host-d :0 (v2025.020) (lic1.example/27000 404), start Mon 10/20 8:01
+
+Users of nodelocked:  (Uncounted, node-locked)
+
