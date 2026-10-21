@@ -60,14 +60,13 @@ def _real_s3(
     monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-aws-config"))
     monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "no-aws-credentials"))
     settings = S3Settings(
-        bucket=f"ebs-test-{secrets.token_hex(6)}",
-        prefix="cas",
+        bucket=request.getfixturevalue("s3_bucket"),
+        prefix=f"cas-{secrets.token_hex(6)}",  # per test, in the session's one bucket
         endpoint_url=server.endpoint_url,
         region="us-east-1",
         multipart_threshold=5 << 20,
         part_size=5 << 20,
     )
-    server.client().create_bucket(Bucket=settings.bucket)
     return lambda domain: S3CAS.connect(settings, domain)
 
 

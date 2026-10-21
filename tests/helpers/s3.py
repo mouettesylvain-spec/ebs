@@ -263,7 +263,11 @@ def s3_server() -> Iterator[S3Server]:
     except ImportError:  # pragma: no cover - dev extra always installs it
         pytest.skip(_MISSING)
     container = (
-        DockerContainer(_IMAGE).with_command("server -s3 -dir=/data").with_exposed_ports(8333)
+        DockerContainer(_IMAGE)
+        # Small volumes, many slots: each bucket reserves volumes, and the default slot count
+        # is exhausted after a few buckets on a runner's disk (InternalError on PUT).
+        .with_command("server -s3 -dir=/data -volume.max=100 -master.volumeSizeLimitMB=64")
+        .with_exposed_ports(8333)
     )
     try:
         container.start()
@@ -276,6 +280,19 @@ def s3_server() -> Iterator[S3Server]:
         yield server
     finally:
         container.stop()
+
+
+@pytest.fixture(scope="session")
+def s3_bucket(s3_server: S3Server) -> str:
+    """One bucket per session; tests isolate themselves with a key prefix each.
+
+    Not a bucket per test: SeaweedFS makes every bucket a collection with volumes of its own,
+    and on a small disk (CI runners) it runs out of volume slots after a dozen buckets and
+    answers InternalError.
+    """
+    bucket = f"ebs-test-{secrets.token_hex(6)}"
+    s3_server.client().create_bucket(Bucket=bucket)
+    return bucket
 
 
 def _wait_ready(server: S3Server) -> None:
