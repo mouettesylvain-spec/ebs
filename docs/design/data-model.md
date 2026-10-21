@@ -119,6 +119,12 @@ gc_locks(domain text PK, owner text check 1..256 chars, expires_at)
 ## Phase 3
 
 ```
+pilot_queue(id bigserial PK, domain FK domains, pool uuid, action_id text, plan text check digest,
+            build_id bigint NULL, cpus int check >= 1, mem_mb bigint NULL, time_s bigint NULL,
+            licenses jsonb object, features jsonb array, state text check in QueueState,
+            pilot text NULL, node text NULL, expires_at NULL (set while leased),
+            exit_code int NULL, infra_reason text check in InfraReason, queued_at)
+            index (domain, pool, state, id)   -- 0014, P3-06: leased with FOR UPDATE SKIP LOCKED
 revalidations(id, release_id FK, started_at, finished_at, toolchain_overrides jsonb,
               verdict text, report_digest text)
 archives(id, release_id FK, bundle_digest text, location text, created_at)

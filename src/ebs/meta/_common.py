@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TypeVar, get_args
+from uuid import UUID
 
 from pydantic import BaseModel, ValidationError
 
@@ -29,12 +30,15 @@ from ebs.meta.api import (
     DomainStats,
     Event,
     GcRun,
+    InfraReason,
     PendingReason,
     PendingWait,
+    PilotSlot,
     ProvenanceAction,
     ProvenanceEdge,
     ProvenanceGraph,
     ProvenanceRelease,
+    QueueItem,
     ReleaseCreate,
     ReleaseImport,
     ReleaseView,
@@ -225,6 +229,52 @@ def check_driver_owner(owner: object, what: str) -> str:
             f"got {owner!r}"
         )
     return owner
+
+
+INFRA_REASONS: frozenset[str] = frozenset(get_args(InfraReason))
+
+
+def check_queue(domain: object, pool: object, what: str) -> str:
+    """The domain of a pilot queue call (P3-06); `pool` must be a UUID."""
+    if not isinstance(pool, UUID):
+        raise MetadataError(f"{what}: the pool must be a UUID, got {type(pool).__name__}")
+    return check_domain(domain)
+
+
+def check_queue_items(items: Iterable[QueueItem]) -> list[QueueItem]:
+    return [revalidate(i, QueueItem, "queue item") for i in items]
+
+
+def check_queue_ids(ids: Iterable[object], what: str) -> list[int]:
+    out = list(ids)
+    bad = [i for i in out if type(i) is not int]
+    if bad:
+        raise MetadataError(f"{what}: queue item ids are integers, got {bad[:3]!r}")
+    return out  # type: ignore[return-value]  # checked just above
+
+
+def check_slot(slot: PilotSlot, ttl_s: object) -> PilotSlot:
+    check_lease_ttl(ttl_s)
+    return revalidate(slot, PilotSlot, "pilot slot")
+
+
+def check_queue_exit(exit_code: object, infra_reason: object) -> None:
+    if type(exit_code) is not int or not -128 <= exit_code <= 255:
+        raise MetadataError(
+            f"queue_finish: exit_code must be the runner's exit code (-128..255), got {exit_code!r}"
+        )
+    if infra_reason is not None and infra_reason not in INFRA_REASONS:
+        raise MetadataError(
+            f"queue_finish: unknown infra_reason {infra_reason!r}; expected one of "
+            f"{sorted(INFRA_REASONS)}"
+        )
+
+
+def missing_queue_items(missing: Iterable[int], pool: UUID) -> MetadataError:
+    return MetadataError(
+        f"no queue item(s) {sorted(missing)} in pilot pool {pool} of this domain: they belong "
+        "to another pool or domain, or were never queued"
+    )
 
 
 def check_pin(by: object, reason: object) -> tuple[str, str]:

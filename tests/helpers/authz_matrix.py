@@ -16,6 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -30,6 +31,8 @@ from ebs.meta.api import (
     BuildId,
     Event,
     LeaseId,
+    PilotSlot,
+    QueueItem,
     ReleaseCreate,
     ReleaseImport,
     ReleaseOutput,
@@ -75,6 +78,8 @@ class Mine:
     finished: BuildId
     release: ReleaseView
     lease: LeaseId
+    pool: UUID  # P3-06: a pilot queue in A holding `item`
+    item: int
 
 
 def _service(pg: ServiceBackend) -> tuple[Service, list[Who]]:
@@ -115,10 +120,16 @@ def _mine(pg: ServiceBackend, who: Who) -> Mine:
         by=who.user,
     )  # fmt: skip
     pg.set_channel(A, "rtl/cpu", f"ch-{who.name.replace('-', '')}", release.id, by=who.user)
-    return Mine(running, done, release, lease)
+    pool = uuid4()
+    (item,) = pg.queue_put(A, pool, [QueueItem(action_id="a", plan=LIB.digest, build=running)])
+    return Mine(running, done, release, lease, pool, item)
 
 
 Op = Callable[[HttpMetadataStore, Mine, Who], object]
+
+
+def _slot(w: Who) -> PilotSlot:
+    return PilotSlot(pilot=f"{w.name}-pilot", cpus=1, time_left_s=600)
 
 
 def _release_spec(m: Mine, w: Who) -> ReleaseCreate:
@@ -210,6 +221,36 @@ OPS: list[tuple[str, Op, frozenset[str]]] = [
         frozenset({A}),
     ),
     ("PUT /builds/{build}/pin", lambda c, m, w: c.pin_build(m.finished, by=w.user), frozenset({A})),
+    (  # P3-06: pilot queues need membership of their domain
+        "POST /domains/{domain}/pilot-queues/{pool}/items",
+        lambda c, m, w: c.queue_put(A, m.pool, [QueueItem(action_id="b", plan=LIB.digest)]),
+        frozenset({A}),
+    ),
+    (
+        "POST /domains/{domain}/pilot-queues/{pool}/lease",
+        lambda c, m, w: c.queue_lease(A, m.pool, _slot(w), 60),
+        frozenset({A}),
+    ),
+    (
+        "POST /domains/{domain}/pilot-queues/{pool}/items/{item}/renew",
+        lambda c, m, w: c.queue_renew(A, m.pool, m.item, _slot(w).pilot, 60),
+        frozenset({A}),
+    ),
+    (
+        "POST /domains/{domain}/pilot-queues/{pool}/items/{item}/finish",
+        lambda c, m, w: c.queue_finish(A, m.pool, m.item, _slot(w).pilot, 0),
+        frozenset({A}),
+    ),
+    (
+        "POST /domains/{domain}/pilot-queues/{pool}/status",
+        lambda c, m, w: c.queue_status(A, m.pool, [m.item]),
+        frozenset({A}),
+    ),
+    (
+        "POST /domains/{domain}/pilot-queues/{pool}/cancel",
+        lambda c, m, w: c.queue_cancel(A, m.pool, [m.item]),
+        frozenset({A}),
+    ),
     ("DELETE /builds/{build}/pin", lambda c, m, w: c.unpin_build(m.finished), frozenset({A})),
     (
         "POST /builds/{build}/release-imports",

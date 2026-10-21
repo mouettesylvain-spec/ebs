@@ -1,11 +1,13 @@
 """Executor contract (interfaces.md § 8): every executor passes this suite.
 
 Each case provides an executor whose runner is the scripted fake (`tests/helpers/fake_runner.py`).
-The SLURM executor runs against FakeSlurm (P1-02), with a cluster of CAPACITY cpus.
+The SLURM executor runs against FakeSlurm (P1-02), with a cluster of CAPACITY cpus; so does the
+pilot executor (P3-06), whose pilot jobs pull the actions from a queue in PostgreSQL.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,12 +15,16 @@ from pathlib import Path
 import pytest
 
 from ebs.cas.fs import FsCAS
+from ebs.config import CONFIG_ENV
 from ebs.exec.api import Executor
 from ebs.exec.local import LocalExecutor
+from ebs.exec.pilot.executor import PilotExecutor, PilotSettings
 from ebs.exec.slurm.executor import SlurmExecutor, SlurmSettings
+from ebs.meta.pg import PgMetadataStore
 from ebs.runner.errors import format_infra_line
 from tests.fakes.slurm import FakeSlurm
-from tests.helpers.executor import FakeRunner, batch, wait_states
+from tests.helpers.executor import PILOT_ARGV, FakeRunner, batch, wait_states
+from tests.helpers.pg import url_string
 from tests.helpers.runner import DOMAIN
 from tests.helpers.wait import wait_until
 
@@ -31,7 +37,9 @@ class Case:
     start: Callable[[], Executor]
 
 
-def _local(tmp_path: Path, fake: FakeRunner) -> Iterator[Callable[[], Executor]]:
+def _local(
+    tmp_path: Path, fake: FakeRunner, request: pytest.FixtureRequest
+) -> Iterator[Callable[[], Executor]]:
     created: list[LocalExecutor] = []
 
     def start() -> Executor:
@@ -46,7 +54,9 @@ def _local(tmp_path: Path, fake: FakeRunner) -> Iterator[Callable[[], Executor]]
         ex.close(grace_s=2)
 
 
-def _slurm(tmp_path: Path, fake: FakeRunner) -> Iterator[Callable[[], Executor]]:
+def _slurm(
+    tmp_path: Path, fake: FakeRunner, request: pytest.FixtureRequest
+) -> Iterator[Callable[[], Executor]]:
     slurm = FakeSlurm.install(tmp_path / "fakeslurm", cpus=CAPACITY)
     fake.cas_root = tmp_path / "cas"
     cas = FsCAS(fake.cas_root, DOMAIN)
@@ -64,9 +74,44 @@ def _slurm(tmp_path: Path, fake: FakeRunner) -> Iterator[Callable[[], Executor]]
     slurm.shutdown()
 
 
-FACTORIES: dict[str, Callable[[Path, FakeRunner], Iterator[Callable[[], Executor]]]] = {
+def _pilot(
+    tmp_path: Path, fake: FakeRunner, request: pytest.FixtureRequest
+) -> Iterator[Callable[[], Executor]]:
+    """P3-06 R5: pilots under FakeSlurm pull the actions from a PostgreSQL queue."""
+    slurm = FakeSlurm.install(tmp_path / "fakeslurm", cpus=CAPACITY)
+    url = url_string(request.getfixturevalue("pg_url"))
+    config = tmp_path / "ebs.toml"
+    config.write_text(f"[metadata]\nurl = {json.dumps(url)}\n")
+    store = PgMetadataStore.from_config({"url": url})
+    created: list[PilotExecutor] = []
+
+    def start() -> Executor:
+        ex = PilotExecutor(
+            cli=slurm.cli(),
+            store=store,
+            domain=DOMAIN,
+            settings=SlurmSettings(debug_root=tmp_path / "debug", poll_min_s=0.2),
+            pilot=PilotSettings(max_pilots=CAPACITY + 2, idle_s=2.0, lease_ttl_s=3, poll_s=0.05),
+            pilot_argv=PILOT_ARGV,
+            runner_argv=fake.argv,
+            env={**fake.env(), CONFIG_ENV: str(config)},
+        )
+        created.append(ex)
+        return ex
+
+    yield start
+    for ex in created:
+        ex.close()
+    slurm.shutdown()
+    store.close()
+
+
+FACTORIES: dict[
+    str, Callable[[Path, FakeRunner, pytest.FixtureRequest], Iterator[Callable[[], Executor]]]
+] = {
     "local": _local,
     "slurm": _slurm,
+    "pilot": _pilot,
 }
 
 
@@ -75,11 +120,13 @@ FACTORIES: dict[str, Callable[[Path, FakeRunner], Iterator[Callable[[], Executor
         "local",
         # FakeSlurm runs jobs through detached supervisor processes.
         pytest.param("slurm", marks=pytest.mark.integration),
+        # P3-06 R5: pilot processes share the queue through PostgreSQL.
+        pytest.param("pilot", marks=pytest.mark.integration),
     ]
 )
 def case(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Case]:
     fake = FakeRunner(tmp_path / "fake")
-    gen = FACTORIES[request.param](tmp_path, fake)
+    gen = FACTORIES[request.param](tmp_path, fake, request)
     yield Case(fake, next(gen))
     next(gen, None)
 

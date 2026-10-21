@@ -23,6 +23,7 @@ from ebs.meta.api import (
     CacheMode,
     InfraReason,
     PendingReason,
+    QueueState,
 )
 from ebs.meta.api import RELEASE_NAME_PATTERN as _RELEASE_NAME
 from ebs.meta.api import VERSION_PATTERN as _VERSION
@@ -45,6 +46,7 @@ __all__ = [
     "lease_objects",
     "leases",
     "metadata",
+    "pilot_queue",
     "pins",
     "provenance_edges",
     "release_imports",
@@ -459,4 +461,40 @@ driver_leases = sa.Table(  # one live driver per build; renewed by the driver's 
     sa.Column("expires_at", _TS, nullable=False),
     sa.Column("claimed_at", _TS, nullable=False),
     sa.CheckConstraint("length(owner) BETWEEN 1 AND 256", name="owner_length"),
+)
+
+
+# --- Phase 3: pilot worker pool (P3-06, revision 0014) --------------------------------------------
+
+pilot_queue = sa.Table(  # actions waiting for, or leased by, the pilot jobs of a pool
+    "pilot_queue",
+    metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    _domain_fk(),
+    sa.Column("pool", sa.Uuid, nullable=False),
+    sa.Column("action_id", sa.Text, nullable=False),
+    sa.Column("plan", sa.Text, nullable=False),
+    sa.Column("build_id", sa.BigInteger, nullable=True),
+    sa.Column("cpus", sa.Integer, nullable=False),
+    sa.Column("mem_mb", sa.BigInteger, nullable=True),
+    sa.Column("time_s", sa.BigInteger, nullable=True),
+    sa.Column("licenses", JSONB, nullable=False),  # {feature: count}
+    sa.Column("features", JSONB, nullable=False),  # sorted node features
+    sa.Column("exclude", JSONB, nullable=False),  # sorted nodes it must not run on (P1-05)
+    sa.Column("state", sa.Text, nullable=False),
+    sa.Column("pilot", sa.Text, nullable=True),
+    sa.Column("node", sa.Text, nullable=True),
+    sa.Column("expires_at", _TS, nullable=True),
+    sa.Column("exit_code", sa.Integer, nullable=True),
+    sa.Column("infra_reason", sa.Text, nullable=True),
+    sa.Column("queued_at", _TS, nullable=False),
+    _digest_check("plan"),
+    _in_check("state", QueueState),
+    _in_check("infra_reason", InfraReason),
+    sa.CheckConstraint("cpus >= 1", name="cpus_positive"),
+    sa.CheckConstraint("jsonb_typeof(licenses) = 'object'", name="licenses_object"),
+    sa.CheckConstraint("jsonb_typeof(features) = 'array'", name="features_array"),
+    sa.CheckConstraint("jsonb_typeof(exclude) = 'array'", name="exclude_array"),
+    sa.CheckConstraint("state <> 'leased' OR expires_at IS NOT NULL", name="lease_expires"),
+    sa.Index(None, "domain", "pool", "state", "id"),
 )

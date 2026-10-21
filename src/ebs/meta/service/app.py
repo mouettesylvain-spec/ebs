@@ -72,6 +72,7 @@ from ebs.meta.service.routes import (
     cache,
     dashboard,
     events,
+    pilot,
     probes,
     provenance,
     releases,
@@ -201,7 +202,8 @@ def create_app(
     if deps.oidc is not None:
         app.include_router(auth_routes.router)
     routers = (probes.api, cache.router, builds.router, events.router, toolchains.router)
-    for router in (*routers, releases.router, provenance.router, dashboard.router):
+    more = (releases.router, provenance.router, dashboard.router, pilot.router)
+    for router in (*routers, *more):
         app.include_router(router, prefix=API_PREFIX, responses=_ERRORS)
 
     @app.get("/metrics", include_in_schema=False)
