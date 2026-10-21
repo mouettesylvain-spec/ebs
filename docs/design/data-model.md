@@ -127,7 +127,9 @@ pilot_queue(id bigserial PK, domain FK domains, pool uuid, action_id text, plan 
             index (domain, pool, state, id)   -- 0014, P3-06: leased with FOR UPDATE SKIP LOCKED
 revalidations(id, release_id FK, started_at, finished_at, toolchain_overrides jsonb,
               verdict text, report_digest text)
-archives(id, release_id FK, bundle_digest text, location text, created_at)
+archives(id bigserial PK, release_id FK releases, bundle_digest text check digest,
+         location text check 1..4096 chars, created_at, created_by)
+         index (release_id)   -- 0015, P3-04: sign-off bundles in cold storage; append-only (trigger)
 ```
 
 ## Query patterns that must stay indexed

@@ -87,6 +87,7 @@ def test_every_list_route_is_paginated() -> None:
         "GET /channels/history",
         "GET /domains/{domain}/builds",
         "GET /releases",
+        "GET /releases/{release}/archives",
         "GET /releases/{release}/exports",
         "GET /toolchains",
     ]

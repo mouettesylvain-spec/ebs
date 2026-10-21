@@ -330,6 +330,18 @@ OPS: list[tuple[str, Op, frozenset[str]]] = [
         frozenset({A}),
     ),
     (
+        "GET /releases/{release}/archives",
+        lambda c, m, w: c.list_archives(m.release.id),
+        frozenset({A}),
+    ),
+    (
+        "POST /releases/{release}/archives",
+        lambda c, m, w: c.record_archive(
+            m.release.id, hash_bytes(b"bundle"), "/cold/matrix.signoff.tar.zst", by=w.user
+        ),
+        frozenset({A}),
+    ),
+    (
         "POST /releases/{release}/exports",
         lambda c, m, w: c.record_export(m.release.id, B, by=w.user),
         frozenset({A, B}),

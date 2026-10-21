@@ -65,7 +65,8 @@ L5  cli
 ## Dependencies (allowed list)
 
 Runtime: `pydantic>=2.11`, `ruamel.yaml`, `typer`, `rich`, `sqlalchemy>=2`, `alembic`,
-`psycopg[binary]>=3`, `fastapi`, `uvicorn`, `httpx`, `structlog`, `tomli-w`.
+`psycopg[binary]>=3`, `fastapi`, `uvicorn`, `httpx`, `structlog`, `tomli-w`,
+`zstandard` (sign-off bundles, P3-04: Python < 3.14 has no zstd module).
 Optional extras: `blake3` (`[blake3]`), `boto3` (`[s3]`, P3).
 Dev: `pytest`, `pytest-cov`, `hypothesis`, `jsonschema` (schema tests, P0-04), `pytest-timeout`, `pytest-xdist`, `testcontainers[postgres]`,
 `syrupy` (golden files), `import-linter`, `mypy`, `ruff`, `respx` (httpx mocks), `xmlschema`

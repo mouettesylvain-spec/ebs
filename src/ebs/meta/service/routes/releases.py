@@ -1,4 +1,4 @@
-"""Release, channel and export routes (P2-02 R5).
+"""Release, channel, export and archive routes (P2-02 R5, P3-04 R2).
 
 Writes are authorized as `release_write` / `release_export` on the owner of the release's build.
 The store checks a new release against its build; a channel move runs the service's own gate
@@ -16,6 +16,9 @@ from fastapi import APIRouter, Depends, Response
 
 from ebs.core.errors import MetadataError, ReleaseError
 from ebs.meta.api import (
+    ArchiveList,
+    ArchiveRecord,
+    ArchiveRequest,
     BuildId,
     BuildList,
     ChannelHistory,
@@ -171,6 +174,37 @@ def list_exports(
         query={"list": "exports", "release": release},
     )
     return ok(ExportList(exports=page, next=after))
+
+
+@router.post(
+    "/releases/{release}/archives",
+    response_model=ArchiveRecord,
+    openapi_extra=json_body(ArchiveRequest),
+)
+def record_archive(
+    release: int,
+    req: Annotated[ArchiveRequest, Depends(body(ArchiveRequest))],
+    deps: Deps,
+    caller: Caller,
+) -> Response:
+    found = _release(deps, caller, release, "release_write")
+    return ok(deps.store.record_archive(found.id, req.bundle, req.location, by=caller.name))
+
+
+@router.get("/releases/{release}/archives", response_model=ArchiveList)
+def list_archives(
+    release: int, deps: Deps, caller: Caller, limit: Limit = None, cursor: Cursor = None
+) -> Response:
+    _release(deps, caller, release, "read")
+    page, after = paginate(
+        deps.store.list_archives(ReleaseId(release)),
+        lambda x: (x.id,),
+        cursor=cursor,
+        limit=limit,
+        max_page_size=deps.limits.max_page_size,
+        query={"list": "archives", "release": release},
+    )
+    return ok(ArchiveList(archives=page, next=after))
 
 
 @router.put("/channels", response_model=ChannelMove, openapi_extra=json_body(ChannelSet))

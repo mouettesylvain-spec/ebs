@@ -59,6 +59,9 @@ from ebs.meta.api import (
     ActionList,
     ActionRow,
     ActionState,
+    ArchiveList,
+    ArchiveRecord,
+    ArchiveRequest,
     BlobBatch,
     BlobRef,
     BuildCreate,
@@ -152,7 +155,14 @@ _RETRY_AFTER_CAP_S: Final = 60.0
 
 _M = TypeVar("_M", bound=BaseModel)
 _P = TypeVar(
-    "_P", ActionList, ToolchainList, ReleaseList, ChannelHistory, ExportList, ReleaseImportList
+    "_P",
+    ActionList,
+    ToolchainList,
+    ReleaseList,
+    ChannelHistory,
+    ExportList,
+    ReleaseImportList,
+    ArchiveList,
 )
 _T = TypeVar("_T")
 
@@ -1044,3 +1054,18 @@ class HttpMetadataStore:
         what = f"list_exports {release}"
         pages = self._pages(f"/releases/{int(release)}/exports", what, ExportList)
         return [x for page in pages for x in page.exports]
+
+    def record_archive(
+        self, release: ReleaseId, bundle: Digest, location: str, *, by: str
+    ) -> ArchiveRecord:
+        what = f"record_archive {release}"
+        r = self._call(
+            "POST", f"/releases/{int(release)}/archives", what,
+            body=ArchiveRequest(bundle=bundle, location=location), idempotent=True,
+        )  # fmt: skip
+        return self._parse(r, ArchiveRecord, what)
+
+    def list_archives(self, release: ReleaseId) -> list[ArchiveRecord]:
+        what = f"list_archives {release}"
+        pages = self._pages(f"/releases/{int(release)}/archives", what, ArchiveList)
+        return [x for page in pages for x in page.archives]

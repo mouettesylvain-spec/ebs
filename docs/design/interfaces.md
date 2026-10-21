@@ -600,8 +600,12 @@ re-validated on write (values must also pass `canonical_json`).
   edges belong to the action key), `record_export(release, to_domain, *, by) -> ReleaseView`
   (the same release in `to_domain` with `exported_from`, plus an `ExportRecord{id, release,
   exported, to_domain, exported_at, exported_by}` audit row, atomically), `list_exports(release)`
-  (rows naming it as source or copy). Release outputs (content digests, also of yanked releases)
-  are `GcRoots.released`.
+  (rows naming it as source or copy), **CONTRACT CHANGE (P3-04):** `record_archive(release, bundle: Digest, location, *, by)
+  -> ArchiveRecord{id, release, bundle, location, created_at, created_by}` (P3-04: a sign-off
+  bundle written to `location`, 1-4096 characters without control characters; append-only, the
+  same release, bundle and location again returns the first row), `list_archives(release)`
+  (oldest first). Release outputs (content digests, also of yanked releases) are
+  `GcRoots.released`.
 - `ProvenanceStore` (P2-04; PostgreSQL as one recursive CTE, in-memory, HTTP; part of
   `MetadataBackend`). **CONTRACT CHANGE (P2-04):** new protocol and models. `provenance_upstream(
   domain, *, ids, keys, depth)` / `provenance_downstream(...)` -> `ProvenanceGraph{domain, edges:
@@ -662,6 +666,46 @@ re-validated on write (values must also pass `canonical_json`).
   (`gitCommit`); `runDetails{builder.id "ebs@<plan ebs_version>", metadata{invocationId = build
   UUID, startedOn, finishedOn}}`), `params_digest(plan)` (digest of `{action id: params}`),
   `import_deps(store, build)`.
+- `ebs.release.archive` (L3, P3-04): sign-off bundles. `archive_release(store, cas, release, *,
+  to, repo, git: Git, toolchains: ToolchainResolver, by, with_outputs=False, sign=None) ->
+  ArchiveRecord` writes `<to>/<name with / -> _>_<version>.signoff.tar.zst` (written in a temp
+  dir under `to`, fsynced, mode 0444, hard-linked into place: never replaced; the same bytes again
+  only return the record) and `record_archive`s it. `collect_members(...) -> (members, header)`,
+  `write_bundle(members, dest, *, header) -> Digest` (adds `manifest.json`: header + `members:
+  {name: {digest, size}}`), `write_archive(entries, dest)` (tar, PAX, manifest first then sorted,
+  mtime 0, uid/gid 0, mode 0644, zstd level 10 single-threaded). Members: `manifest.json`,
+  `release.json`, `build.json`, `actions.json` (`{actions: [ActionRow], results: {id:
+  ResultManifest}}`), `attestation.json` (`provenance_statement`), `attestation.intoto.json`
+  (with `sign`), `plan.json`, `final-plan.json` (when it differs), `git/flow.bundle` (ref
+  `refs/ebs/archive/<commit>`, packed single-threaded from a scratch repository that borrows the
+  source's objects, so the source repository is never written), `imports/<release digest
+  hex>/{release,plan}.json` (recursive lock closure), `toolchains/<name>.json` (`{name, module,
+  version, fingerprint, env, install_roots, id}`: the registered record, else the resolver's
+  toolchain, which must have the planned id), `cas/trees/<algo>/<hex>` (the direct imports' tree
+  outputs; with outputs also the released ones) and `cas/blobs/<algo>/<hex>` (`with_outputs`).
+  Header `{format: "ebs-signoff-bundle", v: 1, release{domain, name, version, digest},
+  flow{path, repo, commit}, plan, imports[{name, version, release, dir}], toolchains,
+  with_outputs}`. A build planned outside a repository or from a dirty tree is refused.
+  `open_bundle(path, dest) -> Bundle{path, root, digest, manifest}` refuses any member missing,
+  unlisted or with another digest (`members()`, `member(name)`, `release()`, `build()`, `plan()`
+  = final plan if bundled, `toolchains()`, `trees()`, `header`). `restore_bundle(bundle, store,
+  cas, *, location, by) -> ReleaseView` (R4): puts the plans, blobs and complete trees into
+  `cas`, re-records the build (its recorded UUID, or a new one when an earlier, interrupted
+  restore took it; actions moved to their recorded states with their results; final status and
+  plan) and the release unless one with the same outputs exists, then `record_archive(location)`.
+  A bundle without outputs restores records whose released bytes are not in `cas`; the build's
+  `release_imports` rows are not restored (the closure stays in the bundle). Bundle names omit
+  the domain: archive releases of different domains to different directories. `Git(run=run_git)`: `toplevel`, `bundle`, `checkout(bundle,
+  commit, dest)`.
+- `ebs.release.verify` (L3, P3-04): `verify_bundle(bundle, *, rules, git, work, clock=None) ->
+  VerifyReport{release, plan, actions, matched, mismatches: (ActionDiff, …), unkeyed, ok}`
+  (`to_json`: `{v: 1, release, plan, ok, actions, matched, mismatches[{action_id, status,
+  fields}], unkeyed}`). `replan` checks the flow out of `git/flow.bundle`, plans its recorded
+  steps with `rehash=True` (in-memory stat cache, no blob ids) into a scratch CAS whose tree
+  reads fall back to the bundled trees, toolchains from `BundleToolchains(bundle.toolchains())`
+  (ids recomputed from the records), the `flow.lock` at that commit, and refines with the
+  producer output ids the recorded plan's inputs hold. Mismatch: any `diff_plans` entry other
+  than `unchanged`, except `unknown` actions the build itself never keyed (`unkeyed`).
 - `ebs.release.sign` (L3, P3-03): DSSE `Envelope{payload_type, payload, signatures:
   [Signature{keyid, sig}]}` (`to_json`/`from_json`), `pae(type, payload)` (DSSE v1),
   `sign_statement(statement, SshSigner(SshKeygen(program, run), key)) -> Envelope` (canonical
@@ -744,6 +788,8 @@ in JSON mode (`model_validate_json`):
 | `POST /releases/{id}/yank` | `yank_release` (by = caller) | `YankRequest{reason}` → `ReleaseView` |
 | `POST /releases/{id}/exports` | `record_export` (by = caller) | `ExportRequest{to_domain}` → `ReleaseView` (`release_export`) |
 | `GET /releases/{id}/exports` | `list_exports` | → `ExportList` (paged) |
+| `POST /releases/{id}/archives` | `record_archive` (by = caller) | `ArchiveRequest{bundle, location}` → `ArchiveRecord` (`release_write`) |
+| `GET /releases/{id}/archives` | `list_archives` | → `ArchiveList` (paged) |
 | `PUT /channels` | `move_channel` with the service's `[release.gates]` | `ChannelSet{domain, name, channel, release, gate_build}` → `ChannelMove` |
 | `GET /channels?domain=&name=&channel=` | `get_channel` | → `ChannelList` (0 or 1) |
 | `GET /channels/history?domain=&name=&channel=` | `channel_history` | → `ChannelHistory` (paged) |
@@ -1953,6 +1999,16 @@ keyid}`). **`ebs release verify-signature ENVELOPE [--allowed-signers FILE] [--b
 `[release.signing] allowed_signers`), then each blob (file, tree directory, or tree manifest,
 reported as "manifest only") against the subjects; `--json` `{v: 1, verified, release,
 principals, statement, blobs, manifest_only}`. Any verification failure or missing key exits 2.
+**`ebs release archive NAME VERSION --to DIR [--with-outputs] [--domain D] [--key FILE]
+[--json]`** (P3-04; `ebs.release.archive`): run in a clone of the flow repository holding the
+recorded commit; signs the attestation when `--key` or `[release.signing] key` is set; `--json`
+`{v: 1, release, location, bundle}`. **`ebs release import BUNDLE [--json]`** restores a bundle
+into this site's CAS and store (`restore_bundle`; `--json` the release). **`ebs verify BUNDLE |
+NAME VERSION [--domain D] [--json]`** (`ebs.release.verify`): with NAME VERSION the release's
+latest archive, whose file must still have the recorded digest (else exit 2; none: exit 2 naming
+the archive command); prints `verified|MISMATCH <release> from <path>: M/N action keys match`
+and one line per mismatch (`<action>: changed: <fields>`); `--json` the report plus `bundle`.
+Exit 0 when every key matches, 1 otherwise; a bundle file needs no store.
 
 **`ebs why TARGET [--domain D] [--build B] [--depth N] [--json | --dot]`**, **`ebs used-by NAME
 VERSION`**, **`ebs tests NAME VERSION [--latest] [--junit FILE]`** (P2-04; `ebs.release.provenance`,

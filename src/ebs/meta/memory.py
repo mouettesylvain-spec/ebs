@@ -22,6 +22,7 @@ from ebs.meta._common import (
     build_matches,
     build_plans,
     cache_refs,
+    check_archive,
     check_blobs,
     check_build_filter,
     check_by,
@@ -65,6 +66,7 @@ from ebs.meta.api import (
     EVENT_PAGE_MAX,
     ActionRow,
     ActionState,
+    ArchiveRecord,
     BlobRef,
     BuildCreate,
     BuildFilter,
@@ -189,6 +191,7 @@ class InMemoryMetadataStore:
         self._channels: dict[tuple[str, str, str], int] = {}  # -> last history entry
         self._history: list[ChannelMove] = []
         self._exports: list[ExportRecord] = []
+        self._archives: list[ArchiveRecord] = []
         self._release_imports: dict[int, dict[str, ReleaseImport]] = {}  # build -> alias -> row
 
     # --- action cache ---------------------------------------------------------------------------
@@ -943,6 +946,28 @@ class InMemoryMetadataStore:
     def list_exports(self, release: ReleaseId) -> list[ExportRecord]:
         with self._lock:
             return [e for e in self._exports if release in (e.release, e.exported)]
+
+    def record_archive(
+        self, release: ReleaseId, bundle: Digest, location: str, *, by: str
+    ) -> ArchiveRecord:
+        bundle, location = check_archive(bundle, location)
+        by = check_by(by, "record_archive")
+        with self._lock:
+            if self._release(release) is None:
+                raise MetadataError(f"record_archive: no release with id {release}")
+            for known in self._archives:
+                if (known.release, known.bundle, known.location) == (release, bundle, location):
+                    return known
+            record = ArchiveRecord(
+                id=len(self._archives) + 1, release=release, bundle=bundle, location=location,
+                created_at=self._clock.now(), created_by=by,
+            )  # fmt: skip
+            self._archives.append(record)
+            return record
+
+    def list_archives(self, release: ReleaseId) -> list[ArchiveRecord]:
+        with self._lock:
+            return [a for a in self._archives if a.release == release]
 
     # --- garbage collection (GcStore) -----------------------------------------------------------
 

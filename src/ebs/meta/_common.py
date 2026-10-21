@@ -416,6 +416,22 @@ def check_set_channel(release: ReleaseView | None, domain: str, name: str, chann
         )
 
 
+def check_archive(bundle: object, location: object) -> tuple[Digest, str]:
+    """(bundle, location) of `record_archive`, or MetadataError (P3-04 R2)."""
+    if not isinstance(bundle, Digest):
+        raise MetadataError(f"record_archive: the bundle must be a Digest, got {bundle!r}")
+    if (
+        not isinstance(location, str)
+        or not 1 <= len(location) <= 4096
+        or any(ord(c) < 0x20 for c in location)
+    ):
+        raise MetadataError(
+            f"record_archive: the location must be 1-4096 characters without control "
+            f"characters, got {location!r}"
+        )
+    return bundle, location
+
+
 def check_exportable(release: ReleaseView) -> None:
     if release.yanked_at is not None:
         raise MetadataError(
