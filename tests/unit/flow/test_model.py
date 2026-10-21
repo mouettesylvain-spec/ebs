@@ -104,6 +104,7 @@ def test_resources_dump_round_trips() -> None:
         "max_parallel": None,
         "constraint": None,
         "retry_on_timeout": None,
+        "execution": None,  # P3-06
     }
     assert Resources.model_validate(res.model_dump()) == res
 
@@ -249,6 +250,7 @@ def test_resources_max_parallel() -> None:
         "max_parallel": 3,
         "constraint": None,  # P1-03
         "retry_on_timeout": None,  # P1-05
+        "execution": None,  # P3-06
     }
     for value in (0, -1, True, "4", "${row.n}", 1.5):
         with pytest.raises(ValidationError, match="max_parallel"):

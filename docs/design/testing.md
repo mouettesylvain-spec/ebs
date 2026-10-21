@@ -27,6 +27,12 @@ network, real `$HOME`, `/tmp` outside `tmp_path`, or wall-clock time (use `ebs.c
 - **InMemoryMetadataStore** (`ebs.meta.memory`, shipped code, not test-only): must pass the
   MetadataStore contract suite. (P0-10)
 - **tmp CAS**: fixture `cas(tmp_path, domain="test")` returning an `FsCAS`. (P0-09)
+- **FakeS3** (`tests/helpers/s3.py`): in-memory, thread-safe stand-in for the boto3 S3 client
+  calls `S3CAS` makes; raises botocore `ClientError`s with real codes, checks `ChecksumSHA256`
+  and the 5 MiB minimum part, records calls, takes per-operation hooks for fault injection, and
+  can play a server without conditional writes. Session fixture `s3_server` gives a real
+  S3-compatible endpoint: `EBS_TEST_S3_URL` (+ `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) or a
+  SeaweedFS container (MinIO no longer publishes images). (P3-07)
 - **ScriptedExecutor** (`tests/helpers/driver.py`): an in-process Executor playing the runner's
   part (loads the plan from the CAS, checks keys and producers, posts results, caches in `write`
   mode) with outcomes scripted per attempt; plus `make_plan` for hand-built DAGs and

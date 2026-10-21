@@ -68,8 +68,8 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | --- | --- | --- | --- | --- |
 | P3-01 | bubblewrap sandbox (+ Apptainer fallback) | P1-04 | 1 | review |
 | P3-03 | SLSA attestations and signing | P2-02 | 1 | review |
-| P3-06 | Pilot worker pool | P1-02 | 1 | todo |
-| P3-07 | S3 CAS backend | P0-09 | 1 | todo |
+| P3-06 | Pilot worker pool | P1-02 | 1 | review |
+| P3-07 | S3 CAS backend | P0-09 | 1 | review |
 | P3-08 | FlexLM `LastConsumed` sync | P1-03 | 1 | review |
 | P3-02 | `ebs discover` (strace) | P3-01 | 2 | review |
 | P3-04 | Sign-off bundles and `ebs verify` | P3-03, P2-03 | 2 | todo |

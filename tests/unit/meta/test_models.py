@@ -218,6 +218,7 @@ DIGEST_COLUMNS = {
     ("api_tokens", "hash"),  # P1-06: SHA-256 of a bearer token
     ("lease_objects", "digest"),  # P1-09
     ("tombstones", "digest"),  # P1-09
+    ("pilot_queue", "plan"),  # P3-06
 }
 
 

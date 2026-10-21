@@ -11,6 +11,7 @@ import threading
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from uuid import UUID
 
 from ebs.core.clock import Clock, SystemClock
 from ebs.core.digest import Digest
@@ -32,16 +33,22 @@ from ebs.meta._common import (
     check_final_status,
     check_lease_ttl,
     check_pin,
+    check_queue,
+    check_queue_exit,
+    check_queue_ids,
+    check_queue_items,
     check_release,
     check_release_imports,
     check_result,
     check_run,
     check_set_channel,
+    check_slot,
     check_stats_window,
     check_toolchain,
     check_walk,
     edge_models,
     edge_rows,
+    missing_queue_items,
     month_name,
     month_start,
     next_month,
@@ -78,9 +85,15 @@ from ebs.meta.api import (
     GcLock,
     GcRoots,
     GcRun,
+    InfraReason,
     LeaseId,
+    PilotSlot,
     ProvenanceAction,
     ProvenanceGraph,
+    QueueEntry,
+    QueueItem,
+    QueueLease,
+    QueueState,
     RegisterOutcome,
     ReleaseCreate,
     ReleaseId,
@@ -93,6 +106,7 @@ from ebs.meta.api import (
     ToolchainCreate,
     ToolchainRecord,
     check_domain,
+    slot_fits,
 )
 
 __all__ = ["InMemoryMetadataStore"]
@@ -125,6 +139,19 @@ class _Lease:
 
 
 @dataclass
+class _QueueRow:
+    domain: str
+    pool: UUID
+    item: QueueItem
+    state: QueueState = "queued"
+    pilot: str | None = None
+    node: str | None = None
+    expires_at: datetime | None = None
+    exit_code: int | None = None
+    infra_reason: InfraReason | None = None
+
+
+@dataclass
 class _Build:
     view: BuildView
     actions: dict[str, ActionRow]
@@ -152,6 +179,8 @@ class InMemoryMetadataStore:
         self._next_lease = 1
         self._pins: dict[int, tuple[str, str, datetime]] = {}  # build -> by, reason, at
         self._drivers: dict[int, DriverLease] = {}  # P2-08: build -> its driver lease
+        self._queue: dict[int, _QueueRow] = {}  # P3-06: pilot queue items by id
+        self._next_item = 1
         self._gc_locks: dict[str, GcLock] = {}  # domain -> the GC run holding it
         self._tombstones: dict[tuple[str, str], Tombstone] = {}
         self._policies: dict[str, DomainPolicy] = {}
@@ -517,6 +546,130 @@ class InMemoryMetadataStore:
             held = self._drivers.get(build)
             if held is not None and held.owner == owner:
                 del self._drivers[build]
+
+    # --- pilot queues (P3-06) ----------------------------------------------------------------
+
+    def queue_put(self, domain: str, pool: UUID, items: Sequence[QueueItem]) -> list[int]:
+        check_queue(domain, pool, "queue_put")
+        checked = check_queue_items(items)
+        with self._lock:
+            ids = []
+            for item in checked:
+                ids.append(self._next_item)
+                self._queue[self._next_item] = _QueueRow(domain, pool, item)
+                self._next_item += 1
+            return ids
+
+    def queue_lease(
+        self, domain: str, pool: UUID, slot: PilotSlot, ttl_s: int
+    ) -> QueueLease | None:
+        check_queue(domain, pool, "queue_lease")
+        slot = check_slot(slot, ttl_s)
+        with self._lock:
+            now = self._clock.now()
+            for item_id, row in self._queue.items():  # insertion order: oldest first
+                if (row.domain, row.pool, row.state) != (domain, pool, "queued"):
+                    continue
+                if not slot_fits(slot, row.item):
+                    continue
+                row.state, row.pilot, row.node = "leased", slot.pilot, slot.node
+                row.expires_at = now + timedelta(seconds=ttl_s)
+                return QueueLease(
+                    item=item_id,
+                    action_id=row.item.action_id,
+                    plan=row.item.plan,
+                    build=row.item.build,
+                    expires_at=row.expires_at,
+                )
+            return None
+
+    def queue_renew(self, domain: str, pool: UUID, item: int, pilot: str, ttl_s: int) -> bool:
+        check_queue(domain, pool, "queue_renew")
+        check_queue_ids([item], "queue_renew")
+        check_lease_ttl(ttl_s)
+        with self._lock:
+            row = self._live_lease(domain, pool, item, pilot)
+            if row is None:
+                return False
+            row.expires_at = self._clock.now() + timedelta(seconds=ttl_s)
+            return True
+
+    def queue_finish(
+        self,
+        domain: str,
+        pool: UUID,
+        item: int,
+        pilot: str,
+        exit_code: int,
+        infra_reason: InfraReason | None = None,
+    ) -> bool:
+        check_queue(domain, pool, "queue_finish")
+        check_queue_ids([item], "queue_finish")
+        check_queue_exit(exit_code, infra_reason)
+        with self._lock:
+            row = self._live_lease(domain, pool, item, pilot)
+            if row is None:
+                return False
+            row.state, row.exit_code, row.infra_reason = "done", exit_code, infra_reason
+            row.expires_at = None
+            return True
+
+    def queue_status(self, domain: str, pool: UUID, items: Sequence[int]) -> list[QueueEntry]:
+        check_queue(domain, pool, "queue_status")
+        ids = check_queue_ids(items, "queue_status")
+        with self._lock:
+            rows = {i: self._queue.get(i) for i in ids}
+            missing = [
+                i for i, r in rows.items() if r is None or (r.domain, r.pool) != (domain, pool)
+            ]
+            if missing:
+                raise missing_queue_items(missing, pool)
+            now = self._clock.now()
+            out = []
+            for i in ids:
+                row = rows[i]
+                assert row is not None  # checked above
+                if row.state == "leased" and row.expires_at is not None and row.expires_at <= now:
+                    row.state, row.expires_at = "lost", None
+                out.append(
+                    QueueEntry(
+                        item=i,
+                        action_id=row.item.action_id,
+                        state=row.state,
+                        pilot=row.pilot,
+                        node=row.node,
+                        exit_code=row.exit_code,
+                        infra_reason=row.infra_reason,
+                    )
+                )
+            return out
+
+    def queue_cancel(self, domain: str, pool: UUID, items: Sequence[int]) -> None:
+        check_queue(domain, pool, "queue_cancel")
+        ids = check_queue_ids(items, "queue_cancel")
+        with self._lock:
+            for i in ids:
+                row = self._queue.get(i)
+                if row is None or (row.domain, row.pool) != (domain, pool):
+                    continue
+                if row.state in ("queued", "leased"):
+                    row.state, row.expires_at = "cancelled", None
+
+    def _live_lease(self, domain: str, pool: UUID, item: int, pilot: str) -> _QueueRow | None:
+        """`pilot`'s lease of `item` if still live; an expired one becomes `lost`."""
+        row = self._queue.get(item)
+        if row is None or (row.domain, row.pool, row.state, row.pilot) != (
+            domain,
+            pool,
+            "leased",
+            pilot,
+        ):
+            return None
+        assert row.expires_at is not None  # set while leased
+        if row.expires_at <= self._clock.now():
+            row.state, row.expires_at = "lost", None
+            return None
+        return row
 
     def pin_build(self, build: BuildId, *, by: str, reason: str = "") -> None:
         by, reason = check_pin(by, reason)

@@ -53,11 +53,18 @@ __all__ = [
 _log = get_logger(__name__)
 
 Operation = Literal[
-    "read", "cache_write", "build_write", "toolchain_write", "release_write", "release_export"
+    "read",
+    "cache_write",
+    "build_write",
+    "toolchain_write",
+    "release_write",
+    "release_export",
+    "queue_write",
 ]
 """What a route does: read shared state, write the action cache or access times, change a
 build (create it, its actions, results, events or status), register a toolchain, create, yank
-or move the channel of a release of a build (P2-02), or export a release to another domain."""
+or move the channel of a release of a build (P2-02), export a release to another domain, or
+queue, lease and finish the actions of a pilot pool (P3-06)."""
 
 
 class AuthenticationError(MetadataError):
@@ -135,7 +142,8 @@ class Policy:
     - `release_write`, `release_export` (P2-02): like `build_write` on the release's build (its
       owner, or a CI token of its project). P2-01 adds team and domain membership (an export
       needs both domains; `domain` is the target).
-    - `read`, `cache_write`: any authenticated principal. P2-01 adds domain membership here.
+    - `read`, `cache_write`, `queue_write` (P3-06 pilot queues): any authenticated principal.
+      P2-01 adds domain membership here.
     """
 
     def __init__(self, toolchain_admins: Iterable[str] = ()) -> None:
