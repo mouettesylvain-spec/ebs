@@ -31,6 +31,7 @@ from ebs.meta._common import (
     aggregate_stats,
     attribution_digests,
     cache_refs,
+    check_archive,
     check_blobs,
     check_build_filter,
     check_by,
@@ -73,6 +74,7 @@ from ebs.meta.api import (
     EVENT_PAGE_MAX,
     ActionRow,
     ActionState,
+    ArchiveRecord,
     BlobRef,
     BuildCreate,
     BuildFilter,
@@ -118,6 +120,7 @@ from ebs.meta.models import (
     SCHEMA,
     action_cache,
     actions,
+    archives,
     blobs,
     builds,
     channel_history,
@@ -1631,6 +1634,63 @@ class PgMetadataStore:
             )
             for r in rows
         ]
+
+    @staticmethod
+    def _archive(r: sa.RowMapping) -> ArchiveRecord:
+        return ArchiveRecord(
+            id=int(r["id"]), release=ReleaseId(int(r["release_id"])),
+            bundle=Digest.parse(r["bundle_digest"]), location=str(r["location"]),
+            created_at=r["created_at"], created_by=str(r["created_by"]),
+        )  # fmt: skip
+
+    def record_archive(
+        self, release: ReleaseId, bundle: Digest, location: str, *, by: str
+    ) -> ArchiveRecord:
+        bundle, location = check_archive(bundle, location)
+        by = check_by(by, "record_archive")
+        a = archives
+        with self._tx(f"record_archive {release}") as conn:
+            # Lock the release row: concurrent identical records insert one row.
+            found = conn.execute(
+                sa.select(releases.c.id).where(releases.c.id == int(release)).with_for_update()
+            ).first()
+            if found is None:
+                raise MetadataError(f"record_archive: no release with id {release}")
+            same = (
+                conn.execute(
+                    sa.select(a)
+                    .where(
+                        a.c.release_id == int(release),
+                        a.c.bundle_digest == str(bundle),
+                        a.c.location == location,
+                    )
+                    .order_by(a.c.id)
+                    .limit(1)
+                )
+                .mappings()
+                .first()
+            )
+            if same is not None:
+                return self._archive(same)
+            row = conn.execute(
+                sa.insert(a)
+                .values(
+                    release_id=int(release), bundle_digest=str(bundle), location=location,
+                    created_at=self._clock.now(), created_by=by,
+                )
+                .returning(a)
+            ).mappings().one()  # fmt: skip
+        return self._archive(row)
+
+    def list_archives(self, release: ReleaseId) -> list[ArchiveRecord]:
+        a = archives
+        with self._tx(f"list_archives {release}") as conn:
+            rows = (
+                conn.execute(sa.select(a).where(a.c.release_id == int(release)).order_by(a.c.id))
+                .mappings()
+                .all()
+            )
+        return [self._archive(r) for r in rows]
 
     # --- garbage collection (GcStore) -----------------------------------------------------------
 

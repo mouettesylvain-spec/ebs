@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy.engine import URL
 
 from ebs.core.clock import FakeClock
+from ebs.core.digest import hash_bytes
 from ebs.core.errors import MetadataError
 from ebs.meta.api import GateCheck, ReleaseCreate, ReleaseOutput
 from ebs.meta.client import HttpMetadataStore
@@ -134,3 +135,19 @@ def test_record_export(service: Service) -> None:
     assert exported.domain == "partner"
     [audit] = bob.list_exports(rel.id)
     assert (audit.exported, audit.to_domain, audit.exported_by) == (exported.id, "partner", "alice")
+
+
+# P3-04 R2: archive records over the API: the caller is the author; only the owner records.
+def test_record_archive(service: Service) -> None:
+    alice, bob = _clients(service)
+    build = finish(alice, {"compile[lib=core]": Action({"worklib": LIB})})
+    rel = create_release(
+        alice, name=NAME, version="1.0", build=build, outputs=["compile.worklib"], by="alice"
+    )
+    bundle = hash_bytes(b"bundle")
+    with pytest.raises(MetadataError, match="'bob' is not allowed"):
+        bob.record_archive(rel.id, bundle, "/cold/cpu_1.0.signoff.tar.zst", by="bob")
+    record = alice.record_archive(rel.id, bundle, "/cold/cpu_1.0.signoff.tar.zst", by="ignored")
+    assert (record.release, record.bundle, record.created_by) == (rel.id, bundle, "alice")
+    assert alice.record_archive(rel.id, bundle, record.location, by="alice") == record
+    assert bob.list_archives(rel.id) == [record]

@@ -5,14 +5,19 @@ build (`ebs.release.releases`). `yank` withdraws a release without deleting it. 
 copies a release's objects into domain D's CAS and records it there (`ebs.release.export`).
 `attest` writes the release's SLSA provenance as a DSSE envelope signed with the team key
 (`[release.signing] key`); `verify-signature` checks one offline, with an allowed-signers file
-and optionally the released blobs (P3-03).
+and optionally the released blobs (P3-03). `archive --to DIR` writes the release's sign-off
+bundle to cold storage and records it; `import BUNDLE` restores one into this site's CAS and
+metadata store (P3-04).
 Commands other than `create` work in `--domain`, by default the domain of the latest build
 recorded in this directory.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
+import tempfile
+from collections.abc import Callable
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import typer
@@ -22,8 +27,10 @@ from ebs.cli._output import Output, handle_errors, make_output
 from ebs.cli._records import find_build
 from ebs.cli.plan import JSON_OPTION
 from ebs.core.errors import ConfigError, ReleaseError
+from ebs.core.types import JsonValue
 from ebs.meta.api import BuildId, MetadataBackend, ReleaseView
 from ebs.plan.planfile import decode
+from ebs.release.archive import Git, archive_release, open_bundle, recorded_plan, restore_bundle
 from ebs.release.attest import import_deps, provenance_statement
 from ebs.release.export import UnixGroupAccess, export_release
 from ebs.release.releases import create_release
@@ -343,3 +350,86 @@ def verify_signature_command(
         out.line(f"  {subject}  matches {path}{note}")
     if not blobs:
         out.line("  (no --blob given: the released bytes were not checked)")
+
+
+TO_OPTION = typer.Option(..., "--to", metavar="DIR", help="Cold-storage directory.")
+WITH_OUTPUTS_OPTION = typer.Option(
+    False, "--with-outputs", help="Also bundle the released bytes (files and trees)."
+)
+ARCHIVE_KEY_OPTION = typer.Option(
+    None, "--key", metavar="FILE", help="Sign the attestation; default: [release.signing]."
+)
+BUNDLE_ARGUMENT = typer.Argument(..., metavar="BUNDLE", help="A sign-off bundle file.")
+
+
+def _signer(
+    services: SiteServices, key: Path | None
+) -> Callable[[dict[str, JsonValue]], str] | None:
+    """Signs a bundle's attestation with `--key` or `[release.signing] key`, if either is set."""
+    conf = _signing(services)
+    if key is None and conf.key is None:
+        return None
+    signer = SshSigner(SshKeygen(conf.ssh_keygen), services.cwd / conf.require_key(key))
+    return lambda statement: sign_statement(statement, signer).to_json()
+
+
+@app.command("archive")
+@handle_errors
+def archive_command(
+    ctx: typer.Context,
+    name: str = NAME_ARGUMENT,
+    version: str = VERSION_ARGUMENT,
+    to: Path = TO_OPTION,
+    with_outputs: bool = WITH_OUTPUTS_OPTION,
+    domain: str | None = DOMAIN_OPTION,
+    key: Path | None = ARCHIVE_KEY_OPTION,
+    json_mode: bool = JSON_OPTION,
+) -> None:
+    """Write the release's sign-off bundle to DIR and record it (run in the flow's repository)."""
+    services: SiteServices = ctx.obj
+    out = make_output(services.environ, json_mode=json_mode, tty=services.is_tty())
+    store = release_store(services)
+    rel = find_release(store, default_domain(services, domain), name, version)
+    services.check_domain_access(rel.domain)
+    cas = services.cas(rel.domain)
+    git = Git()
+    repo = git.toplevel(services.cwd)
+    _, plan = recorded_plan(store, cas, rel)
+    flow_dir = repo / PurePosixPath(plan.flow.path).parent
+    record = archive_release(
+        store, cas, rel, to=services.cwd / to, repo=repo, git=git,
+        toolchains=services.toolchains(flow_dir), by=services.user(), with_outputs=with_outputs,
+        sign=_signer(services, key),
+    )  # fmt: skip
+    if json_mode:
+        out.emit({"v": 1, "release": f"{rel.name} {rel.version}", "location": record.location,
+                  "bundle": str(record.bundle)})  # fmt: skip
+    else:
+        out.line(f"archived {rel.name} {rel.version} -> {record.location} ({record.bundle})")
+
+
+@app.command("import")
+@handle_errors
+def import_command(
+    ctx: typer.Context,
+    bundle: Path = BUNDLE_ARGUMENT,
+    json_mode: bool = JSON_OPTION,
+) -> None:
+    """Restore a sign-off bundle: its plans and objects into the CAS, its build and release into
+    the metadata store, and an archive record pointing at BUNDLE."""
+    services: SiteServices = ctx.obj
+    out = make_output(services.environ, json_mode=json_mode, tty=services.is_tty())
+    path = services.cwd / bundle
+    store = release_store(services)
+    with tempfile.TemporaryDirectory(prefix="ebs-import-") as tmp:
+        opened = open_bundle(path, Path(tmp) / "bundle")
+        domain = opened.release().domain
+        services.check_domain_access(domain)
+        rel = restore_bundle(
+            opened, store, services.cas(domain), location=os.path.abspath(path),
+            by=services.user(),
+        )  # fmt: skip
+    if json_mode:
+        out.emit(release_doc(rel))
+    else:
+        out.line(f"restored {rel.name} {rel.version} (release {rel.id}, build {rel.build})")

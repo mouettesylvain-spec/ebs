@@ -10,6 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.engine import URL
 
 from ebs.core.clock import FakeClock
+from ebs.core.digest import hash_bytes
 from ebs.meta.pg import PgMetadataStore
 from ebs.release.channels import GatePolicy, move_channel
 from ebs.release.releases import create_release
@@ -48,7 +49,10 @@ def test_no_update_no_delete(pg: PgMetadataStore) -> None:
     _refused(pg, "DELETE FROM ebs.channel_history", "append-only")
     _refused(pg, "UPDATE ebs.exports SET exported_by = 'eve'", "append-only")
     _refused(pg, "DELETE FROM ebs.exports", "append-only")
-    for table in ("releases", "channel_history", "exports"):
+    pg.record_archive(rel.id, hash_bytes(b"bundle"), "/cold/cpu.signoff.tar.zst", by="alice")
+    _refused(pg, "UPDATE ebs.archives SET location = '/elsewhere'", "append-only")  # P3-04
+    _refused(pg, "DELETE FROM ebs.archives", "append-only")
+    for table in ("releases", "channel_history", "exports", "archives"):
         _refused(pg, f"TRUNCATE ebs.{table} CASCADE", "append-only")
     with pytest.raises(sa.exc.IntegrityError), pg.engine.begin() as conn:
         conn.execute(sa.text(f"DELETE FROM ebs.builds WHERE id = {int(build)}"))  # still referenced

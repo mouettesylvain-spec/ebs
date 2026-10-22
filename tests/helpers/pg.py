@@ -96,9 +96,9 @@ def pg_url(pg_migrated: URL, _pg_truncate_engine: sa.Engine) -> URL:
     """URL of the session database with every ebs table emptied."""
     tables = ", ".join(f'"{SCHEMA}"."{t.name}"' for t in metadata.sorted_tables)
     with _pg_truncate_engine.begin() as conn:
-        # The append-only tables of revisions 0007 (P2-02) and 0009 (P2-03) refuse TRUNCATE;
-        # their owner may lift that for the length of this transaction.
-        append_only = ("releases", "channel_history", "exports", "release_imports")
+        # The append-only tables of revisions 0007 (P2-02), 0009 (P2-03) and 0015 (P3-04) refuse
+        # TRUNCATE; their owner may lift that for the length of this transaction.
+        append_only = ("releases", "channel_history", "exports", "release_imports", "archives")
         guarded = [f'"{SCHEMA}"."{t}"' for t in append_only]
         for t in guarded:
             conn.execute(sa.text(f"ALTER TABLE {t} DISABLE TRIGGER USER"))

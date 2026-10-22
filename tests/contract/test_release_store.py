@@ -12,11 +12,13 @@ import pytest
 from sqlalchemy.engine import URL
 
 from ebs.core.clock import FakeClock
+from ebs.core.digest import hash_bytes
 from ebs.core.errors import MetadataError
 from ebs.meta.api import (
     ActionRow,
     GateCheck,
     ReleaseCreate,
+    ReleaseId,
     ReleaseOutput,
     ReleaseView,
     release_output_name,
@@ -214,3 +216,27 @@ def test_record_export(s: S) -> None:
     s.store.yank_release(rel.id, by="bob", reason="bad")
     with pytest.raises(MetadataError, match="yanked"):
         s.store.record_export(rel.id, "third", by="bob")
+
+
+# P3-04 R2: archive rows record where a release's sign-off bundle was written; recording the same
+# bundle at the same place again returns the first row.
+def test_record_archive(s: S) -> None:
+    rel = _released(s)
+    bundle = hash_bytes(b"bundle")
+    first = s.store.record_archive(rel.id, bundle, "/cold/cpu_1.signoff.tar.zst", by="alice")
+    assert (first.release, first.bundle, first.location, first.created_by) == (
+        rel.id, bundle, "/cold/cpu_1.signoff.tar.zst", "alice",
+    )  # fmt: skip
+    assert first.created_at == s.clock.now()
+    s.clock.advance(1)
+    assert s.store.record_archive(rel.id, bundle, first.location, by="bob") == first
+    second = s.store.record_archive(rel.id, bundle, "/tape/cpu_1.signoff.tar.zst", by="bob")
+    assert s.store.list_archives(rel.id) == [first, second]
+    other = _released(s, "2.0")
+    assert s.store.list_archives(other.id) == []
+    with pytest.raises(MetadataError, match="no release"):
+        s.store.record_archive(ReleaseId(999_999), bundle, "/cold/x", by="alice")
+    with pytest.raises(MetadataError, match="location"):
+        s.store.record_archive(rel.id, bundle, "/cold/\nx", by="alice")
+    with pytest.raises(MetadataError, match="location"):
+        s.store.record_archive(rel.id, bundle, "", by="alice")

@@ -68,6 +68,7 @@ REVIEWED: Final[dict[str, str]] = {
     "channels.updated_by": NAME,
     "exports.to_domain": NAME, "exports.exported_by": NAME,
     "release_imports.alias": NAME,
+    "archives.bundle_digest": DIGEST, "archives.location": TEXT, "archives.created_by": NAME,
 }  # fmt: skip
 
 _SCALARS = (sa.Integer, sa.BigInteger, sa.Boolean, sa.DateTime, sa.Numeric)

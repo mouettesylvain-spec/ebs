@@ -27,6 +27,7 @@ from ebs.cli import (
     tests_cmd,
     toolchain,
     used_by,
+    verify,
     why,
 )
 from ebs.cli import debug as debug_cli
@@ -99,6 +100,7 @@ app.command("unpin")(gc.unpin_command)
 app.command("why")(why.why_command)
 app.command("used-by")(used_by.used_by_command)
 app.command("tests")(tests_cmd.list_tests_command)
+app.command("verify")(verify.verify_command)
 app.add_typer(domain.app, name="domain")
 app.add_typer(release.app, name="release")
 app.add_typer(channel.app, name="channel")

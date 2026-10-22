@@ -66,6 +66,9 @@ __all__ = [
     "ActionRow",
     "ActionState",
     "ActionUpdate",
+    "ArchiveList",
+    "ArchiveRecord",
+    "ArchiveRequest",
     "BlobBatch",
     "BlobRef",
     "BuildCreate",
@@ -1144,9 +1147,26 @@ class ExportRecord(BaseModel):
     exported_by: _Name
 
 
+_Location = Annotated[StrictStr, Field(min_length=1, max_length=4096, pattern=r"^[^\x00-\x1f]+$")]
+
+
+class ArchiveRecord(BaseModel):
+    """A sign-off bundle of a release written to cold storage (`archives` table, P3-04 R2)."""
+
+    model_config = _FROZEN
+
+    id: StrictInt
+    release: ReleaseId
+    bundle: DigestField  # the digest of the bundle file's bytes
+    location: _Location  # where it was written (an absolute path on the archiving host)
+    created_at: AwareDatetime
+    created_by: _Name
+
+
 class ReleaseStore(Protocol):
-    """Releases, channels and exports (P2-02). Implemented by the PostgreSQL, in-memory and HTTP
-    stores; there is no method to change or delete a release other than `yank_release` (I19)."""
+    """Releases, channels, exports and archives (P2-02, P3-04). Implemented by the PostgreSQL,
+    in-memory and HTTP stores; there is no method to change or delete a release other than
+    `yank_release` (I19)."""
 
     def create_release(self, spec: ReleaseCreate, *, by: str) -> ReleaseView:
         """Insert a release. The build must be in `spec.domain` and finished; every output must
@@ -1197,6 +1217,17 @@ class ReleaseStore(Protocol):
         ...
 
     def list_exports(self, release: ReleaseId) -> list[ExportRecord]: ...
+
+    def record_archive(
+        self, release: ReleaseId, bundle: Digest, location: str, *, by: str
+    ) -> ArchiveRecord:
+        """Record that the sign-off bundle `bundle` of `release` was written to `location`
+        (append-only). The same release, bundle and location again returns the first record."""
+        ...
+
+    def list_archives(self, release: ReleaseId) -> list[ArchiveRecord]:
+        """Oldest first."""
+        ...
 
 
 # --- provenance (P2-04) ---------------------------------------------------------------------------
@@ -1597,6 +1628,22 @@ class ExportList(BaseModel):
     model_config = _WIRE
 
     exports: list[ExportRecord]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
+
+
+class ArchiveRequest(BaseModel):
+    """Body of `POST /releases/{id}/archives`; the author is the authenticated caller."""
+
+    model_config = _WIRE
+
+    bundle: DigestField
+    location: _Location
+
+
+class ArchiveList(BaseModel):
+    model_config = _WIRE
+
+    archives: list[ArchiveRecord]
     next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 

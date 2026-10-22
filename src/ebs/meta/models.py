@@ -33,6 +33,7 @@ __all__ = [
     "action_cache",
     "actions",
     "api_tokens",
+    "archives",
     "blobs",
     "builds",
     "channel_history",
@@ -497,4 +498,21 @@ pilot_queue = sa.Table(  # actions waiting for, or leased by, the pilot jobs of 
     sa.CheckConstraint("jsonb_typeof(exclude) = 'array'", name="exclude_array"),
     sa.CheckConstraint("state <> 'leased' OR expires_at IS NOT NULL", name="lease_expires"),
     sa.Index(None, "domain", "pool", "state", "id"),
+)
+
+
+# --- Phase 3: sign-off bundles (P3-04, revision 0015; append-only) --------------------------------
+
+archives = sa.Table(  # sign-off bundles of releases written to cold storage
+    "archives",
+    metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("release_id", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=False),
+    sa.Column("bundle_digest", sa.Text, nullable=False),
+    sa.Column("location", sa.Text, nullable=False),
+    sa.Column("created_at", _TS, nullable=False),
+    sa.Column("created_by", sa.Text, nullable=False),
+    _digest_check("bundle_digest"),
+    sa.CheckConstraint("length(location) BETWEEN 1 AND 4096", name="location_length"),
+    sa.Index(None, "release_id"),
 )

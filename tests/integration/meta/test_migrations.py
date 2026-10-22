@@ -35,7 +35,7 @@ IMPORT_TABLES = {"release_imports"}  # P2-03 (revision 0009)
 DRIVER_TABLES = {"driver_leases"}  # P2-08 (revision 0011)
 GC_LOCK_TABLES = {"gc_locks"}  # P1-09 follow-up (revision 0013)
 P2_TABLES = RELEASE_TABLES | IMPORT_TABLES | DRIVER_TABLES | GC_LOCK_TABLES
-P3_TABLES = {"pilot_queue"}  # P3-06 (revision 0014)
+P3_TABLES = {"pilot_queue", "archives"}  # P3-06 (revision 0014), P3-04 (0015)
 GOOD = "sha256:" + "a" * 64
 
 
