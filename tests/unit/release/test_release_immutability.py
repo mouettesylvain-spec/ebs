@@ -36,13 +36,15 @@ def test_no_update_no_delete() -> None:
         n for n, _ in inspect.getmembers(ReleaseStore, inspect.isfunction)
         if not n.startswith(("get_", "list_", "channel_history", "gate_builds", "_"))
     }  # fmt: skip
-    # record_archive (P3-04) appends an `archives` row; it never changes the release.
+    # record_archive (P3-04) appends an `archives` row and record_revalidation (P3-05) a
+    # `revalidations` row; neither changes the release.
     assert writes == {
         "create_release",
         "yank_release",
         "set_channel",
         "record_export",
         "record_archive",
+        "record_revalidation",
     }
     for cls in (InMemoryMetadataStore, PgMetadataStore, HttpMetadataStore):
         names = {n for n in dir(cls) if "release" in n}

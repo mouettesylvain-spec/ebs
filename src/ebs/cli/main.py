@@ -21,6 +21,7 @@ from ebs.cli import (
     plan,
     release,
     reproduce,
+    revalidate,
     rules,
     seeds,
     status,
@@ -102,6 +103,7 @@ app.command("used-by")(used_by.used_by_command)
 app.command("tests")(tests_cmd.list_tests_command)
 app.command("verify")(verify.verify_command)
 app.add_typer(domain.app, name="domain")
+release.app.command("revalidate")(revalidate.revalidate_command)
 app.add_typer(release.app, name="release")
 app.add_typer(channel.app, name="channel")
 app.add_typer(lock.app, name="lock")

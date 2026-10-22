@@ -39,6 +39,7 @@ from ebs.meta.api import (
     ReleaseOutput,
     ResourceUsage,
     ResultManifest,
+    RevalidationCreate,
     RunnerInfo,
 )
 from ebs.meta.memory import InMemoryMetadataStore
@@ -235,6 +236,16 @@ def seed(s: Seeder) -> Seeded:
         by="alice",
     )  # fmt: skip
     store.set_channel(A, "rtl/core", "stable", release.id, by="alice")
+    store.record_revalidation(  # P3-05: a quarterly re-run on a newer simulator
+        release.id,
+        RevalidationCreate(
+            build=reg, verdict="differences", report=hash_bytes(b"revalidation report"),
+            markdown=hash_bytes(b"revalidation report.md"),
+            toolchains={"questa": "questa/2026.1"},
+            counts={"equivalent": 7, "changed": 1, "incomparable": 0},
+        ),
+        by="ebs-revalidate",
+    )  # fmt: skip
 
     live = s.build(A, "alice", "rv-core")
     store.add_actions(

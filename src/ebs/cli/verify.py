@@ -21,10 +21,10 @@ from ebs.core.errors import ExitCode, ReleaseError
 from ebs.release.archive import Git, open_bundle
 from ebs.release.verify import verify_bundle
 
-__all__ = ["verify_command"]
+__all__ = ["bundle_of", "verify_command"]
 
 
-def _bundle_of(services: SiteServices, name: str, version: str, domain: str | None) -> Path:
+def bundle_of(services: SiteServices, name: str, version: str, domain: str | None) -> Path:
     store = release_store(services)
     rel = find_release(store, default_domain(services, domain), name, version)
     archives = store.list_archives(rel.id)
@@ -68,7 +68,7 @@ def verify_command(
         if not path.is_file():
             raise ReleaseError(f"no bundle file {path}; give a bundle file, or NAME VERSION")
     else:
-        path = _bundle_of(services, target, version, domain)
+        path = bundle_of(services, target, version, domain)
     with tempfile.TemporaryDirectory(prefix="ebs-verify-") as tmp:
         bundle = open_bundle(path, Path(tmp) / "bundle")
         report = verify_bundle(

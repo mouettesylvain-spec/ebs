@@ -110,6 +110,8 @@ from ebs.meta.api import (
     ReleaseView,
     ResultManifest,
     ResultSummary,
+    RevalidationCreate,
+    RevalidationRecord,
     StoredEvent,
     Tombstone,
     ToolchainCreate,
@@ -138,6 +140,7 @@ from ebs.meta.models import (
     provenance_edges,
     release_imports,
     releases,
+    revalidations,
     tombstones,
     toolchain_manifests,
     toolchains,
@@ -1692,6 +1695,76 @@ class PgMetadataStore:
             )
         return [self._archive(r) for r in rows]
 
+    @staticmethod
+    def _revalidation(r: sa.RowMapping) -> RevalidationRecord:
+        build = r["build_id"]
+        return RevalidationRecord(
+            id=int(r["id"]), release=ReleaseId(int(r["release_id"])),
+            build=None if build is None else BuildId(int(build)), verdict=r["verdict"],
+            report=Digest.parse(r["report_digest"]),
+            markdown=Digest.parse(r["markdown_digest"]),
+            toolchains=dict(r["toolchains"]), counts=dict(r["counts"]),
+            created_at=r["created_at"], created_by=str(r["created_by"]),
+        )  # fmt: skip
+
+    def record_revalidation(
+        self, release: ReleaseId, spec: RevalidationCreate, *, by: str
+    ) -> RevalidationRecord:
+        spec = revalidate(spec, RevalidationCreate, "record_revalidation")
+        by = check_by(by, "record_revalidation")
+        v = revalidations
+        with self._tx(f"record_revalidation {release}") as conn:
+            # Lock the release row: concurrent identical records insert one row.
+            domain: str | None = conn.execute(
+                sa.select(releases.c.domain).where(releases.c.id == int(release)).with_for_update()
+            ).scalar_one_or_none()
+            if domain is None:
+                raise MetadataError(f"record_revalidation: no release with id {release}")
+            if spec.build is not None:
+                found = conn.execute(
+                    sa.select(builds.c.id).where(
+                        builds.c.id == int(spec.build), builds.c.domain == domain
+                    )
+                ).first()
+                if found is None:
+                    raise MetadataError(
+                        f"record_revalidation: no build {spec.build} in domain {domain}"
+                    )
+            same = (
+                conn.execute(
+                    sa.select(v)
+                    .where(v.c.release_id == int(release), v.c.report_digest == str(spec.report))
+                    .order_by(v.c.id)
+                    .limit(1)
+                )
+                .mappings()
+                .first()
+            )
+            if same is not None:
+                return self._revalidation(same)
+            row = conn.execute(
+                sa.insert(v)
+                .values(
+                    release_id=int(release),
+                    build_id=None if spec.build is None else int(spec.build),
+                    verdict=spec.verdict, report_digest=str(spec.report),
+                    markdown_digest=str(spec.markdown), toolchains=spec.toolchains,
+                    counts=spec.counts, created_at=self._clock.now(), created_by=by,
+                )
+                .returning(v)
+            ).mappings().one()  # fmt: skip
+        return self._revalidation(row)
+
+    def list_revalidations(self, release: ReleaseId) -> list[RevalidationRecord]:
+        v = revalidations
+        with self._tx(f"list_revalidations {release}") as conn:
+            rows = (
+                conn.execute(sa.select(v).where(v.c.release_id == int(release)).order_by(v.c.id))
+                .mappings()
+                .all()
+            )
+        return [self._revalidation(r) for r in rows]
+
     # --- garbage collection (GcStore) -----------------------------------------------------------
 
     def gc_policy(self, domain: str) -> DomainPolicy:
@@ -1764,7 +1837,13 @@ class PgMetadataStore:
                 .scalars()
                 .all()
             )
+            reports = conn.execute(  # P3-05 R3: reports live as long as their release
+                sa.select(revalidations.c.report_digest, revalidations.c.markdown_digest)
+                .join(releases, releases.c.id == revalidations.c.release_id)
+                .where(releases.c.domain == domain)
+            ).all()
         released = {o["digest"] for outputs in released_outputs for o in outputs.values()}
+        released.update(d for row in reports for d in row)
         pinned: set[Digest] = set()
         for plan_digest, final_plan, result in pinned_builds:
             pinned.add(Digest.parse(plan_digest))

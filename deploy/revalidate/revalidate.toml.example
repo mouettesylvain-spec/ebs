@@ -1,0 +1,31 @@
+# /etc/ebs/revalidate.toml for the ebs-revalidate service account (P3-05).
+
+[cas]
+root = "/cas"
+
+[metadata]
+url = "https://ebs-meta.example.invalid"
+auth = "munge"
+
+[revalidate]
+# Run these toolchains on their newest registered version ("latest") or on a given module.
+toolchain_overrides = { questa = "latest" }
+
+# Step name or rule kind => comparator (sim, lint). Steps without one compare output digests.
+[revalidate.comparators]
+"questa.sim" = "sim"
+lint_legacy = "lint"
+
+[revalidate.comparator.sim]
+coverage_tolerance = 0.5      # percentage points
+
+[revalidate.comparator.lint]
+# pattern = '^(?P<rule>\S+)\s+(?P<file>[^\s:]+):(?P<line>\d+):?\s+(?P<message>.+)$'
+
+[revalidate.notify]
+webhook = "https://chat.example.invalid/hooks/ebs-revalidate"
+email_to = ["cpu-signoff@example.invalid"]
+email_from = "ebs-revalidate@example.invalid"
+smtp_host = "smtp.example.invalid"
+smtp_port = 25
+when = "always"               # or "problems": only differences and failures

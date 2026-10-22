@@ -14,6 +14,7 @@ export type StepStats = S["StepStats"];
 export type PendingWait = S["PendingWait"];
 export type ResultSummary = S["ResultSummary"];
 export type ReleaseView = S["ReleaseView"];
+export type RevalidationRecord = S["RevalidationRecord"];
 export type ChannelMove = S["ChannelMove"];
 export type ChannelView = S["ChannelView"];
 export type ProvenanceGraph = S["ProvenanceGraph"];

@@ -9,6 +9,10 @@ test("releases, channels and provenance", async ({ page }) => {
   const rel = page.getByRole("region", { name: "Release rtl/core" });
   await expect(rel.getByRole("listitem").filter({ hasText: "stable" })).toContainText("2026.10.1");
   await expect(rel.getByRole("listitem").filter({ hasText: "nightly" })).toContainText("not set");
+  // P3-05: the latest revalidation of each release, with its verdict and counts.
+  const version = rel.getByRole("row").filter({ hasText: "2026.10.1" }).first();
+  await expect(version).toContainText("differences");
+  await expect(version).toContainText("7 equivalent, 1 changed, 0 incomparable");
   await rel.getByRole("button", { name: "2026.10.1" }).click();
   await expect(rel.getByRole("link", { name: `#${id.regression}` })).toBeVisible();
 

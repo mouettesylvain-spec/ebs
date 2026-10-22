@@ -1,0 +1,38 @@
+# EBS revalidation of the archived releases of one domain (P3-05); the instance name is the domain.
+#   install -m 644 ebs-revalidate@.service ebs-revalidate@.timer /etc/systemd/system/
+#   install -m 640 -g ebs-revalidate revalidate.toml.example /etc/ebs/revalidate.toml  # edit it
+#   systemctl daemon-reload && systemctl enable --now ebs-revalidate@cpu-nda.timer
+# The ebs-revalidate account must be a member of the domain's group (owner of /cas/<domain>),
+# may submit SLURM jobs, read the cold-storage directory of the sign-off bundles, and hold
+# release_write on the domain in the metadata service; /opt/ebs is a virtualenv with
+# `pip install ebs`. See README.md.
+
+[Unit]
+Description=EBS revalidation of the archived releases of domain %i
+Documentation=https://github.com/mouettesylvain-spec/ebs/blob/main/deploy/revalidate/README.md
+After=network-online.target remote-fs.target munge.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ebs-revalidate
+Group=ebs-revalidate
+SupplementaryGroups=%i
+Environment=EBS_CONFIG=/etc/ebs/revalidate.toml
+# The driver keeps its build records (.ebs/builds) in its working directory.
+StateDirectory=ebs-revalidate/%i
+WorkingDirectory=/var/lib/ebs-revalidate/%i
+ExecStart=/opt/ebs/bin/ebs release revalidate --all --domain %i --executor slurm
+# Exit 1 (a release did not reproduce) is a result, reported and notified, not a unit failure.
+SuccessExitStatus=1
+# A full regression on the grid takes hours; give up after a week.
+TimeoutStartSec=7d
+Nice=10
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes

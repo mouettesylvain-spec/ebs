@@ -220,6 +220,8 @@ DIGEST_COLUMNS = {
     ("tombstones", "digest"),  # P1-09
     ("pilot_queue", "plan"),  # P3-06
     ("archives", "bundle_digest"),  # P3-04
+    ("revalidations", "report_digest"),  # P3-05
+    ("revalidations", "markdown_digest"),  # P3-05
 }
 
 

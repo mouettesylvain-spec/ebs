@@ -37,6 +37,7 @@ from ebs.meta.api import (
     ReleaseImport,
     ReleaseOutput,
     ReleaseView,
+    RevalidationCreate,
 )
 from ebs.meta.client import BearerCredential, HttpMetadataStore, MetadataHttpError
 from ebs.meta.service.auth import Policy
@@ -138,6 +139,12 @@ def _release_spec(m: Mine, w: Who) -> ReleaseCreate:
         outputs={"compile.worklib": ReleaseOutput(
             action_id="compile", output="worklib", **LIB.model_dump())},
     )  # fmt: skip
+
+
+_REVALIDATION = RevalidationCreate(
+    build=None, verdict="reproduced", report=hash_bytes(b"report"),
+    markdown=hash_bytes(b"report.md"), toolchains={}, counts={"equivalent": 1},
+)  # fmt: skip
 
 
 # (route, op, domains needed). Reads that must look like a miss are in MISSES.
@@ -339,6 +346,16 @@ OPS: list[tuple[str, Op, frozenset[str]]] = [
         lambda c, m, w: c.record_archive(
             m.release.id, hash_bytes(b"bundle"), "/cold/matrix.signoff.tar.zst", by=w.user
         ),
+        frozenset({A}),
+    ),
+    (
+        "GET /releases/{release}/revalidations",
+        lambda c, m, w: c.list_revalidations(m.release.id),
+        frozenset({A}),
+    ),
+    (
+        "POST /releases/{release}/revalidations",
+        lambda c, m, w: c.record_revalidation(m.release.id, _REVALIDATION, by=w.user),
         frozenset({A}),
     ),
     (

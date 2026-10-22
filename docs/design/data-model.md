@@ -125,11 +125,15 @@ pilot_queue(id bigserial PK, domain FK domains, pool uuid, action_id text, plan 
             pilot text NULL, node text NULL, expires_at NULL (set while leased),
             exit_code int NULL, infra_reason text check in InfraReason, queued_at)
             index (domain, pool, state, id)   -- 0014, P3-06: leased with FOR UPDATE SKIP LOCKED
-revalidations(id, release_id FK, started_at, finished_at, toolchain_overrides jsonb,
-              verdict text, report_digest text)
 archives(id bigserial PK, release_id FK releases, bundle_digest text check digest,
          location text check 1..4096 chars, created_at, created_by)
          index (release_id)   -- 0015, P3-04: sign-off bundles in cold storage; append-only (trigger)
+revalidations(id bigserial PK, release_id FK releases, build_id FK builds NULL (never started),
+              verdict text check reproduced|differences|failed, report_digest text check digest
+              (JSON report), markdown_digest text check digest, toolchains jsonb {name: module
+              used}, counts jsonb {equivalent|changed|incomparable: n}, created_at, created_by)
+              index (release_id)   -- 0016, P3-05: append-only (trigger); both report objects
+              are in GcRoots.released of the release's domain
 ```
 
 ## Query patterns that must stay indexed
