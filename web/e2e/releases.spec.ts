@@ -14,7 +14,8 @@ test("releases, channels and provenance", async ({ page }) => {
   await expect(version).toContainText("differences");
   await expect(version).toContainText("7 equivalent, 1 changed, 0 incomparable");
   await rel.getByRole("button", { name: "2026.10.1" }).click();
-  await expect(rel.getByRole("link", { name: `#${id.regression}` })).toBeVisible();
+  // Source build column first; the revalidation column links the same build again.
+  await expect(rel.getByRole("link", { name: `#${id.regression}` }).first()).toBeVisible();
 
   await rel.getByRole("link", { name: "used by" }).click();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Provenance in dom-a");
