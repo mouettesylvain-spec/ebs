@@ -1,10 +1,11 @@
 // R5: the releases of a domain by name, and their channels with history. Read-only: releases
-// and channels are changed with `ebs release` / `ebs channel`.
+// and channels are changed with `ebs release` / `ebs channel`. P3-05: each release's latest
+// revalidation (`ebs release revalidate`) with its verdict and action counts.
 
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { allPages, api, ApiError, must } from "../api/client";
-import type { ReleaseView } from "../api/types";
+import type { ReleaseView, RevalidationRecord } from "../api/types";
 import { Loaded, When, short } from "../components/common";
 import { useAsync } from "../lib/useAsync";
 import { useQuery } from "../lib/useQuery";
@@ -63,6 +64,7 @@ function ReleaseTable({ domain, releases }: { domain: string; releases: ReleaseV
                   <th scope="col">By</th>
                   <th scope="col">Outputs</th>
                   <th scope="col">State</th>
+                  <th scope="col">Revalidation</th>
                 </tr>
               </thead>
               <tbody>
@@ -132,6 +134,9 @@ function ReleaseTable({ domain, releases }: { domain: string; releases: ReleaseV
                           </span>
                         )}
                       </td>
+                      <td>
+                        <Revalidated domain={domain} release={r.id} />
+                      </td>
                     </tr>
                   ))}
               </tbody>
@@ -140,6 +145,56 @@ function ReleaseTable({ domain, releases }: { domain: string; releases: ReleaseV
         </section>
       ))}
     </>
+  );
+}
+
+const VERDICT_STYLE: Record<RevalidationRecord["verdict"], [string, string]> = {
+  reproduced: ["st-pass", "✓"],
+  differences: ["st-fail", "≠"],
+  failed: ["st-infra", "✗"],
+};
+
+function Revalidated({ domain, release }: { domain: string; release: number }) {
+  const data = useAsync(
+    () =>
+      allPages(async (cursor) => {
+        const p = await must(
+          api.GET("/api/v1/releases/{release}/revalidations", {
+            params: { path: { release }, query: { cursor } },
+          }),
+        );
+        return { items: p.revalidations, next: p.next };
+      }),
+    [release],
+  );
+  return (
+    <Loaded state={data}>
+      {(list) => {
+        const last = list[list.length - 1];
+        if (!last) return <span className="muted">never</span>;
+        const [style, mark] = VERDICT_STYLE[last.verdict];
+        const c = last.counts;
+        const tools = Object.entries(last.toolchains)
+          .map(([n, m]) => `${n}: ${m}`)
+          .join(", ");
+        return (
+          <span title={tools}>
+            <span className={`badge ${style}`}>
+              <span aria-hidden="true">{mark}</span> {last.verdict}
+            </span>{" "}
+            <span className="muted">
+              {c.equivalent ?? 0} equivalent, {c.changed ?? 0} changed, {c.incomparable ?? 0} incomparable
+              {last.build !== null && last.build !== undefined && (
+                <>
+                  {" "}(build <Link to={`/d/${encodeURIComponent(domain)}/builds/${last.build}`}>#{last.build}</Link>)
+                </>
+              )}
+              , <When ts={last.created_at} />
+            </span>
+          </span>
+        );
+      }}
+    </Loaded>
   );
 }
 

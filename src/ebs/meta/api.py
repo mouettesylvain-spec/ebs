@@ -87,6 +87,7 @@ __all__ = [
     "ChannelMove",
     "ChannelSet",
     "ChannelView",
+    "ComparisonKind",
     "CreatedBuild",
     "CreatedLease",
     "DashboardReader",
@@ -158,6 +159,10 @@ __all__ = [
     "ResultManifest",
     "ResultSummary",
     "ResultSummaryList",
+    "RevalidationCreate",
+    "RevalidationList",
+    "RevalidationRecord",
+    "RevalidationVerdict",
     "RunnerInfo",
     "StateChange",
     "StepStats",
@@ -1163,10 +1168,39 @@ class ArchiveRecord(BaseModel):
     created_by: _Name
 
 
+RevalidationVerdict = Literal["reproduced", "differences", "failed"]
+"""The overall outcome of a revalidation (P3-05 R3): every compared action equivalent, at least
+one changed (or not comparable by its comparator), or the re-run did not complete."""
+
+ComparisonKind = Literal["equivalent", "changed", "incomparable"]
+
+
+class RevalidationCreate(BaseModel):
+    """A revalidation of a release to record (`revalidations` table, P3-05 R3): the re-run
+    build (None when it never started), the verdict, the JSON and Markdown reports in the CAS of
+    the release's domain, the module each toolchain ran with, and the per-verdict action counts."""
+
+    model_config = _FROZEN
+
+    build: BuildId | None
+    verdict: RevalidationVerdict
+    report: DigestField  # JSON
+    markdown: DigestField
+    toolchains: dict[_Name, _Name]  # flow-level toolchain name -> module used by the re-run
+    counts: dict[ComparisonKind, _NonNegative]
+
+
+class RevalidationRecord(RevalidationCreate):
+    id: StrictInt
+    release: ReleaseId
+    created_at: AwareDatetime
+    created_by: _Name
+
+
 class ReleaseStore(Protocol):
-    """Releases, channels, exports and archives (P2-02, P3-04). Implemented by the PostgreSQL,
-    in-memory and HTTP stores; there is no method to change or delete a release other than
-    `yank_release` (I19)."""
+    """Releases, channels, exports, archives and revalidations (P2-02, P3-04, P3-05).
+    Implemented by the PostgreSQL, in-memory and HTTP stores; there is no method to change or
+    delete a release other than `yank_release` (I19)."""
 
     def create_release(self, spec: ReleaseCreate, *, by: str) -> ReleaseView:
         """Insert a release. The build must be in `spec.domain` and finished; every output must
@@ -1226,6 +1260,18 @@ class ReleaseStore(Protocol):
         ...
 
     def list_archives(self, release: ReleaseId) -> list[ArchiveRecord]:
+        """Oldest first."""
+        ...
+
+    def record_revalidation(
+        self, release: ReleaseId, spec: RevalidationCreate, *, by: str
+    ) -> RevalidationRecord:
+        """Attach a revalidation report to `release` (append-only). Its build, when given, must
+        be in the release's domain. The same report again returns the first record. The report
+        objects are GC roots for as long as the release is (P3-05 R3)."""
+        ...
+
+    def list_revalidations(self, release: ReleaseId) -> list[RevalidationRecord]:
         """Oldest first."""
         ...
 
@@ -1644,6 +1690,13 @@ class ArchiveList(BaseModel):
     model_config = _WIRE
 
     archives: list[ArchiveRecord]
+    next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
+
+
+class RevalidationList(BaseModel):
+    model_config = _WIRE
+
+    revalidations: list[RevalidationRecord]
     next: StrictStr | None = None  # the cursor of the next page (P2-05 R3)
 
 

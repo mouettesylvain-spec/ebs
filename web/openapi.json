@@ -3028,6 +3028,211 @@
         "title": "ResultSummaryList",
         "type": "object"
       },
+      "RevalidationCreate": {
+        "additionalProperties": false,
+        "description": "A revalidation of a release to record (`revalidations` table, P3-05 R3): the re-run\nbuild (None when it never started), the verdict, the JSON and Markdown reports in the CAS of\nthe release's domain, the module each toolchain ran with, and the per-verdict action counts.",
+        "properties": {
+          "build": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Build"
+          },
+          "counts": {
+            "additionalProperties": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "propertyNames": {
+              "enum": [
+                "equivalent",
+                "changed",
+                "incomparable"
+              ]
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "markdown": {
+            "pattern": "^(sha256|blake3):[0-9a-f]{64}$",
+            "title": "Markdown",
+            "type": "string"
+          },
+          "report": {
+            "pattern": "^(sha256|blake3):[0-9a-f]{64}$",
+            "title": "Report",
+            "type": "string"
+          },
+          "toolchains": {
+            "patternProperties": {
+              "^[^\\x00-\\x1f]+$": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\x00-\\x1f]+$",
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "maxLength": 256,
+              "minLength": 1
+            },
+            "title": "Toolchains",
+            "type": "object"
+          },
+          "verdict": {
+            "enum": [
+              "reproduced",
+              "differences",
+              "failed"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "build",
+          "verdict",
+          "report",
+          "markdown",
+          "toolchains",
+          "counts"
+        ],
+        "title": "RevalidationCreate",
+        "type": "object"
+      },
+      "RevalidationList": {
+        "additionalProperties": false,
+        "properties": {
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next"
+          },
+          "revalidations": {
+            "items": {
+              "$ref": "#/components/schemas/RevalidationRecord"
+            },
+            "title": "Revalidations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "revalidations"
+        ],
+        "title": "RevalidationList",
+        "type": "object"
+      },
+      "RevalidationRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "build": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Build"
+          },
+          "counts": {
+            "additionalProperties": {
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "propertyNames": {
+              "enum": [
+                "equivalent",
+                "changed",
+                "incomparable"
+              ]
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\x00-\\x1f]+$",
+            "title": "Created By",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "markdown": {
+            "pattern": "^(sha256|blake3):[0-9a-f]{64}$",
+            "title": "Markdown",
+            "type": "string"
+          },
+          "release": {
+            "title": "Release",
+            "type": "integer"
+          },
+          "report": {
+            "pattern": "^(sha256|blake3):[0-9a-f]{64}$",
+            "title": "Report",
+            "type": "string"
+          },
+          "toolchains": {
+            "patternProperties": {
+              "^[^\\x00-\\x1f]+$": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\x00-\\x1f]+$",
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "maxLength": 256,
+              "minLength": 1
+            },
+            "title": "Toolchains",
+            "type": "object"
+          },
+          "verdict": {
+            "enum": [
+              "reproduced",
+              "differences",
+              "failed"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "build",
+          "verdict",
+          "report",
+          "markdown",
+          "toolchains",
+          "counts",
+          "id",
+          "release",
+          "created_at",
+          "created_by"
+        ],
+        "title": "RevalidationRecord",
+        "type": "object"
+      },
       "RunnerInfo": {
         "additionalProperties": false,
         "description": "Where the result was produced; not part of the cache identity.",
@@ -9928,6 +10133,274 @@
           }
         },
         "summary": "Record Export",
+        "tags": [
+          "releases"
+        ]
+      }
+    },
+    "/api/v1/releases/{release}/revalidations": {
+      "get": {
+        "operationId": "list_revalidations_api_v1_releases__release__revalidations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "release",
+            "required": true,
+            "schema": {
+              "title": "Release",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Items per page (default and maximum: the server's limit).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Items per page (default and maximum: the server's limit).",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "The `next` of the previous page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next` of the previous page.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevalidationList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "List Revalidations",
+        "tags": [
+          "releases"
+        ]
+      },
+      "post": {
+        "operationId": "record_revalidation_api_v1_releases__release__revalidations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "release",
+            "required": true,
+            "schema": {
+              "title": "Release",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevalidationCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevalidationRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Record Revalidation",
         "tags": [
           "releases"
         ]

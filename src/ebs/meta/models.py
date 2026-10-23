@@ -24,6 +24,7 @@ from ebs.meta.api import (
     InfraReason,
     PendingReason,
     QueueState,
+    RevalidationVerdict,
 )
 from ebs.meta.api import RELEASE_NAME_PATTERN as _RELEASE_NAME
 from ebs.meta.api import VERSION_PATTERN as _VERSION
@@ -52,6 +53,7 @@ __all__ = [
     "provenance_edges",
     "release_imports",
     "releases",
+    "revalidations",
     "tombstones",
     "toolchain_manifests",
     "toolchains",
@@ -514,5 +516,27 @@ archives = sa.Table(  # sign-off bundles of releases written to cold storage
     sa.Column("created_by", sa.Text, nullable=False),
     _digest_check("bundle_digest"),
     sa.CheckConstraint("length(location) BETWEEN 1 AND 4096", name="location_length"),
+    sa.Index(None, "release_id"),
+)
+
+
+# --- Phase 3: revalidations (P3-05, revision 0016; append-only) ---------------------------------
+
+revalidations = sa.Table(  # reports of re-runs of a release's sign-off plan, attached to it
+    "revalidations",
+    metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("release_id", sa.BigInteger, sa.ForeignKey("releases.id"), nullable=False),
+    sa.Column("build_id", sa.BigInteger, sa.ForeignKey("builds.id"), nullable=True),
+    sa.Column("verdict", sa.Text, nullable=False),
+    sa.Column("report_digest", sa.Text, nullable=False),
+    sa.Column("markdown_digest", sa.Text, nullable=False),
+    sa.Column("toolchains", JSONB, nullable=False),  # {flow toolchain name: module}
+    sa.Column("counts", JSONB, nullable=False),  # {equivalent|changed|incomparable: n}
+    sa.Column("created_at", _TS, nullable=False),
+    sa.Column("created_by", sa.Text, nullable=False),
+    _digest_check("report_digest"),
+    _digest_check("markdown_digest"),
+    _in_check("verdict", RevalidationVerdict),
     sa.Index(None, "release_id"),
 )

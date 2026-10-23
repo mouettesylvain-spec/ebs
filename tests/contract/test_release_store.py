@@ -16,11 +16,13 @@ from ebs.core.digest import hash_bytes
 from ebs.core.errors import MetadataError
 from ebs.meta.api import (
     ActionRow,
+    BuildId,
     GateCheck,
     ReleaseCreate,
     ReleaseId,
     ReleaseOutput,
     ReleaseView,
+    RevalidationCreate,
     release_output_name,
 )
 from ebs.meta.memory import InMemoryMetadataStore
@@ -240,3 +242,39 @@ def test_record_archive(s: S) -> None:
         s.store.record_archive(rel.id, bundle, "/cold/\nx", by="alice")
     with pytest.raises(MetadataError, match="location"):
         s.store.record_archive(rel.id, bundle, "", by="alice")
+
+
+def _revalidation(build: BuildId | None, report: bytes = b"report") -> RevalidationCreate:
+    return RevalidationCreate(
+        build=build, verdict="differences", report=hash_bytes(report),
+        markdown=hash_bytes(report + b".md"), toolchains={"questa": "questa/2026.1"},
+        counts={"equivalent": 3, "changed": 1},
+    )  # fmt: skip
+
+
+# P3-05 R3: a revalidation report is attached to the release (append-only), recording the same
+# report again returns the first row, and its objects are GC roots of the release's domain.
+def test_record_revalidation(s: S) -> None:
+    rel = _released(s)
+    rerun = finish(s.store, {"compile[lib=core]": Action({"worklib": LIB})})
+    first = s.store.record_revalidation(rel.id, _revalidation(rerun), by="alice")
+    assert (first.release, first.build, first.verdict, first.created_by) == (
+        rel.id, rerun, "differences", "alice",
+    )  # fmt: skip
+    assert first.toolchains == {"questa": "questa/2026.1"}
+    assert first.counts == {"equivalent": 3, "changed": 1}
+    assert first.created_at == s.clock.now()
+    s.clock.advance(1)
+    assert s.store.record_revalidation(rel.id, _revalidation(rerun), by="bob") == first
+    failed = s.store.record_revalidation(rel.id, _revalidation(None, b"other"), by="bob")
+    assert failed.build is None
+    assert s.store.list_revalidations(rel.id) == [first, failed]
+    assert s.store.list_revalidations(_released(s, "2.0").id) == []
+    roots = s.store.gc_roots(D, s.clock.now()).released  # type: ignore[attr-defined]
+    assert {first.report, first.markdown, failed.report, failed.markdown} <= roots
+    assert first.report not in s.store.gc_roots("partner", s.clock.now()).released  # type: ignore[attr-defined]
+    elsewhere = finish(s.store, {"lint": Action({"report": REPORT})}, domain="partner")
+    with pytest.raises(MetadataError, match="no build"):
+        s.store.record_revalidation(rel.id, _revalidation(elsewhere, b"x"), by="alice")
+    with pytest.raises(MetadataError, match="no release"):
+        s.store.record_revalidation(ReleaseId(999_999), _revalidation(None), by="alice")

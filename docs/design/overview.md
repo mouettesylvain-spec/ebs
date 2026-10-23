@@ -25,7 +25,7 @@ src/ebs/
   meta/        SQLAlchemy models, Alembic, MetadataStore protocol + PG + in-memory,
                FastAPI service, HTTP client                                           (P0/P1/P2)
   rules/       RulePlugin protocol, registry (entry points), shell, make, tcl,
-               questa/ (compile, opt, sim), later vcs/, spyglass/ …                  (P0/P1/P4)
+               questa/ (compile, opt, sim), comparators/ (sim, lint), later vcs/ …   (P0/P1/P3/P4)
   exec/        Executor protocol, local executor, slurm/ (cli adapter, executor,
                arrays, licenses, fake), pilot/ (queue, ebs-pilot worker, executor)   (P0/P1/P3)
   runner/      ebs-runner entry point: stage, env, run, hash+upload, debug, cleanup   (P0/P1)
@@ -204,6 +204,21 @@ features = ["simfeat"]                 # each a remote license (`sacctmgr add re
 # key = "~/.ssh/team-release"  # team SSH key (or its .pub, key in ssh-agent); --key overrides
 # allowed_signers = "/etc/ebs/allowed_signers"   # ssh-keygen ALLOWED SIGNERS; --allowed-signers
 # ssh_keygen = "ssh-keygen"    # OpenSSH >= 8.2; signatures use namespace "ebs-release"
+
+[revalidate]                   # P3-05: `ebs release revalidate` (deploy/revalidate)
+# toolchain_overrides = { questa = "latest" }   # or a module; --toolchain-override adds/wins
+
+[revalidate.comparators]       # step name or rule kind => sim | lint; default questa.sim = "sim"
+# lint_legacy = "lint"
+
+[revalidate.comparator.sim]    # settings per comparator
+# coverage_tolerance = 0.5     # percentage points
+# [revalidate.comparator.lint] pattern = '…(?P<rule>)…(?P<file>)…(?P<line>)…(?P<message>)…'
+
+[revalidate.notify]            # R4: where each report goes; nothing set: nowhere
+# webhook = "https://chat.example/hooks/x"   # JSON POST {text, verdict, release, domain, report}
+# email_to = ["signoff@example"]; email_from = "ebs@example"; smtp_host = "localhost"; smtp_port = 25
+# when = "always"              # or "problems" (differences and failures only)
 
 [ci]                           # P2-07: `ebs build --ci`
 # build_url = "https://ebs.example/builds/{uuid}"   # link in ebs-summary.md ({build}, {uuid})

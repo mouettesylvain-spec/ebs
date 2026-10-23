@@ -696,6 +696,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/releases/{release}/revalidations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Revalidations */
+        get: operations["list_revalidations_api_v1_releases__release__revalidations_get"];
+        put?: never;
+        /** Record Revalidation */
+        post: operations["record_revalidation_api_v1_releases__release__revalidations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/releases/{release}/yank": {
         parameters: {
             query?: never;
@@ -1935,6 +1953,73 @@ export interface components {
             next?: string | null;
             /** Results */
             results: components["schemas"]["ResultSummary"][];
+        };
+        /**
+         * RevalidationCreate
+         * @description A revalidation of a release to record (`revalidations` table, P3-05 R3): the re-run
+         *     build (None when it never started), the verdict, the JSON and Markdown reports in the CAS of
+         *     the release's domain, the module each toolchain ran with, and the per-verdict action counts.
+         */
+        RevalidationCreate: {
+            /** Build */
+            build: number | null;
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Markdown */
+            markdown: string;
+            /** Report */
+            report: string;
+            /** Toolchains */
+            toolchains: {
+                [key: string]: string;
+            };
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "reproduced" | "differences" | "failed";
+        };
+        /** RevalidationList */
+        RevalidationList: {
+            /** Next */
+            next?: string | null;
+            /** Revalidations */
+            revalidations: components["schemas"]["RevalidationRecord"][];
+        };
+        /** RevalidationRecord */
+        RevalidationRecord: {
+            /** Build */
+            build: number | null;
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+            /** Id */
+            id: number;
+            /** Markdown */
+            markdown: string;
+            /** Release */
+            release: number;
+            /** Report */
+            report: string;
+            /** Toolchains */
+            toolchains: {
+                [key: string]: string;
+            };
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "reproduced" | "differences" | "failed";
         };
         /**
          * RunnerInfo
@@ -6812,6 +6897,203 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReleaseView"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Content Too Large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_revalidations_api_v1_releases__release__revalidations_get: {
+        parameters: {
+            query?: {
+                /** @description Items per page (default and maximum: the server's limit). */
+                limit?: number | null;
+                /** @description The `next` of the previous page. */
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                release: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevalidationList"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Content Too Large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    record_revalidation_api_v1_releases__release__revalidations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                release: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevalidationCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevalidationRecord"];
                 };
             };
             /** @description Unauthorized */

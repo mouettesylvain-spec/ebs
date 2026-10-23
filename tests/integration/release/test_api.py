@@ -15,7 +15,7 @@ from sqlalchemy.engine import URL
 from ebs.core.clock import FakeClock
 from ebs.core.digest import hash_bytes
 from ebs.core.errors import MetadataError
-from ebs.meta.api import GateCheck, ReleaseCreate, ReleaseOutput
+from ebs.meta.api import GateCheck, ReleaseCreate, ReleaseOutput, RevalidationCreate
 from ebs.meta.client import HttpMetadataStore
 from ebs.meta.pg import PgMetadataStore
 from ebs.release.channels import GatePolicy, move_channel
@@ -151,3 +151,25 @@ def test_record_archive(service: Service) -> None:
     assert (record.release, record.bundle, record.created_by) == (rel.id, bundle, "alice")
     assert alice.record_archive(rel.id, bundle, record.location, by="alice") == record
     assert bob.list_archives(rel.id) == [record]
+
+
+# P3-05 R3: revalidation reports over the API: the caller is the author; only the owner records.
+def test_record_revalidation(service: Service) -> None:
+    alice, bob = _clients(service)
+    build = finish(alice, {"compile[lib=core]": Action({"worklib": LIB})})
+    rel = create_release(
+        alice, name=NAME, version="1.0", build=build, outputs=["compile.worklib"], by="alice"
+    )
+    spec = RevalidationCreate(
+        build=build, verdict="reproduced", report=hash_bytes(b"report"),
+        markdown=hash_bytes(b"report.md"), toolchains={"questa": "questa/2026.1"},
+        counts={"equivalent": 1, "changed": 0, "incomparable": 0},
+    )  # fmt: skip
+    with pytest.raises(MetadataError, match="'bob' is not allowed"):
+        bob.record_revalidation(rel.id, spec, by="bob")
+    record = alice.record_revalidation(rel.id, spec, by="ignored")
+    assert (record.release, record.build, record.verdict, record.created_by) == (
+        rel.id, build, "reproduced", "alice",
+    )  # fmt: skip
+    assert alice.record_revalidation(rel.id, spec, by="alice") == record
+    assert bob.list_revalidations(rel.id) == [record]

@@ -73,7 +73,7 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 | P3-08 | FlexLM `LastConsumed` sync | P1-03 | 1 | review |
 | P3-02 | `ebs discover` (strace) | P3-01 | 2 | review |
 | P3-04 | Sign-off bundles and `ebs verify` | P3-03, P2-03 | 2 | review |
-| P3-05 | Revalidation jobs and comparators | P3-04 | 3 | todo |
+| P3-05 | Revalidation jobs and comparators | P3-04 | 3 | review |
 | P3-09 | Phase 3 acceptance | all P3 | 4 | todo |
 
 ## Documentation (exit: site deployed from main; its tutorials executed in CI)

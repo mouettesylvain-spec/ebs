@@ -1,4 +1,4 @@
-"""Release, channel, export and archive routes (P2-02 R5, P3-04 R2).
+"""Release, channel, export, archive and revalidation routes (P2-02 R5, P3-04 R2, P3-05 R3).
 
 Writes are authorized as `release_write` / `release_export` on the owner of the release's build.
 The store checks a new release against its build; a channel move runs the service's own gate
@@ -32,6 +32,9 @@ from ebs.meta.api import (
     ReleaseId,
     ReleaseList,
     ReleaseView,
+    RevalidationCreate,
+    RevalidationList,
+    RevalidationRecord,
     YankRequest,
     check_domain,
 )
@@ -205,6 +208,37 @@ def list_archives(
         query={"list": "archives", "release": release},
     )
     return ok(ArchiveList(archives=page, next=after))
+
+
+@router.post(
+    "/releases/{release}/revalidations",
+    response_model=RevalidationRecord,
+    openapi_extra=json_body(RevalidationCreate),
+)
+def record_revalidation(
+    release: int,
+    req: Annotated[RevalidationCreate, Depends(body(RevalidationCreate))],
+    deps: Deps,
+    caller: Caller,
+) -> Response:
+    found = _release(deps, caller, release, "release_write")
+    return ok(deps.store.record_revalidation(found.id, req, by=caller.name))
+
+
+@router.get("/releases/{release}/revalidations", response_model=RevalidationList)
+def list_revalidations(
+    release: int, deps: Deps, caller: Caller, limit: Limit = None, cursor: Cursor = None
+) -> Response:
+    _release(deps, caller, release, "read")
+    page, after = paginate(
+        deps.store.list_revalidations(ReleaseId(release)),
+        lambda x: (x.id,),
+        cursor=cursor,
+        limit=limit,
+        max_page_size=deps.limits.max_page_size,
+        query={"list": "revalidations", "release": release},
+    )
+    return ok(RevalidationList(revalidations=page, next=after))
 
 
 @router.put("/channels", response_model=ChannelMove, openapi_extra=json_body(ChannelSet))

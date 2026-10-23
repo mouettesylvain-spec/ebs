@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from ebs.cas.api import CAS
 from ebs.cas.fs import FsCAS
 from ebs.core.clock import Clock, SystemClock
 from ebs.core.digest import Digest
@@ -32,9 +33,9 @@ from ebs.release.lock import LOCK_FILE, load_lock, plan_lock
 from ebs.rules.registry import RuleRegistry
 from ebs.sources.snapshot import SourceSnapshotter
 from ebs.sources.statcache import StatCache
-from ebs.toolchain.model import Toolchain
+from ebs.toolchain.model import Toolchain, ToolchainResolver
 
-__all__ = ["BundleToolchains", "VerifyReport", "replan", "verify_bundle"]
+__all__ = ["BundleToolchains", "VerifyReport", "plan_bundle", "replan", "verify_bundle"]
 
 _MEMORY: Final = Path(":memory:")
 
@@ -130,9 +131,19 @@ class _BundleCAS(FsCAS):
         return found if found is not None else super().get_tree(d)
 
 
-def replan(bundle: Bundle, *, rules: RuleRegistry, git: Git, work: Path, clock: Clock) -> Plan:
-    """Plan the bundled flow again at its recorded commit, refined with the recorded producer
-    output ids. `work` (created) holds the checkout and the scratch CAS."""
+def plan_bundle(
+    bundle: Bundle,
+    *,
+    cas: CAS,
+    toolchains: ToolchainResolver,
+    rules: RuleRegistry,
+    git: Git,
+    work: Path,
+    clock: Clock,
+) -> tuple[Plan, Planner]:
+    """Plan the bundled flow again at its recorded commit (checked out under `work`, created),
+    its sources hashed afresh into `cas`, for the steps the build ran; and the planner (the
+    driver's refiner when the plan is run, P3-05)."""
     recorded = bundle.plan()
     flow_git = recorded.flow.git
     if flow_git is None or not flow_git.commit:
@@ -142,12 +153,11 @@ def replan(bundle: Bundle, *, rules: RuleRegistry, git: Git, work: Path, clock: 
     flow_file = src / recorded.flow.path
     flow = load_flow(flow_file)
     lock = load_lock(flow_file.parent / LOCK_FILE) if flow.imports else None
-    cas = _BundleCAS(work / "cas", recorded.domain, bundle.trees(), clock)
     sources = SourceSnapshotter(
         cas, StatCache(_MEMORY, clock=clock), clock=clock, rehash=True, audit_fraction=0.0,
         git=None,
     )  # fmt: skip
-    planner = Planner(cas, sources, BundleToolchains(bundle.toolchains()), rules)
+    planner = Planner(cas, sources, toolchains, rules)
     plan = planner.plan(
         flow,
         base=flow_file.parent,
@@ -156,6 +166,18 @@ def replan(bundle: Bundle, *, rules: RuleRegistry, git: Git, work: Path, clock: 
         rehash=True,
         lock=None if lock is None else plan_lock(lock),
     )
+    return plan, planner
+
+
+def replan(bundle: Bundle, *, rules: RuleRegistry, git: Git, work: Path, clock: Clock) -> Plan:
+    """Plan the bundled flow again at its recorded commit, refined with the recorded producer
+    output ids. `work` (created) holds the checkout and the scratch CAS."""
+    recorded = bundle.plan()
+    cas = _BundleCAS(work / "cas", recorded.domain, bundle.trees(), clock)
+    plan, _ = plan_bundle(
+        bundle, cas=cas, toolchains=BundleToolchains(bundle.toolchains()), rules=rules, git=git,
+        work=work, clock=clock,
+    )  # fmt: skip
     outputs = {a.action_id: {o.name for o in a.outputs} for a in plan.actions}
     produced: dict[tuple[str, str], Digest] = {}
     for action in recorded.actions:

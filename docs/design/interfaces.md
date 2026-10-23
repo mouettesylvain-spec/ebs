@@ -604,8 +604,14 @@ re-validated on write (values must also pass `canonical_json`).
   -> ArchiveRecord{id, release, bundle, location, created_at, created_by}` (P3-04: a sign-off
   bundle written to `location`, 1-4096 characters without control characters; append-only, the
   same release, bundle and location again returns the first row), `list_archives(release)`
-  (oldest first). Release outputs (content digests, also of yanked releases) are
-  `GcRoots.released`.
+  (oldest first), **CONTRACT CHANGE (P3-05):** `record_revalidation(release, spec:
+  RevalidationCreate, *, by) -> RevalidationRecord` (`RevalidationCreate{build: BuildId | None,
+  verdict: reproduced|differences|failed, report: Digest (JSON), markdown: Digest, toolchains:
+  {name: module used}, counts: {equivalent|changed|incomparable: n}}`, the record adds `id,
+  release, created_at, created_by`; the build, when given, must be in the release's domain;
+  append-only, the same release and report again returns the first row),
+  `list_revalidations(release)` (oldest first). Release outputs (content digests, also of yanked
+  releases) and the report and Markdown digests of their revalidations are `GcRoots.released`.
 - `ProvenanceStore` (P2-04; PostgreSQL as one recursive CTE, in-memory, HTTP; part of
   `MetadataBackend`). **CONTRACT CHANGE (P2-04):** new protocol and models. `provenance_upstream(
   domain, *, ids, keys, depth)` / `provenance_downstream(...)` -> `ProvenanceGraph{domain, edges:
@@ -706,6 +712,51 @@ re-validated on write (values must also pass `canonical_json`).
   (ids recomputed from the records), the `flow.lock` at that commit, and refines with the
   producer output ids the recorded plan's inputs hold. Mismatch: any `diff_plans` entry other
   than `unchanged`, except `unknown` actions the build itself never keyed (`unkeyed`).
+  `plan_bundle(bundle, *, cas, toolchains, rules, git, work, clock) -> (Plan, Planner)` (P3-05)
+  is the unrefined re-plan both `replan` and revalidation use.
+- `ebs.rules.comparators` (L2, P3-05; imports core, flow, rules.api only): `Verdict{kind:
+  equivalent|changed|incomparable, details}` (`Verdict.equivalent()`, `.changed(*lines)`,
+  `.incomparable(reason)`; equivalent has no details, the others at least one), `Comparator`
+  protocol `name`, `compare(old_outputs: {name: Path}, new_outputs, old_summary, new_summary) ->
+  Verdict` (a missing path: the output could not be materialized), `get_comparator(name,
+  settings)` / `comparator_names()`. `SimComparator(coverage_tolerance=0.5)` (`sim`): outcome
+  from the `result` output (questa.sim result schema 1, final) else the summary; other test or
+  seed: incomparable; status differs or `coverage` (percent) moves by more than the tolerance or
+  is reported by one run only: changed. `LintComparator(pattern=DEFAULT_PATTERN,
+  max_details=50)` (`lint`): every output file (directories walked) parsed as JSON (`[...]` or
+  `{violations: [...]}` with `rule|id, file, line, message`) or by line regex (named groups
+  `rule, file, line, message`); `Violation(rule, file, line, message template)` with `./` and
+  the runner work-dir prefix `…/<16 hex>/work/` stripped, quoted text -> `<*>`, numbers -> `<N>`; multisets compared, changed
+  details `"<n> added, <m> removed"` then `+ …` / `- …` lines; no report file on a side:
+  incomparable.
+- `ebs.release.revalidate` (L3, P3-05): `revalidate(bundle, *, store, cas, rules, git, work,
+  run: BuildRunner, overrides: {name: "latest" | module}, optional_overrides=(), settings:
+  RevalidationSettings, cache_mode="read", by, clock=None) -> Revalidation{record, report,
+  markdown}`. Raises for `cache_mode="write"` (ReleaseError) and for an override naming no
+  toolchain of the plan (ReleaseError; names in `optional_overrides` are skipped instead) or no
+  registered toolchain (ToolchainError), before anything runs; a plan, run or comparison error
+  is a recorded `failed` revalidation (`report.error`). `OverrideToolchains(records, overrides,
+  store, *, optional=())`: `latest` = the most recently registered current toolchain whose
+  `name` is the module without its last `/` part (`mentor/questa` for `mentor/questa/2025.2`),
+  a module = its current toolchain, others from the bundle.
+  `BuildRunner(plan, refiner, cas, cache_mode) -> RerunOutcome{build, status, plan}` (the CLI
+  wires `run_build` with `keep_going=True`). Comparison per recorded action (sorted by id): the
+  comparator of its step name, else of its rule kind (`RevalidationSettings.comparators`,
+  default `questa.sim -> sim`), on both runs' outputs materialized under `work` (recorded bytes
+  from the bundle, else the domain CAS); without one `digest`: status and deterministic output
+  digests (only nondeterministic outputs: incomparable, `counted: false`). Verdict: `failed` if
+  the build did not end passed/failed or an action has no new result; `differences` if any
+  counted action is not equivalent; else `reproduced`. Report `{format: "ebs.revalidation", v: 1,
+  release{domain, name, version, id}, bundle, recorded_plan, plan, build, build_status,
+  cache_mode, toolchains{name: {recorded{module, id}, used{module, id}, override}}, verdict,
+  counts, actions[{action_id, step, kind, comparator, verdict, details, counted}], error,
+  created_at, created_by}` (canonical JSON) and `render_markdown(report)`, both put in `cas`,
+  registered as blobs, and `record_revalidation`. `RevalidationSettings.from_config(config)`
+  (`[revalidate]`: `toolchain_overrides`, `comparators`, `comparator.<name>`, `notify`),
+  `parse_overrides(["NAME=latest|MODULE", …])`. `Notifier(NotifySettings, *, post_json,
+  send_mail).notify(result) -> [error lines]` (webhook JSON POST `{text, verdict, release,
+  domain, report}`, https only; email with the Markdown body; `when = "problems"` skips
+  reproduced; never raises).
 - `ebs.release.sign` (L3, P3-03): DSSE `Envelope{payload_type, payload, signatures:
   [Signature{keyid, sig}]}` (`to_json`/`from_json`), `pae(type, payload)` (DSSE v1),
   `sign_statement(statement, SshSigner(SshKeygen(program, run), key)) -> Envelope` (canonical
@@ -790,6 +841,8 @@ in JSON mode (`model_validate_json`):
 | `GET /releases/{id}/exports` | `list_exports` | → `ExportList` (paged) |
 | `POST /releases/{id}/archives` | `record_archive` (by = caller) | `ArchiveRequest{bundle, location}` → `ArchiveRecord` (`release_write`) |
 | `GET /releases/{id}/archives` | `list_archives` | → `ArchiveList` (paged) |
+| `POST /releases/{id}/revalidations` | `record_revalidation` (by = caller) | `RevalidationCreate` → `RevalidationRecord` (`release_write`) |
+| `GET /releases/{id}/revalidations` | `list_revalidations` | → `RevalidationList` (paged) |
 | `PUT /channels` | `move_channel` with the service's `[release.gates]` | `ChannelSet{domain, name, channel, release, gate_build}` → `ChannelMove` |
 | `GET /channels?domain=&name=&channel=` | `get_channel` | → `ChannelList` (0 or 1) |
 | `GET /channels/history?domain=&name=&channel=` | `channel_history` | → `ChannelHistory` (paged) |
@@ -2009,6 +2062,20 @@ latest archive, whose file must still have the recorded digest (else exit 2; non
 the archive command); prints `verified|MISMATCH <release> from <path>: M/N action keys match`
 and one line per mismatch (`<action>: changed: <fields>`); `--json` the report plus `bundle`.
 Exit 0 when every key matches, 1 otherwise; a bundle file needs no store.
+**`ebs release revalidate NAME VERSION | --all [--domain D] [--toolchain-override
+NAME=latest|MODULE …] [--no-cache] [--executor local|slurm] [--json]`** (P3-05;
+`ebs.release.revalidate`): the release's latest archive (digest-checked like `ebs verify`);
+`--all` every unyanked release of the domain with an archive. Overrides add to and win over
+`[revalidate].toolchain_overrides` (a config override for a toolchain a release's plan does not
+have is skipped for it; a command-line one is an error); the re-run is a `--keep-going` build
+reading the cache (`--no-cache`: mode off), never writing it. Prints `<verdict> <name> <version>
+(build N): E equivalent, C changed, I incomparable; report <digest>` and one `  <toolchain>:
+<module>` line each; `--json` one `{release, verdict, record, notify_errors}` per release. Each
+result goes to `[revalidate.notify]` (a failed delivery is a warning). With `--all`, a release
+that cannot be revalidated (bundle missing or altered, bad override) is a warning (`--json`:
+`{release, verdict: null, error}`) and the others still run. Exit 0 when every release
+reproduced, 1 otherwise; a bad override of a single release exits 2. deploy/revalidate runs `--all --executor slurm` quarterly per
+domain (`ebs-revalidate@<domain>.timer`).
 
 **`ebs why TARGET [--domain D] [--build B] [--depth N] [--json | --dot]`**, **`ebs used-by NAME
 VERSION`**, **`ebs tests NAME VERSION [--latest] [--junit FILE]`** (P2-04; `ebs.release.provenance`,

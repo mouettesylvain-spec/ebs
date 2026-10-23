@@ -83,6 +83,7 @@ __all__ = [
     "open_bundle",
     "recorded_plan",
     "restore_bundle",
+    "restore_objects",
     "write_archive",
     "write_bundle",
 ]
@@ -637,7 +638,7 @@ def open_bundle(path: Path, dest: Path) -> Bundle:
 # --- restoring (R4) ------------------------------------------------------------------------------
 
 
-def _restore_objects(bundle: Bundle, cas: CAS) -> None:
+def restore_objects(bundle: Bundle, cas: CAS) -> None:
     """Put the bundle's plans and objects into `cas`. A tree is stored only when every object it
     references is available (bundled or already present); imported outputs usually are not."""
     build = bundle.build()
@@ -734,7 +735,7 @@ def restore_bundle(
             f"bundle {bundle.path} holds a release of domain {release.domain!r}; restore it into "
             f"that domain's CAS, not {cas.domain!r}"
         )
-    _restore_objects(bundle, cas)
+    restore_objects(bundle, cas)
     found = store.get_release(release.domain, release.name, release.version)
     if found is None:
         build = _restore_build(store, bundle)

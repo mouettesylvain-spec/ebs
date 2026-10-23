@@ -103,6 +103,8 @@ from ebs.meta.api import (
     ReleaseView,
     ResultManifest,
     ResultSummary,
+    RevalidationCreate,
+    RevalidationRecord,
     StoredEvent,
     Tombstone,
     ToolchainCreate,
@@ -192,6 +194,7 @@ class InMemoryMetadataStore:
         self._history: list[ChannelMove] = []
         self._exports: list[ExportRecord] = []
         self._archives: list[ArchiveRecord] = []
+        self._revalidations: list[RevalidationRecord] = []
         self._release_imports: dict[int, dict[str, ReleaseImport]] = {}  # build -> alias -> row
 
     # --- action cache ---------------------------------------------------------------------------
@@ -969,6 +972,35 @@ class InMemoryMetadataStore:
         with self._lock:
             return [a for a in self._archives if a.release == release]
 
+    def record_revalidation(
+        self, release: ReleaseId, spec: RevalidationCreate, *, by: str
+    ) -> RevalidationRecord:
+        spec = revalidate(spec, RevalidationCreate, "record_revalidation")
+        by = check_by(by, "record_revalidation")
+        with self._lock:
+            found = self._release(release)
+            if found is None:
+                raise MetadataError(f"record_revalidation: no release with id {release}")
+            if spec.build is not None:
+                b = self._builds.get(int(spec.build))
+                if b is None or b.view.domain != found.domain:
+                    raise MetadataError(
+                        f"record_revalidation: no build {spec.build} in domain {found.domain}"
+                    )
+            for known in self._revalidations:
+                if known.release == release and known.report == spec.report:
+                    return known
+            record = RevalidationRecord(
+                **spec.model_dump(), id=len(self._revalidations) + 1, release=release,
+                created_at=self._clock.now(), created_by=by,
+            )  # fmt: skip
+            self._revalidations.append(record)
+            return record
+
+    def list_revalidations(self, release: ReleaseId) -> list[RevalidationRecord]:
+        with self._lock:
+            return [r for r in self._revalidations if r.release == release]
+
     # --- garbage collection (GcStore) -----------------------------------------------------------
 
     def set_policy(self, domain: str, policy: DomainPolicy) -> None:
@@ -1024,6 +1056,9 @@ class InMemoryMetadataStore:
                 if r["domain"] == domain
                 for o in r["outputs"].values()  # type: ignore[attr-defined]
             }
+            for rv in self._revalidations:  # P3-05 R3: reports live as long as their release
+                if self._releases[int(rv.release)]["domain"] == domain:
+                    released.update((rv.report, rv.markdown))
         return GcRoots(frozenset(pinned), frozenset(leased), frozenset(released))
 
     def gc_tombstones(self, domain: str) -> list[Tombstone]:

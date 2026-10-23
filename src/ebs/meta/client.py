@@ -117,6 +117,9 @@ from ebs.meta.api import (
     ReleaseList,
     ReleaseView,
     ResultManifest,
+    RevalidationCreate,
+    RevalidationList,
+    RevalidationRecord,
     StateChange,
     ToolchainCreate,
     ToolchainList,
@@ -163,6 +166,7 @@ _P = TypeVar(
     ExportList,
     ReleaseImportList,
     ArchiveList,
+    RevalidationList,
 )
 _T = TypeVar("_T")
 
@@ -1069,3 +1073,17 @@ class HttpMetadataStore:
         what = f"list_archives {release}"
         pages = self._pages(f"/releases/{int(release)}/archives", what, ArchiveList)
         return [x for page in pages for x in page.archives]
+
+    def record_revalidation(
+        self, release: ReleaseId, spec: RevalidationCreate, *, by: str
+    ) -> RevalidationRecord:
+        what = f"record_revalidation {release}"
+        r = self._call(
+            "POST", f"/releases/{int(release)}/revalidations", what, body=spec, idempotent=True
+        )
+        return self._parse(r, RevalidationRecord, what)
+
+    def list_revalidations(self, release: ReleaseId) -> list[RevalidationRecord]:
+        what = f"list_revalidations {release}"
+        pages = self._pages(f"/releases/{int(release)}/revalidations", what, RevalidationList)
+        return [x for page in pages for x in page.revalidations]

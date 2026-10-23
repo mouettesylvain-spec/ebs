@@ -1,0 +1,14 @@
+# Quarterly revalidation of the archived releases of one domain (P3-05 R4):
+#   systemctl enable --now ebs-revalidate@<domain>.timer
+
+[Unit]
+Description=Quarterly EBS revalidation of the archived releases of domain %i
+
+[Timer]
+# 03:00 on the first day of January, April, July and October.
+OnCalendar=*-01,04,07,10-01 03:00:00
+RandomizedDelaySec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
