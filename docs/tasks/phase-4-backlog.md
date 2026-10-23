@@ -1,6 +1,6 @@
 # Phase 4 backlog (outlines)
 
-Expand each into a full task file (see `_TEMPLATE.md`) before starting. All follow the rule-pack pattern of
+Each outline is now expanded into a full task file `P4-NN-*.md` (indexed in README.md); the task files are authoritative. All follow the rule-pack pattern of
 P1-08: argv golden tests, fake tools in `tests/fakes/bin/`, transcript/report parsers with synthetic fixtures,
 `classify` (license ⇒ INFRA), and `vendor`-marked tests on the grid.
 

@@ -1,6 +1,6 @@
 # P3-03 — SLSA attestations and signing
 
-Status: review · Phase: 3 · Depends on: P2-02 · Size: M
+Status: done · Phase: 3 · Depends on: P2-02 · Size: M
 
 ## Goal
 Each release carries a signed in-toto statement with the SLSA v1 provenance predicate, verifiable offline

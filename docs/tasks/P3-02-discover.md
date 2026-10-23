@@ -1,6 +1,6 @@
 # P3-02 — `ebs discover` (strace)
 
-Status: review · Phase: 3 · Depends on: P3-01 · Size: M
+Status: done · Phase: 3 · Depends on: P3-01 · Size: M
 
 ## Goal
 Help migrate coarse Makefile steps and explain sandbox failures by tracing which files a step actually reads.

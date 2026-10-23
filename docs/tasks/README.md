@@ -66,14 +66,14 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 
 | ID | Task | Depends on | Wave | Status |
 | --- | --- | --- | --- | --- |
-| P3-01 | bubblewrap sandbox (+ Apptainer fallback) | P1-04 | 1 | review |
-| P3-03 | SLSA attestations and signing | P2-02 | 1 | review |
-| P3-06 | Pilot worker pool | P1-02 | 1 | review |
-| P3-07 | S3 CAS backend | P0-09 | 1 | review |
-| P3-08 | FlexLM `LastConsumed` sync | P1-03 | 1 | review |
-| P3-02 | `ebs discover` (strace) | P3-01 | 2 | review |
-| P3-04 | Sign-off bundles and `ebs verify` | P3-03, P2-03 | 2 | review |
-| P3-05 | Revalidation jobs and comparators | P3-04 | 3 | review |
+| P3-01 | bubblewrap sandbox (+ Apptainer fallback) | P1-04 | 1 | done |
+| P3-03 | SLSA attestations and signing | P2-02 | 1 | done |
+| P3-06 | Pilot worker pool | P1-02 | 1 | done |
+| P3-07 | S3 CAS backend | P0-09 | 1 | done |
+| P3-08 | FlexLM `LastConsumed` sync | P1-03 | 1 | done |
+| P3-02 | `ebs discover` (strace) | P3-01 | 2 | done |
+| P3-04 | Sign-off bundles and `ebs verify` | P3-03, P2-03 | 2 | done |
+| P3-05 | Revalidation jobs and comparators | P3-04 | 3 | done |
 | P3-09 | Phase 3 acceptance | all P3 | 4 | todo |
 
 ## Documentation (exit: site deployed from main; its tutorials executed in CI)
@@ -84,7 +84,17 @@ Status values: `todo` → `in-progress` → `review` → `done` (the human sets 
 
 ## Phase 4 — More flows
 
-Backlog outlines in `phase-4-backlog.md`; they get full task files once phase 3 starts.
+Expanded from `phase-4-backlog.md`. Start them after the phase 3 tasks they depend on are `done`.
+
+| ID | Task | Depends on | Wave | Status |
+| --- | --- | --- | --- | --- |
+| P4-01 | VCS rule pack (`vcs.compile`, `vcs.sim`) | P1-08 | 1 | todo |
+| P4-02 | SpyGlass rule pack, normalized violation reports | P1-08, P3-05 | 1 | todo |
+| P4-03 | Synthesis rule pack (`dc`, `fusion_compiler`) | P0-12, P0-09, P1-08 | 1 | todo |
+| P4-04 | PrimeTime STA rule pack, per-corner matrix | P0-05, P0-12, P1-08 | 1 | todo |
+| P4-06 | Content-defined chunking for large blobs | P0-09, P3-07 | 1 | todo |
+| P4-07 | LSF executor | P1-02, P1-03, P1-05 | 1 | todo |
+| P4-05 | Formality equivalence comparator | P3-05, P4-03 | 2 | todo |
 
 ## Dependency graph (phase 0)
 

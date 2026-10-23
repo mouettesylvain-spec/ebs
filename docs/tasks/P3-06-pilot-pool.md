@@ -1,6 +1,6 @@
 # P3-06 — Pilot worker pool
 
-Status: review · Phase: 3 · Depends on: P1-02 · Size: L
+Status: done · Phase: 3 · Depends on: P1-02 · Size: L
 
 ## Goal
 Tiny actions (< 30 s) and very large regressions stop paying per-job scheduling overhead: a pool of pilot
