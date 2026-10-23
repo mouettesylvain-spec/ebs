@@ -1,6 +1,6 @@
 # P3-04 — Sign-off bundles and `ebs verify`
 
-Status: review · Phase: 3 · Depends on: P3-03, P2-03 · Size: M
+Status: done · Phase: 3 · Depends on: P3-03, P2-03 · Size: M
 
 ## Goal
 A self-contained archive that lets a release be re-validated years later without the live system, and a

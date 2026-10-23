@@ -1,6 +1,6 @@
 # P3-08 — FlexLM `LastConsumed` sync
 
-Status: review · Phase: 3 · Depends on: P1-03 · Size: S
+Status: done · Phase: 3 · Depends on: P1-03 · Size: S
 
 ## Goal
 SLURM accounts for licenses consumed outside it (interactive GUI sessions) so jobs never start and then

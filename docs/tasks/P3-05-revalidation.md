@@ -1,6 +1,6 @@
 # P3-05 — Revalidation jobs and comparators
 
-Status: review · Phase: 3 · Depends on: P3-04 · Size: L
+Status: done · Phase: 3 · Depends on: P3-04 · Size: L
 
 ## Goal
 Scheduled re-runs of archived sign-off plans on the newest tool versions, compared with per-step

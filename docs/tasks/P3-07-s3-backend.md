@@ -1,6 +1,6 @@
 # P3-07 — S3 CAS backend
 
-Status: review · Phase: 3 · Depends on: P0-09 · Size: M
+Status: done · Phase: 3 · Depends on: P0-09 · Size: M
 
 ## Goal
 The CAS can live on S3-compatible object storage (Ceph RGW, MinIO) behind the same protocol.

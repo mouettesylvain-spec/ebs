@@ -1,6 +1,6 @@
 # P3-01 — bubblewrap sandbox (+ Apptainer fallback)
 
-Status: review · Phase: 3 · Depends on: P1-04 · Size: L
+Status: done · Phase: 3 · Depends on: P1-04 · Size: L
 
 ## Goal
 Undeclared reads fail loudly instead of silently producing wrong cache hits: tools run in a mount namespace
